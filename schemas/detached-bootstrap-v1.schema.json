@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://octoparse.local/schemas/detached-bootstrap-v1.schema.json",
+  "title": "Octo Engine Detached Bootstrap v1",
+  "description": "bootstrap.json written under <output>/.detach_<taskId>_<timestamp>/ for detached run startup observability.",
+  "type": "object",
+  "properties": {
+    "taskId": { "type": "string" },
+    "pid": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "status": {
+      "type": "string",
+      "enum": ["spawning", "spawned", "running", "completed", "failed", "stopped"]
+    },
+    "runId": { "type": "string" },
+    "lotId": { "type": "string" },
+    "taskName": { "type": "string" },
+    "outputDir": { "type": "string" },
+    "stdout": { "type": "string" },
+    "stderr": { "type": "string" },
+    "error": { "type": "string" },
+    "total": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updatedAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "stoppedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "additionalProperties": true
+}

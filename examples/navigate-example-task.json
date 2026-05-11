@@ -1,0 +1,6 @@
+{
+  "taskId": "navigate-example",
+  "taskName": "Navigate Example.com",
+  "xml": "<ns0:RootAction xmlns=\"http://schemas.microsoft.com/winfx/2006/xaml/workflow\" xmlns:ns0=\"clr-namespace:Octopus.Actions;Assembly=Octopus.Actions, Version=1.1.5585.26568, Culture=neutral, PublicKeyToken=null\" xmlns:x=\"http://schemas.microsoft.com/winfx/2006/xaml\" startRunnerShowBrowser=\"false\" downloadFolderPath=\"\" startCaptrueErrorLog=\"false\" globalCookie=\"\" isSetGlobalCookie=\"false\" isCloseLocalWindow=\"false\" useKernelBrowser=\"false\"><ns0:NavigateAction x:Name=\"Navigate1\" Caption=\"Open Example\" URL=\"https://example.com\" TimeOut=\"00:00:30\" ScrollDown=\"false\" ScrollTime=\"0\" ScrollInterval=\"0\" ScrollIntervalUnit=\"Second\" ScrollType=\"ScrollToBottom\" ScrollScope=\"Global\" ScrollXPath=\"\" BlockPopup=\"true\" IfStopScroll=\"false\" UseCustomizeCookie=\"false\" MaxRetry=\"0\" EnableRetry=\"false\" TimeInterval=\"0\" RetryInterval=\"0\" EnableSwitchIp=\"false\" EnableSwitchUserAgent=\"false\" ClearCache=\"false\" AutoRetry=\"false\" TextContain=\"\" UrlContain=\"\" TextNotContain=\"\" IPType=\"None\" NavigateType=\"None\" /></ns0:RootAction>",
+  "fieldNames": []
+}

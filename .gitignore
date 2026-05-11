@@ -1,0 +1,14 @@
+node_modules/
+docs/cli/
+dist/
+.octo-engine/
+.env
+.env.*
+.npmrc
+.npmrc.local
+*.tgz
+*.log
+.DS_Store
+
+# Internal planning docs that should stay out of public repositories.
+docs/TASK_API_COMMAND_PLAN.md

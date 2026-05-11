@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://octoparse.local/schemas/capabilities-v1.schema.json",
+  "title": "Octo Engine Capabilities Response v1",
+  "description": "Full response shape for octoparse capabilities --json.",
+  "type": "object",
+  "required": ["ok", "data"],
+  "properties": {
+    "ok": { "const": true },
+    "data": {
+      "type": "object",
+      "required": [
+        "name",
+        "version",
+        "agentContractVersion",
+        "authentication",
+        "output",
+        "machineContract",
+        "exitCodes",
+        "commands",
+        "dataSources",
+        "exportFormats",
+        "env"
+      ],
+      "properties": {
+        "name": { "const": "octoparse" },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "agentContractVersion": { "const": 1 },
+        "authentication": {
+          "type": "object",
+          "required": [
+            "requiredForUse",
+            "loginVerifiesKeyBeforeSaving",
+            "setupCommandsWithoutAuth",
+            "diagnosticCommandsWithoutAuth",
+            "env",
+            "file"
+          ],
+          "properties": {
+            "requiredForUse": { "const": true },
+            "loginVerifiesKeyBeforeSaving": { "const": true },
+            "setupCommandsWithoutAuth": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "diagnosticCommandsWithoutAuth": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "env": { "const": "OCTO_ENGINE_API_KEY" },
+            "file": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "output": {
+          "type": "object",
+          "required": ["jsonEnvelope", "jsonlEvents", "detachedBootstrap", "stdout", "stderr"],
+          "properties": {
+            "jsonEnvelope": { "type": "object" },
+            "jsonlEvents": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "detachedBootstrap": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "stdout": { "type": "string" },
+            "stderr": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "machineContract": {
+          "type": "object",
+          "required": ["stable", "defaultOutput", "schemas", "json", "jsonl", "artifacts", "lifecycle"],
+          "properties": {
+            "stable": { "const": true },
+            "defaultOutput": { "const": "human" },
+            "schemas": {
+              "type": "object",
+              "required": ["capabilities", "jsonEnvelope", "runEvent", "detachedBootstrap"],
+              "properties": {
+                "capabilities": { "type": "string" },
+                "jsonEnvelope": { "type": "string" },
+                "runEvent": { "type": "string" },
+                "detachedBootstrap": { "type": "string" }
+              },
+              "additionalProperties": true
+            },
+            "json": {
+              "type": "object",
+              "required": ["flag", "envelope", "usageErrorsUseEnvelope", "commonErrorCodes"],
+              "properties": {
+                "flag": { "const": "--json" },
+                "envelope": {
+                  "type": "object",
+                  "required": ["successRequiredFields", "failureRequiredFields"],
+                  "properties": {
+                    "successRequiredFields": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    },
+                    "failureRequiredFields": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    }
+                  },
+                  "additionalProperties": true
+                },
+                "usageErrorsUseEnvelope": { "const": true },
+                "commonErrorCodes": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              },
+              "additionalProperties": true
+            },
+            "jsonl": {
+              "type": "object",
+              "required": ["flag", "command", "eventField", "stableEvents"],
+              "properties": {
+                "flag": { "const": "--jsonl" },
+                "command": { "const": "run <taskId>" },
+                "eventField": { "const": "event" },
+                "stableEvents": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              },
+              "additionalProperties": true
+            },
+            "artifacts": {
+              "type": "object",
+              "required": ["localRunDir", "detachedBootstrapDir"],
+              "properties": {
+                "localRunDir": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "detachedBootstrapDir": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              },
+              "additionalProperties": true
+            },
+            "lifecycle": {
+              "type": "object",
+              "required": [
+                "detachModel",
+                "daemonRequired",
+                "activeRunIdentity",
+                "artifactRunIdentity",
+                "maxActiveLocalRunsPerTaskId",
+                "orphanDetection",
+                "cleanupCommands"
+              ],
+              "properties": {
+                "detachModel": { "const": "child-process" },
+                "daemonRequired": { "const": false },
+                "activeRunIdentity": { "const": "taskId" },
+                "artifactRunIdentity": { "const": "runId" },
+                "maxActiveLocalRunsPerTaskId": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "orphanDetection": { "type": "boolean" },
+                "cleanupCommands": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        "exitCodes": {
+          "type": "object",
+          "required": ["0", "1", "2", "3"],
+          "additionalProperties": { "type": "string" }
+        },
+        "commands": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["command", "risk", "json", "authRequired"],
+            "properties": {
+              "command": { "type": "string" },
+              "risk": {
+                "type": "string",
+                "enum": ["low", "medium", "high"]
+              },
+              "json": { "type": "boolean" },
+              "jsonl": { "type": "boolean" },
+              "authRequired": { "type": "boolean" },
+              "hidden": { "type": "boolean" },
+              "internal": { "type": "boolean" }
+            },
+            "additionalProperties": true
+          }
+        },
+        "dataSources": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["local", "cloud"]
+          }
+        },
+        "exportFormats": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["xlsx", "csv", "html", "json", "xml"]
+          }
+        },
+        "env": {
+          "type": "object",
+          "required": ["apiKey", "apiBaseUrl"],
+          "properties": {
+            "apiKey": { "const": "OCTO_ENGINE_API_KEY" },
+            "apiBaseUrl": { "const": "OCTO_ENGINE_API_BASE_URL" }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://octoparse.local/schemas/run-event-v1.schema.json",
+  "title": "Octo Engine Run JSONL Event v1",
+  "description": "One line from octoparse run <taskId> --jsonl. The event field is stable; additional fields may be added.",
+  "type": "object",
+  "required": ["event"],
+  "properties": {
+    "event": {
+      "type": "string",
+      "enum": [
+        "run.started",
+        "row",
+        "log",
+        "run.paused",
+        "run.resumed",
+        "captcha",
+        "proxy",
+        "run.stopping",
+        "run.stopped"
+      ]
+    },
+    "runId": { "type": "string" },
+    "lotId": { "type": "string" },
+    "taskId": { "type": "string" },
+    "taskName": { "type": "string" },
+    "status": {
+      "type": "string",
+      "enum": ["running", "paused", "stopping", "completed", "failed", "stopped"]
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "level": { "type": "string" },
+    "message": { "type": "string" },
+    "data": true,
+    "outputDir": { "type": "string" }
+  },
+  "additionalProperties": true
+}
