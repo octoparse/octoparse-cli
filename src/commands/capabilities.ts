@@ -63,7 +63,8 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
         flag: '--jsonl',
         command: 'run <taskId>',
         eventField: 'event',
-        stableEvents: ['run.started', 'row', 'log', 'run.paused', 'run.resumed', 'run.stopping', 'run.stopped']
+        stableEvents: ['run.started', 'row', 'log', 'run.paused', 'run.resumed', 'run.stopping', 'run.stopped'],
+        rowLimitFlag: '--max-rows'
       },
       artifacts: {
         localRunDir: ['meta.json', 'control.json', 'events.jsonl', 'logs.jsonl', 'rows.jsonl'],

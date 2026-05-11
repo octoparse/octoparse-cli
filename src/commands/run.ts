@@ -37,7 +37,7 @@ export async function runTask(taskId: string | undefined, args: string[]): Promi
     return printUsageError(
       json,
       'Error: missing taskId',
-      'Usage: octoparse run <taskId> [--task-file <file.json|file.xml|file.otd>] [--output <dir>] [--chrome-path <path>] [--detach] [--json|--jsonl]'
+      'Usage: octoparse run <taskId> [--task-file <file.json|file.xml|file.otd>] [--output <dir>] [--chrome-path <path>] [--max-rows <n>] [--detach] [--json|--jsonl]'
     );
   }
 
@@ -60,6 +60,15 @@ export async function runTask(taskId: string | undefined, args: string[]): Promi
   }
 
   const options = parseRunOptions(taskId, args);
+  const maxRowsError = validateMaxRows(args);
+  if (maxRowsError) {
+    return printUsageError(
+      options.json || options.jsonl,
+      maxRowsError,
+      'Usage: octoparse run <taskId> [--max-rows <positive integer>] [--json|--jsonl]',
+      'RUN_MAX_ROWS_INVALID'
+    );
+  }
 
   const active = await readTaskControlState(taskId);
   if (await isRunControlReachable(active)) {
@@ -198,6 +207,10 @@ async function executeTask(
   let controlServerReady: Promise<RunControlServer> | null = null;
   let artifactQueue = Promise.resolve();
   let signalHandler: (() => void) | null = null;
+  let savedRows = 0;
+  let rowLimitReached = false;
+  let stopReason: string | undefined;
+  let restoreRuntimeConsole = maybeSuppressRuntimeConsole(options);
   const detachedBootstrapDir = process.env[DETACHED_BOOTSTRAP_DIR_ENV];
   const startedAt = new Date().toISOString();
 
@@ -281,9 +294,48 @@ async function executeTask(
   });
 
   host.on('row', (event) => {
+    if (options.maxRows !== undefined && savedRows >= options.maxRows) {
+      if (!rowLimitReached) {
+        rowLimitReached = true;
+        stopReason = 'max_rows';
+        runStatus = 'stopping';
+        void updateControlStatus(runStatus);
+        host.stop();
+      }
+      return;
+    }
+
+    savedRows += 1;
+    const rowEvent = { ...event, total: savedRows };
     appendRunArtifact('rows.jsonl', event.data);
-    appendRunArtifact('events.jsonl', { event: 'row', ...event });
-    if (options.jsonl) printJsonLine({ event: 'row', ...event });
+    appendRunArtifact('events.jsonl', { event: 'row', ...rowEvent });
+    if (options.jsonl) printJsonLine({ event: 'row', ...rowEvent });
+
+    if (options.maxRows !== undefined && savedRows >= options.maxRows && !rowLimitReached) {
+      rowLimitReached = true;
+      stopReason = 'max_rows';
+      runStatus = 'stopping';
+      void updateControlStatus(runStatus);
+      appendRunArtifact('events.jsonl', {
+        event: 'run.stopping',
+        runId: event.runId,
+        taskId,
+        reason: stopReason,
+        maxRows: options.maxRows,
+        total: savedRows
+      });
+      if (options.jsonl) {
+        printJsonLine({
+          event: 'run.stopping',
+          runId: event.runId,
+          taskId,
+          reason: stopReason,
+          maxRows: options.maxRows,
+          total: savedRows
+        });
+      }
+      host.stop();
+    }
   });
 
   host.on('log', (event) => {
@@ -319,6 +371,7 @@ async function executeTask(
           console.error('\nReceived Ctrl+C, stopping extraction...');
         }
         runStatus = 'stopping';
+        stopReason = 'interrupt';
         void updateControlStatus(runStatus);
         host.stop();
         setTimeout(() => {
@@ -328,10 +381,11 @@ async function executeTask(
             taskId: task.taskId,
             taskName: currentTaskName || task.taskName,
             status: 'stopped',
-            total: 0,
+            total: savedRows,
             outputDir: options.outputDir,
             startedAt,
-            stoppedAt: new Date().toISOString()
+            stoppedAt: new Date().toISOString(),
+            stopReason
           });
         }, 3_000);
       };
@@ -340,6 +394,7 @@ async function executeTask(
 
     const runPromise = withTimeout(host.start(task, options), options.runTimeoutMs, () => {
       runStatus = 'stopping';
+      stopReason = 'timeout';
       void updateControlStatus(runStatus);
       host.stop();
       return `Run timeout after ${options.runTimeoutMs}ms`;
@@ -351,36 +406,45 @@ async function executeTask(
       signalHandler = null;
     }
     const runDir = currentRunDir || await ensureRunDir(options.outputDir, summary.runId);
-    runStatus = summary.status;
+    const finalSummary: RunSummary = {
+      ...summary,
+      total: savedRows || summary.total,
+      ...(stopReason ? { stopReason } : {}),
+      ...(options.maxRows !== undefined ? { maxRows: options.maxRows } : {})
+    };
+    runStatus = finalSummary.status;
     await waitControlServer();
     await updateControlStatus(runStatus);
     await artifactQueue;
-    await writeRunSummary(runDir, { ...summary, outputDir: runDir });
-    await appendJsonLine(join(runDir, 'events.jsonl'), { event: 'run.stopped', ...summary, outputDir: runDir });
+    await writeRunSummary(runDir, { ...finalSummary, outputDir: runDir });
+    await appendJsonLine(join(runDir, 'events.jsonl'), { event: 'run.stopped', ...finalSummary, outputDir: runDir });
     await closeControlServer();
     await host.close();
+    restoreRuntimeConsole();
+    restoreRuntimeConsole = noop;
     if (detachedBootstrapDir) {
       await writeDetachedBootstrap(detachedBootstrapDir, {
-        status: summary.status,
-        runId: summary.runId,
-        lotId: summary.lotId,
+        status: finalSummary.status,
+        runId: finalSummary.runId,
+        lotId: finalSummary.lotId,
         outputDir: runDir,
-        total: summary.total,
-        stoppedAt: summary.stoppedAt,
+        total: finalSummary.total,
+        stoppedAt: finalSummary.stoppedAt,
         updatedAt: new Date().toISOString()
       });
     }
 
     if (options.jsonl) {
-      printJsonLine({ event: 'run.stopped', ...summary, outputDir: runDir });
+      printJsonLine({ event: 'run.stopped', ...finalSummary, outputDir: runDir });
     } else if (options.json) {
-      printEnvelope(true, { ...summary, outputDir: runDir });
+      printEnvelope(true, { ...finalSummary, outputDir: runDir });
     } else {
-      console.log(`Run completed: ${summary.runId}`);
-      console.log(`Task: ${summary.taskId}`);
-      console.log(`Rows: ${summary.total}`);
+      console.log(`Run completed: ${finalSummary.runId}`);
+      console.log(`Task: ${finalSummary.taskId}`);
+      console.log(`Rows: ${finalSummary.total}`);
+      if (finalSummary.stopReason === 'max_rows') console.log(`Stop reason: max_rows (${finalSummary.maxRows})`);
       console.log(`Artifacts: ${runDir}`);
-      console.log(`View data: ${localDataExportCommand(summary)}`);
+      console.log(`View data: ${localDataExportCommand(finalSummary)}`);
     }
     return EXIT_OK;
   } catch (error) {
@@ -403,6 +467,8 @@ async function executeTask(
       await closeControlServer();
     }
     await host.close();
+    restoreRuntimeConsole();
+    restoreRuntimeConsole = noop;
     if (detachedBootstrapDir) {
       await writeDetachedBootstrap(detachedBootstrapDir, {
         status: 'failed',
@@ -440,8 +506,26 @@ function parseRunOptions(taskId: string, args: string[]): RunOptions {
     runTimeoutMs: parsePositiveInt(valueAfter(args, '--timeout-ms'), 10 * 60 * 1000),
     extensionTimeoutMs: parsePositiveInt(valueAfter(args, '--extension-timeout-ms'), 15 * 1000),
     debugBridge: hasFlag(args, '--debug-bridge'),
-    detach: hasFlag(args, '--detach')
+    detach: hasFlag(args, '--detach'),
+    maxRows: parseOptionalPositiveInt(valueAfter(args, '--max-rows'))
   };
+}
+
+function parseOptionalPositiveInt(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function validateMaxRows(args: string[]): string | null {
+  if (!hasFlag(args, '--max-rows')) return null;
+  const raw = valueAfter(args, '--max-rows');
+  if (!raw || raw.startsWith('-')) return '--max-rows requires a positive integer';
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0 || String(parsed) !== raw.trim()) {
+    return '--max-rows requires a positive integer';
+  }
+  return null;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeout: () => string): Promise<T> {
@@ -556,4 +640,27 @@ async function writeDetachedBootstrap(dir: string, patch: DetachedBootstrap): Pr
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
+}
+
+function maybeSuppressRuntimeConsole(options: RunOptions): () => void {
+  if (process.platform !== 'win32') return noop;
+  if (options.debugBridge || process.env.OCTOPARSE_SHOW_RUNTIME_STDIO === '1') return noop;
+
+  const originalStdoutWrite = process.stdout.write.bind(process.stdout);
+  const originalStderrWrite = process.stderr.write.bind(process.stderr);
+  const suppressStdout = !options.jsonl;
+
+  if (suppressStdout) {
+    process.stdout.write = ((..._args: unknown[]) => true) as typeof process.stdout.write;
+  }
+  process.stderr.write = ((..._args: unknown[]) => true) as typeof process.stderr.write;
+
+  return () => {
+    if (suppressStdout) process.stdout.write = originalStdoutWrite as typeof process.stdout.write;
+    process.stderr.write = originalStderrWrite as typeof process.stderr.write;
+  };
+}
+
+function noop(): void {
+  // Intentionally empty.
 }

@@ -34,6 +34,12 @@
     },
     "level": { "type": "string" },
     "message": { "type": "string" },
+    "reason": { "type": "string" },
+    "stopReason": { "type": "string" },
+    "maxRows": {
+      "type": "integer",
+      "minimum": 1
+    },
     "data": true,
     "outputDir": { "type": "string" }
   },

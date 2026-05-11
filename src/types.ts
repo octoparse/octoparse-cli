@@ -33,6 +33,7 @@ export interface RunOptions {
   extensionTimeoutMs: number;
   debugBridge: boolean;
   detach: boolean;
+  maxRows?: number;
 }
 
 export interface RunSummary {
@@ -45,6 +46,8 @@ export interface RunSummary {
   outputDir: string;
   startedAt: string;
   stoppedAt?: string;
+  stopReason?: string;
+  maxRows?: number;
 }
 
 export type CaptchaType =

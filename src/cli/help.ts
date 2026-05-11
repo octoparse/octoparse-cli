@@ -55,11 +55,12 @@ Purpose:
   octoparse task validate <taskId> [--task-file <file.json|file.xml|file.otd>] [--json]
 `,
     run: `Usage:
-  octoparse run <taskId> [--task-file <file.json|file.xml|file.otd>] [--output <dir>] [--chrome-path <path>] [--headless] [--detach] [--json|--jsonl]
+  octoparse run <taskId> [--task-file <file.json|file.xml|file.otd>] [--output <dir>] [--chrome-path <path>] [--headless] [--max-rows <n>] [--detach] [--json|--jsonl]
 
 Agent notes:
   Requires a configured API key even when --task-file points to a local JSON, XML, or OTD file.
   Use --detach for background local extraction.
+  Use --max-rows <n> to stop automatically after saving n rows.
   Use --jsonl for foreground event streams.
   JSONL now includes captcha and proxy request events when the runtime asks for them.
   run only starts local extraction. Use data export <taskId> --lot-id <lotId> for files.
@@ -74,7 +75,7 @@ Notes:
   Cloud extraction only supports start/stop. There is no cloud pause/resume.
 `,
     local: `Usage:
-  octoparse local status <taskId> [--json]
+  octoparse local status <taskId> [--output <dir>] [--json]
   octoparse local pause <taskId> [--json]
   octoparse local resume <taskId> [--json]
   octoparse local stop <taskId> [--json]
@@ -137,12 +138,12 @@ Usage:
   octoparse task list [--page <n>] [--page-size <n>] [--keyword <text>] [--json]
   octoparse task inspect <taskId> [--task-file <file.json|file.xml|file.otd>] [--json]
   octoparse task validate <taskId> [--task-file <file.json|file.xml|file.otd>] [--json]
-  octoparse run <taskId> [--task-file <file.json|file.xml|file.otd>] [--output <dir>] [--chrome-path <path>] [--headless] [--detach] [--json|--jsonl]
+  octoparse run <taskId> [--task-file <file.json|file.xml|file.otd>] [--output <dir>] [--chrome-path <path>] [--headless] [--max-rows <n>] [--detach] [--json|--jsonl]
   octoparse cloud start <taskId> [--json]
   octoparse cloud stop <taskId> [--json]
   octoparse cloud status <taskId> [--json]
   octoparse cloud history <taskId> [--json]
-  octoparse local status <taskId> [--json]
+  octoparse local status <taskId> [--output <dir>] [--json]
   octoparse local pause <taskId> [--json]
   octoparse local resume <taskId> [--json]
   octoparse local stop <taskId> [--json]
@@ -186,6 +187,7 @@ Authentication:
 Run diagnostics:
   --timeout-ms <ms>            overall foreground run timeout, default 600000
   --extension-timeout-ms <ms>  runtime extension registration timeout, default 15000
+  --max-rows <n>               stop local extraction after saving n rows
   --debug-bridge              include extension bridge command/response logs
 
 Agent contract:

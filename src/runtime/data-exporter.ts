@@ -3,6 +3,8 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, resolve } from 'node:path';
 import type { DataExportFormat } from '../types.js';
 
+const INTERNAL_EXPORT_FIELDS = new Set(['#', '#text', '$id', '$isSaved']);
+
 export interface DataExportResult {
   file: string;
   format: DataExportFormat;
@@ -16,7 +18,8 @@ export async function exportRowsToFile(
 ): Promise<DataExportResult> {
   const file = resolveAvailableFile(targetFile);
   await mkdir(dirname(file), { recursive: true });
-  const content = formatRows(rows, format);
+  const exportRows = rows.map(toPublicExportRow);
+  const content = formatRows(exportRows, format);
   await writeFile(file, content);
   return { file, format, rows: rows.length };
 }
@@ -61,7 +64,19 @@ function formatRows(rows: Record<string, unknown>[], format: DataExportFormat): 
 }
 
 function headersOf(rows: Record<string, unknown>[]): string[] {
-  return [...new Set(rows.flatMap((row) => Object.keys(row)))];
+  return [...new Set(rows.flatMap((row) => Object.keys(row).filter((key) => !isInternalExportField(key))))];
+}
+
+function isInternalExportField(key: string): boolean {
+  return INTERNAL_EXPORT_FIELDS.has(key);
+}
+
+function toPublicExportRow(row: Record<string, unknown>): Record<string, unknown> {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(row)) {
+    if (!isInternalExportField(key)) result[key] = value;
+  }
+  return result;
 }
 
 function toCsv(rows: Record<string, unknown>[]): string {

@@ -64,13 +64,13 @@ OCTO_ENGINE_API_KEY=xxx octoparse task list --json
 
 ### 3. Use the CLI
 
-List your cloud tasks:
+Query the task list:
 
 ```bash
 octoparse task list
 ```
 
-Inspect a task:
+Query a single task:
 
 ```bash
 octoparse task inspect <taskId>
@@ -88,7 +88,7 @@ Run in the background:
 octoparse run <taskId> --detach
 ```
 
-Check or stop an active local run:
+Query the local run status, or stop the local process running a task:
 
 ```bash
 octoparse local status <taskId>

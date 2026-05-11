@@ -3,6 +3,7 @@ import { printEnvelope, printUsageError } from '../cli/output.js';
 import { printAuthRequired } from './auth.js';
 import {
   ApiRequestError,
+  fetchCloudDataBatch,
   fetchCloudHistory,
   fetchCloudStatus,
   startCloudTask,
@@ -100,10 +101,15 @@ export async function cloudHistory(args: string[]): Promise<number> {
 
   try {
     const result = await fetchCloudHistory({ apiKey: auth.apiKey, taskId, baseUrl: valueAfter(args, '--api-base-url') });
+    const items = await withCloudExportStats({
+      apiKey: auth.apiKey,
+      taskId,
+      baseUrl: valueAfter(args, '--api-base-url'),
+      items: result.data
+    });
     if (json) {
-      printEnvelope(true, { taskId, ...result });
+      printEnvelope(true, { taskId, ...result, data: items });
     } else {
-      const items = result.data;
       if (!items.length) {
         console.log(`No cloud extraction history found: ${taskId}`);
         return EXIT_OK;
@@ -111,13 +117,73 @@ export async function cloudHistory(args: string[]): Promise<number> {
       console.log(`Cloud extraction history: ${taskId}\n`);
       for (const item of items) {
         const record = asRecord(item);
-        console.log(`  ${String(record.lot ?? '')}  ${cloudStatusName(record.status)}  rows=${String(record.extCnt ?? record.dataCnt ?? 0)}  ${String(record.startTime ?? record.startExtractTime ?? '')}`);
+        console.log(formatCloudHistoryLine(record));
       }
     }
     return EXIT_OK;
   } catch (error) {
     return printApiError(json, 'Failed to fetch cloud extraction history', error);
   }
+}
+
+async function withCloudExportStats(options: {
+  apiKey: string;
+  taskId: string;
+  baseUrl?: string;
+  items: unknown[];
+}): Promise<unknown[]> {
+  return Promise.all(options.items.map(async (item) => {
+    const record = asRecord(item);
+    const lotId = stringValue(record.lot);
+    if (!lotId) return item;
+    const stats = await fetchCloudExportStats({
+      apiKey: options.apiKey,
+      taskId: options.taskId,
+      lotId,
+      baseUrl: options.baseUrl
+    });
+    return stats ? { ...record, ...stats } : item;
+  }));
+}
+
+async function fetchCloudExportStats(options: {
+  apiKey: string;
+  taskId: string;
+  lotId: string;
+  baseUrl?: string;
+}): Promise<{ uniqueRows: number; duplicateRows: number; exportRows: number } | null> {
+  try {
+    const result = await fetchCloudDataBatch({
+      apiKey: options.apiKey,
+      taskId: options.taskId,
+      lotId: options.lotId,
+      baseUrl: options.baseUrl,
+      offset: 0,
+      size: 1
+    });
+    const data = asRecord(result.data);
+    const uniqueRows = numberValue(data.total);
+    const duplicateRows = numberValue(data.duplicate);
+    if (uniqueRows === null && duplicateRows === null) return null;
+    const resolvedUniqueRows = uniqueRows ?? 0;
+    return {
+      uniqueRows: resolvedUniqueRows,
+      duplicateRows: duplicateRows ?? 0,
+      exportRows: resolvedUniqueRows
+    };
+  } catch {
+    return null;
+  }
+}
+
+function formatCloudHistoryLine(record: Record<string, unknown>): string {
+  const rows = String(record.extCnt ?? record.dataCnt ?? 0);
+  const uniqueRows = numberValue(record.uniqueRows);
+  const duplicateRows = numberValue(record.duplicateRows);
+  const exportStats = uniqueRows === null
+    ? ''
+    : `  uniqueRows=${uniqueRows}${duplicateRows && duplicateRows > 0 ? `  duplicateRows=${duplicateRows}` : ''}`;
+  return `  ${String(record.lot ?? '')}  ${cloudStatusName(record.status)}  rows=${rows}${exportStats}  ${String(record.startTime ?? record.startExtractTime ?? '')}`;
 }
 
 function printCloudApiResult(result: ApiResult): void {
@@ -161,6 +227,19 @@ function cloudStatusName(status: unknown): string {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : value === undefined || value === null ? '' : String(value).trim();
+}
+
+function numberValue(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 function formatValue(value: unknown): string {

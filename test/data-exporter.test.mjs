@@ -32,6 +32,31 @@ test('exportRowsToFile writes CSV and avoids overwriting existing files', async 
   assert.equal(await readFile(result.file, 'utf8'), 'title,count\nA,1\n"B, quoted",2\n');
 });
 
+test('exportRowsToFile filters runtime internal row fields', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'octo-export-fields-'));
+  const csvFile = join(dir, 'result.csv');
+  const jsonFile = join(dir, 'result.json');
+  const rows = [{
+    '#': 1,
+    '#text': '',
+    $id: 'internal-id',
+    $isSaved: true,
+    docid: 'KSAU8N74',
+    title: 'Demo'
+  }];
+
+  const csv = await exportRowsToFile(rows, csvFile, 'csv');
+  assert.equal(await readFile(csv.file, 'utf8'), 'docid,title\nKSAU8N74,Demo\n');
+
+  const json = await exportRowsToFile(rows, jsonFile, 'json');
+  const jsonContent = await readFile(json.file, 'utf8');
+  assert.doesNotMatch(jsonContent, /"\$id"/);
+  assert.doesNotMatch(jsonContent, /"\$isSaved"/);
+  assert.doesNotMatch(jsonContent, /"#"/);
+  assert.doesNotMatch(jsonContent, /"#text"/);
+  assert.match(jsonContent, /"docid"/);
+});
+
 test('exportRowsToFile writes minimal xlsx zip', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'octo-xlsx-'));
   const file = join(dir, 'result.xlsx');

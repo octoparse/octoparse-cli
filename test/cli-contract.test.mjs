@@ -6,6 +6,7 @@ import { join, resolve } from 'node:path';
 import { test } from 'node:test';
 import { promisify } from 'node:util';
 import { authCommand } from '../dist/commands/auth.js';
+import { cloudHistory } from '../dist/commands/cloud.js';
 import { ApiRequestError, fetchAccountInfo, validateApiKey } from '../dist/runtime/api-client.js';
 import { localDataExportCommand } from '../dist/commands/run.js';
 import { formatTaskListLine } from '../dist/commands/task.js';
@@ -315,6 +316,72 @@ test('remote task not found suggests a nearby listed task id', async () => {
   }
 });
 
+test('cloud history enriches lots with exportable unique row counts', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.OCTO_ENGINE_API_KEY;
+  const originalLog = console.log;
+  process.env.OCTO_ENGINE_API_KEY = 'dummy';
+  const lines = [];
+  const seen = [];
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(String(url));
+    seen.push(parsed.pathname);
+    if (parsed.pathname === '/api/progress/task/task-cloud-history') {
+      return new Response(JSON.stringify({
+        data: [{
+          lot: 'lot_1',
+          status: 4,
+          startTime: '2026-04-15T15:18:44+08:00',
+          dataCnt: 14,
+          extCnt: 14
+        }],
+        error: 'success'
+      }), {
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    if (parsed.pathname === '/api/taskData/task-cloud-history/lot/lot_1/exportData') {
+      return new Response(JSON.stringify({
+        data: {
+          offset: 1,
+          total: 12,
+          restTotal: 11,
+          duplicate: 2,
+          files: [{ fileBody: '' }]
+        },
+        error: 'success'
+      }), {
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    return new Response(JSON.stringify({ error: 'unexpected' }), {
+      status: 404,
+      statusText: 'Not Found',
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+  console.log = (line = '') => {
+    lines.push(String(line));
+  };
+
+  try {
+    const code = await cloudHistory(['task-cloud-history', '--api-base-url', 'https://example.invalid']);
+    assert.equal(code, 0);
+    assert.ok(seen.includes('/api/progress/task/task-cloud-history'));
+    assert.ok(seen.includes('/api/taskData/task-cloud-history/lot/lot_1/exportData'));
+    assert.match(lines.join('\n'), /rows=14  uniqueRows=12  duplicateRows=2/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+    if (originalApiKey === undefined) delete process.env.OCTO_ENGINE_API_KEY;
+    else process.env.OCTO_ENGINE_API_KEY = originalApiKey;
+  }
+});
+
 test('root and run help clearly state API key requirement', async () => {
   const root = await runCli(['--help']);
   assert.equal(root.code, 0);
@@ -414,7 +481,11 @@ test('cleanup commands remove orphaned local control state', async () => {
   const localStatus = await runCli(['local', 'status', 'stale-task', '--json'], { apiKey: 'dummy', home });
   const statusPayload = assertJsonSuccess(localStatus);
   assert.equal(statusPayload.data.status, 'not_running');
+  assert.equal(statusPayload.data.active, false);
+  assert.equal(statusPayload.data.currentRun, null);
   assert.equal(statusPayload.data.cleanedStaleState, true);
+  assert.equal(statusPayload.data.lastRun.status, 'stopped');
+  assert.equal(statusPayload.data.lastRun.total, 2);
   await assert.rejects(access(controlFile));
   await assert.rejects(access(activeFile));
   const preserved = JSON.parse(await readFile(metaFile, 'utf8'));
@@ -437,6 +508,50 @@ test('cleanup commands remove orphaned local control state', async () => {
   assert.equal(localPayload.data.checked, 1);
   assert.equal(localPayload.data.removed, 1);
   await assert.rejects(access(activeFile));
+});
+
+test('local status reports idle with last run summary', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'octo-local-status-last-'));
+  const output = join(root, 'runs');
+  const runDir = join(output, 'run_status_last_20260429010101');
+  await mkdir(runDir, { recursive: true });
+  await writeFile(join(runDir, 'meta.json'), `${JSON.stringify({
+    runId: 'run_status_last_20260429010101',
+    lotId: 'lot_20260429010101',
+    taskId: 'status-last-task',
+    taskName: 'Status Last Task',
+    status: 'stopped',
+    total: 2,
+    outputDir: runDir,
+    startedAt: '2026-04-29T01:01:01.000Z',
+    stoppedAt: '2026-04-29T01:02:01.000Z'
+  }, null, 2)}\n`);
+
+  const jsonResult = await runCli([
+    'local',
+    'status',
+    'status-last-task',
+    '--output',
+    output,
+    '--json'
+  ], { apiKey: 'dummy' });
+  const payload = assertJsonSuccess(jsonResult);
+  assert.equal(payload.data.status, 'not_running');
+  assert.equal(payload.data.active, false);
+  assert.equal(payload.data.currentRun, null);
+  assert.equal(payload.data.lastRun.status, 'stopped');
+  assert.equal(payload.data.lastRun.lotId, 'lot_20260429010101');
+
+  const humanResult = await runCli([
+    'local',
+    'status',
+    'status-last-task',
+    '--output',
+    output
+  ], { apiKey: 'dummy' });
+  assert.equal(humanResult.code, 0, formatCliResult(humanResult));
+  assert.match(humanResult.stdout, /status-last-task  idle/);
+  assert.match(humanResult.stdout, /Last run: stopped  rows=2  lot=lot_20260429010101/);
 });
 
 test('local history reports row count from rows artifact', async () => {
@@ -509,6 +624,12 @@ test('run rejects --format and points users to data export', async () => {
   const jsonlPayload = parseJson(jsonl.stdout);
   assert.equal(jsonlPayload.ok, false);
   assert.equal(jsonlPayload.error.code, 'RUN_FORMAT_UNSUPPORTED');
+});
+
+test('run validates max rows as a positive integer', async () => {
+  const result = await runCli(['run', 'minimal', '--max-rows', '0', '--json'], { apiKey: 'dummy' });
+  assertJsonFailure(result, 'RUN_MAX_ROWS_INVALID');
+  assert.match(parseJson(result.stdout).error.message, /--max-rows/);
 });
 
 test('run completion prints a copyable local data export command', () => {
