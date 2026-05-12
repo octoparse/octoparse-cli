@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 
 export interface CliConfig {
   apiBaseUrl?: string;
-  apiEnv?: 'pre' | 'prod' | string;
+  apiEnv?: 'prod' | string;
   updatedAt?: string;
 }
 

@@ -13,7 +13,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
     authentication: {
       requiredForUse: true,
       loginVerifiesKeyBeforeSaving: true,
-      setupCommandsWithoutAuth: ['auth login', 'auth status', 'auth logout', 'env status', 'env pre', 'env prod', 'env online'],
+      setupCommandsWithoutAuth: ['auth login', 'auth status', 'auth logout', 'env status', 'env prod', 'env online'],
       diagnosticCommandsWithoutAuth: ['--help', '--version', 'capabilities', 'doctor', 'browser doctor'],
       env: API_KEY_ENV,
       file: join(homedir(), '.octoparse', 'credentials.json')
@@ -89,7 +89,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
     commands: [
       { command: 'doctor', risk: 'low', json: true, authRequired: false },
       { command: 'auth login/status/logout', risk: 'medium', json: true, authRequired: false },
-      { command: 'env pre/prod/online/status', risk: 'medium', json: true, hidden: true, authRequired: false },
+      { command: 'env prod/online/status', risk: 'medium', json: true, hidden: true, authRequired: false },
       { command: 'task list', risk: 'low', json: true, authRequired: true },
       { command: 'task inspect/validate', risk: 'low', json: true, authRequired: true },
       { command: 'run <taskId>', risk: 'medium', json: true, jsonl: true, authRequired: true },

@@ -68,6 +68,7 @@ Query the task list:
 
 ```bash
 octoparse task list
+octoparse task list --page 2 --page-size 20
 ```
 
 Query a single task:
@@ -121,7 +122,8 @@ octoparse auth logout
 
 # Task discovery
 octoparse task list
-octoparse task list --keyword news --page-size 10
+octoparse task list --page 2 --page-size 20
+octoparse task list --keyword news --page 2 --page-size 10
 octoparse task inspect <taskId>
 
 # Local extraction

@@ -33,20 +33,32 @@ Agent notes:
   Functional commands require a configured API key, including local task-file and OTD runs.
 `,
     env: `Usage:
-  octoparse env pre [--json]
   octoparse env prod [--json]
+  octoparse env online [--json]
   octoparse env status [--json]
 
 Purpose:
   Hidden internal command for switching API environment.
 `,
     task: `Usage:
-  octoparse task list [--page <n>] [--page-size <n>] [--keyword <text>] [--json]
+  octoparse task list [--page <n>] [--page-size <n>] [--limit <n>] [--keyword <text>] [--json]
   octoparse task inspect <taskId> [--task-file <file.json|file.xml|file.otd>] [--json]
   octoparse task validate <taskId> [--task-file <file.json|file.xml|file.otd>] [--json]
 `,
     'task list': `Usage:
-  octoparse task list [--page <n>] [--page-size <n>] [--keyword <text>] [--json]
+  octoparse task list [--page <n>] [--page-size <n>] [--limit <n>] [--keyword <text>] [--json]
+
+Options:
+  --page <n>          Page number to fetch. Defaults to 1.
+  --page-size <n>     Number of tasks per page. Defaults to 20.
+  --limit <n>         Alias for --page-size.
+  --keyword <text>    Filter tasks by keyword.
+  --json              Print a machine-readable JSON envelope.
+
+Examples:
+  octoparse task list
+  octoparse task list --page 2 --page-size 20
+  octoparse task list --keyword news --page 2 --page-size 10
 `,
     'task inspect': `Usage:
   octoparse task inspect <taskId> [--task-file <file.json|file.xml|file.otd>] [--json]
@@ -135,7 +147,7 @@ Usage:
   octoparse auth status [--json]
   octoparse auth logout [--json]
   octoparse browser doctor [--chrome-path <path>] [--json]
-  octoparse task list [--page <n>] [--page-size <n>] [--keyword <text>] [--json]
+  octoparse task list [--page <n>] [--page-size <n>] [--limit <n>] [--keyword <text>] [--json]
   octoparse task inspect <taskId> [--task-file <file.json|file.xml|file.otd>] [--json]
   octoparse task validate <taskId> [--task-file <file.json|file.xml|file.otd>] [--json]
   octoparse run <taskId> [--task-file <file.json|file.xml|file.otd>] [--output <dir>] [--chrome-path <path>] [--headless] [--max-rows <n>] [--detach] [--json|--jsonl]

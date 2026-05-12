@@ -18,7 +18,6 @@ import { clientHeaders } from './client-headers.js';
 export const API_BASE_URL_ENV = 'OCTO_ENGINE_API_BASE_URL';
 export const PROD_API_BASE_URL = 'https://v2-clientapi.octoparse.com';
 export const DEFAULT_API_BASE_URL = PROD_API_BASE_URL;
-export const PRE_API_BASE_URL = process.env.OCTO_ENGINE_PRE_API_BASE_URL ?? 'https://pre-v2-clientapi.octoparse.com';
 
 export interface TaskListOptions {
   apiKey: string;

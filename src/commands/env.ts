@@ -1,6 +1,6 @@
 import { hasFlag, valueAfter } from '../cli/args.js';
 import { printEnvelope } from '../cli/output.js';
-import { API_BASE_URL_ENV, PROD_API_BASE_URL, PRE_API_BASE_URL } from '../runtime/api-client.js';
+import { API_BASE_URL_ENV, PROD_API_BASE_URL } from '../runtime/api-client.js';
 import { configFilePath, readCliConfig, saveCliConfig } from '../runtime/config.js';
 import { EXIT_OK, EXIT_OPERATION_FAILED } from '../types.js';
 
@@ -11,7 +11,7 @@ export async function hiddenEnvCommand(subcommand: string | undefined, args: str
     const config = await readCliConfig();
     const effectiveBaseUrl = valueAfter(args, '--api-base-url') ?? process.env[API_BASE_URL_ENV] ?? config.apiBaseUrl ?? PROD_API_BASE_URL;
     const data = {
-      apiEnv: config.apiEnv ?? (effectiveBaseUrl.includes('pre-') ? 'pre' : 'prod'),
+      apiEnv: config.apiEnv ?? 'prod',
       apiBaseUrl: effectiveBaseUrl,
       configFile: configFilePath(),
       envOverride: Boolean(process.env[API_BASE_URL_ENV])
@@ -28,7 +28,7 @@ export async function hiddenEnvCommand(subcommand: string | undefined, args: str
 
   const next = resolveEnvTarget(subcommand);
   if (!next) {
-    const message = 'Usage: octoparse env <pre|prod|online|status> [--json]';
+    const message = 'Usage: octoparse env <prod|online|status> [--json]';
     if (json) printEnvelope(false, undefined, 'INVALID_ENV', message);
     else console.error(message);
     return EXIT_OPERATION_FAILED;
@@ -56,8 +56,7 @@ export async function hiddenEnvCommand(subcommand: string | undefined, args: str
   return EXIT_OK;
 }
 
-function resolveEnvTarget(value: string): { apiEnv: 'pre' | 'prod'; apiBaseUrl: string } | undefined {
-  if (value === 'pre') return { apiEnv: 'pre', apiBaseUrl: PRE_API_BASE_URL };
+function resolveEnvTarget(value: string): { apiEnv: 'prod'; apiBaseUrl: string } | undefined {
   if (value === 'prod' || value === 'online' || value === 'production') {
     return { apiEnv: 'prod', apiBaseUrl: PROD_API_BASE_URL };
   }
