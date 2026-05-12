@@ -310,12 +310,11 @@ export class EngineHost extends EventEmitter {
         level: 'debug',
         message: `proxy resolved ${describeProxyForLog(answer)}`
       });
-      if (!answer) return;
-      workflow.sendProxy(answer);
+      workflow.sendProxy(answer ?? { proxyIp: {} });
       this.emit('log', {
         runId,
         level: 'info',
-        message: 'proxy sent'
+        message: answer ? 'proxy sent' : 'proxy sent none'
       });
     } catch (error) {
       this.emit('log', {

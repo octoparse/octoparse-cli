@@ -13,6 +13,15 @@ export function runMetaExists(outputDir: string, runId: string): boolean {
   return existsSync(join(outputDir, runId, 'meta.json'));
 }
 
+export function runArtifactExists(outputDir: string, runId: string): boolean {
+  const runDir = join(outputDir, runId);
+  return existsSync(join(runDir, 'meta.json'))
+    || existsSync(join(runDir, 'control.json'))
+    || existsSync(join(runDir, 'events.jsonl'))
+    || existsSync(join(runDir, 'logs.jsonl'))
+    || existsSync(join(runDir, 'rows.jsonl'));
+}
+
 export async function readRunSummary(outputDir: string, runId: string): Promise<RunSummary | null> {
   try {
     const raw = await readFile(join(outputDir, runId, 'meta.json'), 'utf8');

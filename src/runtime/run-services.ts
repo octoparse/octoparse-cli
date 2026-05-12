@@ -8,6 +8,7 @@ const CAPTCHA_SUCCESS = 1;
 const PROXY_OK = 0;
 const PROXY_TYPE_STRONG = 1;
 const PROXY_TYPE_CUSTOM = 2;
+const ACTION_IP_TYPE_NONE = 1;
 const PROXY_CBC_KEY = Int8Array.from([
   208, 65, 67, 197, 238, 141, 26, 136, 75, 77, 13, 73, 107, 74, 134, 35, 84, 223, 178, 60, 35, 233, 128, 49, 22, 213, 143, 180, 6, 147, 183, 115
 ]);
@@ -72,7 +73,7 @@ export async function resolveProxy(task: TaskDefinition, lotId: string, webPageU
     const proxy = parseCustomProxy(stringValue(proxies[0]));
     return proxy ? { proxyIp: proxy } : undefined;
   }
-  if (fromType !== PROXY_TYPE_STRONG) return undefined;
+  if (fromType !== PROXY_TYPE_STRONG && !taskHasStrongProxyAction(task.xml)) return undefined;
 
   const areaId = numberValue(getRecord(settings?.strongIpProxySettings)?.areaId) ?? -1;
   const result = await apiRequest({
@@ -117,11 +118,29 @@ export async function resolveProxy(task: TaskDefinition, lotId: string, webPageU
   };
 }
 
+function taskHasStrongProxyAction(xml: string): boolean {
+  const matches = xml.matchAll(/EnableSwitchIp=(["'])true\1/gi);
+  for (const match of matches) {
+    const start = match.index ?? 0;
+    const end = Math.min(xml.length, start + 1000);
+    const actionConfig = xml.slice(start, end);
+    const ipType = Number(attributeValue(actionConfig, 'IPType') ?? ACTION_IP_TYPE_NONE);
+    if (ipType !== ACTION_IP_TYPE_NONE) return true;
+  }
+  return false;
+}
+
+function attributeValue(tag: string, name: string): string | undefined {
+  const pattern = new RegExp(`${name}=(["'])(.*?)\\1`, 'i');
+  return tag.match(pattern)?.[2];
+}
+
 export function describeProxyForLog(proxy: ProxyResponse | undefined): string {
-  if (!proxy) return 'none';
+  const ip = proxy?.proxyIp.ip;
+  if (!ip) return 'none';
   const { proxyIp } = proxy;
   return [
-    `ip=${maskProxyHost(proxyIp.ip)}`,
+    `ip=${maskProxyHost(ip)}`,
     `port=${proxyIp.port ?? ''}`,
     `protocol=${proxyIp.protocol ?? ''}`,
     `auth=${proxyIp.account ? 'yes' : 'no'}`,

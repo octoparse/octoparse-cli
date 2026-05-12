@@ -79,7 +79,7 @@ export interface ProxyRequest {
 
 export interface ProxyResponse {
   proxyIp: {
-    ip: string;
+    ip?: string;
     port?: number;
     account?: string;
     password?: string;

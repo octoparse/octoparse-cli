@@ -95,6 +95,9 @@ octoparse local status <taskId>
 octoparse local stop <taskId>
 ```
 
+Note: local run status is tracked by this CLI only and is not synchronized with
+the Octoparse desktop client status.
+
 Export data:
 
 ```bash

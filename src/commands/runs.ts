@@ -8,6 +8,7 @@ import {
   listActiveRuns,
   readActiveRunSummary,
   readJsonLines,
+  runArtifactExists,
   readRunSummary,
   runMetaExists
 } from '../runtime/local-runs.js';
@@ -117,7 +118,7 @@ export async function runsLogs(args: string[]): Promise<number> {
   }
 
   const runDir = join(outputDir, runId);
-  if (!runMetaExists(outputDir, runId)) {
+  if (!runArtifactExists(outputDir, runId)) {
     return printMissingRun(json, runId);
   }
   const logs = await readJsonLines(join(runDir, 'logs.jsonl'), limit);
@@ -142,7 +143,7 @@ export async function runsData(args: string[]): Promise<number> {
   }
 
   const runDir = join(outputDir, runId);
-  if (!runMetaExists(outputDir, runId)) {
+  if (!runArtifactExists(outputDir, runId)) {
     return printMissingRun(json, runId);
   }
   const rows = await readJsonLines(join(runDir, 'rows.jsonl'), limit);
@@ -175,7 +176,7 @@ export async function runsExport(args: string[]): Promise<number> {
   }
 
   const runDir = join(outputDir, runId);
-  if (!runMetaExists(outputDir, runId)) {
+  if (!runArtifactExists(outputDir, runId)) {
     return printMissingRun(json, runId);
   }
   const rows = await readJsonLines(join(runDir, 'rows.jsonl'), Number.MAX_SAFE_INTEGER) as Record<string, unknown>[];
