@@ -81,8 +81,28 @@ export interface AccountInfo {
   registerDate?: string;
   accountBalance?: number;
   isEnterprise?: boolean;
+  isFreeAccount?: boolean;
   enterpriseUser?: unknown;
   nonTrialAccountLevel?: number;
+  [key: string]: unknown;
+}
+
+export interface QuantityLimit {
+  freeCount?: number;
+  professionCount?: number;
+  ultimateCount?: number;
+  ultimatePlusCount?: number;
+  maxCount?: number;
+  basicCount?: number;
+  personal?: number;
+  group?: number;
+  business?: number;
+  businessMember?: number;
+  [key: string]: unknown;
+}
+
+export interface QuantityLimitSettings {
+  localRunLimit?: QuantityLimit;
   [key: string]: unknown;
 }
 
@@ -199,6 +219,20 @@ export async function fetchAccountInfo(options: { apiKey: string; baseUrl?: stri
   return {
     ...result,
     data: account as AccountInfo
+  };
+}
+
+export async function fetchQuantityLimitSettings(options: { apiKey: string; baseUrl?: string }): Promise<ApiResult<QuantityLimitSettings>> {
+  const result = await apiResult<QuantityLimitSettings>({
+    apiKey: options.apiKey,
+    baseUrl: options.baseUrl,
+    endpoint: '/api/account/getAvailableQuantityLimitSettings',
+    method: 'GET'
+  });
+  const settings = getRecord(result.data);
+  return {
+    ...result,
+    data: (settings ?? {}) as QuantityLimitSettings
   };
 }
 

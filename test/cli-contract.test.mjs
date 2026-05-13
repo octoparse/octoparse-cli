@@ -9,6 +9,7 @@ import { authCommand } from '../dist/commands/auth.js';
 import { cloudHistory } from '../dist/commands/cloud.js';
 import { ApiRequestError, fetchAccountInfo, validateApiKey } from '../dist/runtime/api-client.js';
 import { localDataExportCommand } from '../dist/commands/run.js';
+import { resolveProxy, solveCaptcha } from '../dist/runtime/run-services.js';
 import { formatTaskListLine } from '../dist/commands/task.js';
 import { TaskDefinitionProvider } from '../dist/runtime/task-definition-provider.js';
 
@@ -377,6 +378,108 @@ test('cloud history enriches lots with exportable unique row counts', async () =
   } finally {
     globalThis.fetch = originalFetch;
     console.log = originalLog;
+    if (originalApiKey === undefined) delete process.env.OCTO_ENGINE_API_KEY;
+    else process.env.OCTO_ENGINE_API_KEY = originalApiKey;
+  }
+});
+
+test('runtime proxy requests use OP proxy consumption type', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.OCTO_ENGINE_API_KEY;
+  process.env.OCTO_ENGINE_API_KEY = 'dummy';
+  let seenUrl;
+  globalThis.fetch = async (url) => {
+    seenUrl = new URL(String(url));
+    return new Response(JSON.stringify({
+      data: {
+        status: 0,
+        ip: '127.0.0.1',
+        port: 8080,
+        protocol: 1
+      },
+      error: 'success'
+    }), {
+      status: 200,
+      statusText: 'OK',
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+
+  try {
+    await resolveProxy({
+      taskId: 'proxy-task',
+      taskName: 'Proxy Task',
+      xml: '',
+      xoml: '',
+      fieldNames: [],
+      brokerSettings: {
+        ipProxySettings: {
+          ipProxyFromType: 1,
+          strongIpProxySettings: { areaId: 88 }
+        }
+      }
+    }, 'lot-1', 'https://example.com/page');
+    assert.equal(seenUrl.pathname, '/api/HttpProxy');
+    assert.equal(seenUrl.searchParams.get('taskId'), 'proxy-task');
+    assert.equal(seenUrl.searchParams.get('LotNo'), 'lot-1');
+    assert.equal(seenUrl.searchParams.get('areaId'), '88');
+    assert.equal(seenUrl.searchParams.get('consumptionType'), '2');
+    assert.equal(seenUrl.searchParams.get('url'), 'https://example.com/page');
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) delete process.env.OCTO_ENGINE_API_KEY;
+    else process.env.OCTO_ENGINE_API_KEY = originalApiKey;
+  }
+});
+
+test('runtime image captcha uses OP ImageCaptcha payload', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.OCTO_ENGINE_API_KEY;
+  process.env.OCTO_ENGINE_API_KEY = 'dummy';
+  const seen = [];
+  globalThis.fetch = async (url, init) => {
+    seen.push({
+      url: new URL(String(url)),
+      headers: init?.headers ?? {},
+      body: String(init?.body ?? '')
+    });
+    return new Response(JSON.stringify({
+      data: {
+        status: 1,
+        captcha: 'decoded-text'
+      },
+      error: 'success'
+    }), {
+      status: 200,
+      statusText: 'OK',
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+
+  try {
+    const answer = await solveCaptcha(
+      { captchaType: 'image', image: 'base64-image' },
+      {
+        taskId: 'captcha-task',
+        taskName: 'Captcha Task',
+        xml: '',
+        xoml: '',
+        fieldNames: []
+      },
+      'lot-2'
+    );
+    assert.deepEqual(answer, { token: 'decoded-text' });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].url.pathname, '/api/Captcha/ImageCaptcha');
+    assert.equal(seen[0].headers['Content-Type'], 'application/json');
+    assert.deepEqual(JSON.parse(seen[0].body), {
+      TaskId: 'captcha-task',
+      ImageBase64: 'base64-image',
+      CaptchaType: 62,
+      LotNo: 'lot-2'
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
     if (originalApiKey === undefined) delete process.env.OCTO_ENGINE_API_KEY;
     else process.env.OCTO_ENGINE_API_KEY = originalApiKey;
   }

@@ -6,6 +6,8 @@ import type { CaptchaRequest, ProxyResponse, TaskDefinition } from '../types.js'
 
 const CAPTCHA_SUCCESS = 1;
 const PROXY_OK = 0;
+const OP_PROXY_CONSUMPTION_TYPE = 2;
+const OP_IMAGE_CAPTCHA_TYPE = 62;
 const PROXY_TYPE_STRONG = 1;
 const PROXY_TYPE_CUSTOM = 2;
 const ACTION_IP_TYPE_NONE = 1;
@@ -84,7 +86,7 @@ export async function resolveProxy(task: TaskDefinition, lotId: string, webPageU
       count: '1',
       LotNo: lotId,
       areaId: String(areaId),
-      consumptionType: '1',
+      consumptionType: String(OP_PROXY_CONSUMPTION_TYPE),
       ...(webPageUrl ? { url: webPageUrl } : {})
     }
   });
@@ -162,17 +164,25 @@ async function solveTokenCaptcha(type: number, request: CaptchaRequest, task: Ta
   if (type === 0 || type === 1) {
     const image = stringValue(request.image ?? recordValue(request.data, 'image'));
     if (!image) throw new Error('image captcha request is missing image');
-    const body = {
+    const result = await postCaptcha('/api/Captcha/ImageCaptcha', {
+      TaskId: task.taskId,
+      ImageBase64: image,
+      CaptchaType: OP_IMAGE_CAPTCHA_TYPE,
+      LotNo: lotId
+    });
+    return result.captcha;
+  }
+
+  if (type === 15) {
+    const image = stringValue(request.image ?? recordValue(request.data, 'image'));
+    if (!image) throw new Error('image captcha request is missing image');
+    const result = await postCaptcha('/api/Captcha/DoCaptchaV2', {
       TaskId: task.taskId,
       Img1: image,
       SourceFileBase64Str: image,
       CaptchaType: 15,
       ExtraContent: request.url ? domainUrl(request.url) : '',
       LotNo: lotId
-    };
-    const result = await postCaptchaWithFallback('/api/Captcha/DoCaptchaV2', body, {
-      ...body,
-      CaptchaType: type
     }, 'form');
     return result.captcha;
   }
@@ -247,26 +257,6 @@ async function postCaptcha(endpoint: string, body: Record<string, unknown>, body
     status,
     captcha: stringValue(data?.captcha)
   };
-}
-
-async function postCaptchaWithFallback(
-  endpoint: string,
-  body: Record<string, unknown>,
-  fallbackBody: Record<string, unknown>,
-  bodyFormat: 'json' | 'form' = 'json'
-): Promise<{ status: number; captcha: string }> {
-  try {
-    return await postCaptcha(endpoint, body, bodyFormat);
-  } catch (error) {
-    if (isParameterError(error)) {
-      return await postCaptcha(endpoint, fallbackBody, bodyFormat);
-    }
-    throw error;
-  }
-}
-
-function isParameterError(error: unknown): boolean {
-  return error instanceof ApiRequestError && error.status === 400 && /param_error|Parameter value invalid/i.test(error.body ?? '');
 }
 
 async function apiRequest(options: {

@@ -231,6 +231,7 @@ function readSecretFromTty(prompt: string): Promise<string> {
     const cleanup = () => {
       stdin.off('data', handleData);
       if (stdin.setRawMode) stdin.setRawMode(wasRaw);
+      stdin.pause();
       stdout.write('\n');
     };
 

@@ -2,9 +2,9 @@ import { spawn } from 'node:child_process';
 import { mkdir, open, readFile, writeFile, type FileHandle } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { hasFlag, parsePositiveInt, valueAfter } from '../cli/args.js';
-import { printEnvelope, printJsonLine, printUsageError } from '../cli/output.js';
-import { resolveCNLocalRunPolicy } from '../runtime/account-capabilities.js';
-import { ApiRequestError, fetchAccountInfo } from '../runtime/api-client.js';
+import { printEnvelope, printUsageError } from '../cli/output.js';
+import { resolveOPLocalRunPolicy } from '../runtime/account-capabilities.js';
+import { ApiRequestError, fetchAccountInfo, fetchQuantityLimitSettings } from '../runtime/api-client.js';
 import { appendJsonLine, ensureRunDir, writeRunSummary } from '../runtime/artifacts.js';
 import { resolveAuth } from '../runtime/auth.js';
 import { EngineHost } from '../runtime/engine-host.js';
@@ -96,11 +96,18 @@ async function enforceLocalRunLimit(args: string[], options: RunOptions): Promis
     const auth = await resolveAuth();
     if (!auth.apiKey) return EXIT_OK;
 
-    const account = await fetchAccountInfo({
-      apiKey: auth.apiKey,
-      baseUrl: valueAfter(args, '--api-base-url')
-    });
-    const policy = resolveCNLocalRunPolicy(account.data);
+    const baseUrl = valueAfter(args, '--api-base-url');
+    const [account, limits] = await Promise.all([
+      fetchAccountInfo({
+        apiKey: auth.apiKey,
+        baseUrl
+      }),
+      fetchQuantityLimitSettings({
+        apiKey: auth.apiKey,
+        baseUrl
+      })
+    ]);
+    const policy = resolveOPLocalRunPolicy(account.data, limits.data);
     if (policy.maxActiveLocalRuns === undefined || policy.maxActiveLocalRuns === null) {
       return EXIT_OK;
     }
@@ -210,7 +217,7 @@ async function executeTask(
   let savedRows = 0;
   let rowLimitReached = false;
   let stopReason: string | undefined;
-  let restoreRuntimeConsole = maybeSuppressRuntimeConsole(options);
+  const runtimeConsole = maybeSuppressRuntimeConsole(options);
   const detachedBootstrapDir = process.env[DETACHED_BOOTSTRAP_DIR_ENV];
   const startedAt = new Date().toISOString();
 
@@ -268,20 +275,20 @@ async function executeTask(
             host.pause();
             runStatus = 'paused';
             appendRunArtifact('events.jsonl', { event: 'run.paused', runId: event.runId, taskId: event.taskId });
-            if (options.jsonl) printJsonLine({ event: 'run.paused', runId: event.runId, taskId: event.taskId });
+            if (options.jsonl) printRunJsonLine(runtimeConsole, { event: 'run.paused', runId: event.runId, taskId: event.taskId });
             return runStatus;
           }
           if (command === 'resume') {
             host.resume();
             runStatus = 'running';
             appendRunArtifact('events.jsonl', { event: 'run.resumed', runId: event.runId, taskId: event.taskId });
-            if (options.jsonl) printJsonLine({ event: 'run.resumed', runId: event.runId, taskId: event.taskId });
+            if (options.jsonl) printRunJsonLine(runtimeConsole, { event: 'run.resumed', runId: event.runId, taskId: event.taskId });
             return runStatus;
           }
           host.stop();
           runStatus = 'stopping';
           appendRunArtifact('events.jsonl', { event: 'run.stopping', runId: event.runId, taskId: event.taskId });
-          if (options.jsonl) printJsonLine({ event: 'run.stopping', runId: event.runId, taskId: event.taskId });
+          if (options.jsonl) printRunJsonLine(runtimeConsole, { event: 'run.stopping', runId: event.runId, taskId: event.taskId });
           return runStatus;
         }
       });
@@ -290,7 +297,7 @@ async function executeTask(
     });
     void controlServerReady.catch(() => undefined);
     appendRunArtifact('events.jsonl', { event: 'run.started', ...event });
-    if (options.jsonl) printJsonLine({ event: 'run.started', ...event });
+    if (options.jsonl) printRunJsonLine(runtimeConsole, { event: 'run.started', ...event });
   });
 
   host.on('row', (event) => {
@@ -309,7 +316,7 @@ async function executeTask(
     const rowEvent = { ...event, total: savedRows };
     appendRunArtifact('rows.jsonl', event.data);
     appendRunArtifact('events.jsonl', { event: 'row', ...rowEvent });
-    if (options.jsonl) printJsonLine({ event: 'row', ...rowEvent });
+    if (options.jsonl) printRunJsonLine(runtimeConsole, { event: 'row', ...rowEvent });
 
     if (options.maxRows !== undefined && savedRows >= options.maxRows && !rowLimitReached) {
       rowLimitReached = true;
@@ -325,7 +332,7 @@ async function executeTask(
         total: savedRows
       });
       if (options.jsonl) {
-        printJsonLine({
+        printRunJsonLine(runtimeConsole, {
           event: 'run.stopping',
           runId: event.runId,
           taskId,
@@ -341,20 +348,20 @@ async function executeTask(
   host.on('log', (event) => {
     appendRunArtifact('logs.jsonl', event);
     appendRunArtifact('events.jsonl', { event: 'log', ...event });
-    if (options.jsonl) printJsonLine({ event: 'log', ...event });
+    if (options.jsonl) printRunJsonLine(runtimeConsole, { event: 'log', ...event });
     else if (!options.json && (options.debugBridge || event.message.startsWith('runtime.'))) {
-      console.error(event.message);
+      runtimeConsole.stderr(event.message);
     }
   });
 
   host.on('captcha', (event) => {
     appendRunArtifact('events.jsonl', { event: 'captcha', ...event });
-    if (options.jsonl) printJsonLine({ event: 'captcha', ...event });
+    if (options.jsonl) printRunJsonLine(runtimeConsole, { event: 'captcha', ...event });
   });
 
   host.on('proxy', (event) => {
     appendRunArtifact('events.jsonl', { event: 'proxy', ...event });
-    if (options.jsonl) printJsonLine({ event: 'proxy', ...event });
+    if (options.jsonl) printRunJsonLine(runtimeConsole, { event: 'proxy', ...event });
   });
 
   try {
@@ -368,7 +375,7 @@ async function executeTask(
           process.exit(130);
         }
         if (!options.json && !options.jsonl) {
-          console.error('\nReceived Ctrl+C, stopping extraction...');
+          runtimeConsole.stderr('\nReceived Ctrl+C, stopping extraction...');
         }
         runStatus = 'stopping';
         stopReason = 'interrupt';
@@ -420,8 +427,6 @@ async function executeTask(
     await appendJsonLine(join(runDir, 'events.jsonl'), { event: 'run.stopped', ...finalSummary, outputDir: runDir });
     await closeControlServer();
     await host.close();
-    restoreRuntimeConsole();
-    restoreRuntimeConsole = noop;
     if (detachedBootstrapDir) {
       await writeDetachedBootstrap(detachedBootstrapDir, {
         status: finalSummary.status,
@@ -435,16 +440,16 @@ async function executeTask(
     }
 
     if (options.jsonl) {
-      printJsonLine({ event: 'run.stopped', ...finalSummary, outputDir: runDir });
+      printRunJsonLine(runtimeConsole, { event: 'run.stopped', ...finalSummary, outputDir: runDir });
     } else if (options.json) {
-      printEnvelope(true, { ...finalSummary, outputDir: runDir });
+      printRunEnvelope(runtimeConsole, true, { ...finalSummary, outputDir: runDir });
     } else {
-      console.log(`Run completed: ${finalSummary.runId}`);
-      console.log(`Task: ${finalSummary.taskId}`);
-      console.log(`Rows: ${finalSummary.total}`);
-      if (finalSummary.stopReason === 'max_rows') console.log(`Stop reason: max_rows (${finalSummary.maxRows})`);
-      console.log(`Artifacts: ${runDir}`);
-      console.log(`View data: ${localDataExportCommand(finalSummary)}`);
+      runtimeConsole.stdout(`Run completed: ${finalSummary.runId}`);
+      runtimeConsole.stdout(`Task: ${finalSummary.taskId}`);
+      runtimeConsole.stdout(`Rows: ${finalSummary.total}`);
+      if (finalSummary.stopReason === 'max_rows') runtimeConsole.stdout(`Stop reason: max_rows (${finalSummary.maxRows})`);
+      runtimeConsole.stdout(`Artifacts: ${runDir}`);
+      runtimeConsole.stdout(`View data: ${localDataExportCommand(finalSummary)}`);
     }
     return EXIT_OK;
   } catch (error) {
@@ -467,8 +472,6 @@ async function executeTask(
       await closeControlServer();
     }
     await host.close();
-    restoreRuntimeConsole();
-    restoreRuntimeConsole = noop;
     if (detachedBootstrapDir) {
       await writeDetachedBootstrap(detachedBootstrapDir, {
         status: 'failed',
@@ -480,9 +483,9 @@ async function executeTask(
       }).catch(() => undefined);
     }
     if (options.json || options.jsonl) {
-      printEnvelope(false, undefined, 'ENGINE_RUN_FAILED', message);
+      printRunEnvelope(runtimeConsole, false, undefined, 'ENGINE_RUN_FAILED', message);
     } else {
-      console.error(`Run failed: ${message}`);
+      runtimeConsole.stderr(`Run failed: ${message}`);
     }
     return EXIT_RUNTIME_FAILED;
   }
@@ -642,25 +645,66 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms));
 }
 
-function maybeSuppressRuntimeConsole(options: RunOptions): () => void {
-  if (process.platform !== 'win32') return noop;
-  if (options.debugBridge || process.env.OCTOPARSE_SHOW_RUNTIME_STDIO === '1') return noop;
+interface RuntimeConsole {
+  stdout(line: string): void;
+  stderr(line: string): void;
+}
+
+function maybeSuppressRuntimeConsole(options: RunOptions): RuntimeConsole {
+  if (options.debugBridge || process.env.OCTOPARSE_SHOW_RUNTIME_STDIO === '1') return nativeRuntimeConsole();
 
   const originalStdoutWrite = process.stdout.write.bind(process.stdout);
   const originalStderrWrite = process.stderr.write.bind(process.stderr);
-  const suppressStdout = !options.jsonl;
 
-  if (suppressStdout) {
-    process.stdout.write = ((..._args: unknown[]) => true) as typeof process.stdout.write;
-  }
+  process.stdout.write = ((..._args: unknown[]) => true) as typeof process.stdout.write;
   process.stderr.write = ((..._args: unknown[]) => true) as typeof process.stderr.write;
 
-  return () => {
-    if (suppressStdout) process.stdout.write = originalStdoutWrite as typeof process.stdout.write;
-    process.stderr.write = originalStderrWrite as typeof process.stderr.write;
+  return {
+    stdout(line: string) {
+      originalStdoutWrite(`${line}\n`);
+    },
+    stderr(line: string) {
+      originalStderrWrite(`${line}\n`);
+    }
   };
 }
 
-function noop(): void {
-  // Intentionally empty.
+function printRunJsonLine(runtimeConsole: RuntimeConsole, value: unknown): void {
+  runtimeConsole.stdout(JSON.stringify(value));
+}
+
+function nativeRuntimeConsole(): RuntimeConsole {
+  return {
+    stdout(line: string) {
+      console.log(line);
+    },
+    stderr(line: string) {
+      console.error(line);
+    }
+  };
+}
+
+function printRunEnvelope<T>(
+  runtimeConsole: RuntimeConsole,
+  ok: true,
+  data: T
+): void;
+function printRunEnvelope(
+  runtimeConsole: RuntimeConsole,
+  ok: false,
+  data: undefined,
+  code: string,
+  message: string
+): void;
+function printRunEnvelope<T>(
+  runtimeConsole: RuntimeConsole,
+  ok: boolean,
+  data?: T,
+  code?: string,
+  message?: string
+): void {
+  const payload = ok
+    ? { ok: true, data }
+    : { ok: false, error: { code: code ?? 'ERROR', message: message ?? 'Unknown error' } };
+  runtimeConsole.stdout(JSON.stringify(payload));
 }

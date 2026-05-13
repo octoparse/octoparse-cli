@@ -165,8 +165,10 @@ function requiresAuthentication(command: string): boolean {
 }
 
 main(process.argv.slice(2))
-  .then((code) => process.exit(code))
+  .then((code) => {
+    process.exitCode = code;
+  })
   .catch((error) => {
     console.error(error instanceof Error ? error.message : String(error));
-    process.exit(EXIT_OPERATION_FAILED);
+    process.exitCode = EXIT_OPERATION_FAILED;
   });

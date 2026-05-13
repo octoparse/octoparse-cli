@@ -136,6 +136,21 @@ export class EngineHost extends EventEmitter {
       void this.resolveProxy(workflow, task, lotId, options, runId);
     });
 
+    const requestCloudflareSettingsEvent = stringValue((WorkflowEvents as Record<string, unknown>).RequestCloudflareSettings);
+    if (requestCloudflareSettingsEvent) {
+      workflow.on(requestCloudflareSettingsEvent, () => {
+        const isAutoCloudflare = Boolean(readNested(task.brokerSettings, ['captchaSettings', 'isAutoCloudflare']));
+        if (typeof workflow.deliverCloudflareSettings === 'function') {
+          workflow.deliverCloudflareSettings({ isAutoCloudflare });
+        }
+        this.emit('log', {
+          runId,
+          level: 'debug',
+          message: `cloudflare settings delivered isAutoCloudflare=${isAutoCloudflare}`
+        });
+      });
+    }
+
     workflow.on(WorkflowEvents.CollectProxyLog, (message: any) => {
       const proxyInfo = Array.isArray(message?.data) ? message.data[0] : message?.data;
       void collectProxyLog(proxyInfo).catch((error) => {
@@ -352,7 +367,7 @@ function normalizeCaptchaType(value: unknown): CaptchaRequest['captchaType'] {
     case 0:
       return 'image';
     case 1:
-      return 'unknown';
+      return 'image';
     case 2:
       return 'slider';
     case 3:
@@ -455,6 +470,19 @@ function defaultBrokerSettings(): Record<string, unknown> {
       isAutoCloudflare: false
     }
   };
+}
+
+function readNested(value: unknown, path: string[]): unknown {
+  let current = value;
+  for (const key of path) {
+    if (!current || typeof current !== 'object' || Array.isArray(current)) return undefined;
+    current = (current as Record<string, unknown>)[key];
+  }
+  return current;
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value : '';
 }
 
 function mergePlain<T extends Record<string, unknown>>(base: T, patch: unknown): T {

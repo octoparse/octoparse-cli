@@ -1,6 +1,6 @@
 {
   "name": "octoparse-cli",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "Standalone Octoparse engine CLI that runs local extraction without the Electron client.",
   "private": false,
   "type": "module",
@@ -42,7 +42,7 @@
     "@types/lodash": "^4.14.0",
     "@types/lodash-es": "4.17.12",
     "async": "^2.6.4",
-    "axios": "1.8.4",
+    "axios": "1.15.0",
     "bpmn-moddle": "^0.14.1",
     "debug": "^2.6.9",
     "fast-xml-parser": "4.5.0",
