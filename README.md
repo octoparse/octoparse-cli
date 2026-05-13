@@ -269,10 +269,3 @@ Clean stale local control state:
 octoparse local cleanup
 octoparse runs cleanup
 ```
-
-## More documentation
-
-- Agent and automation contract: [`docs/AGENT_USAGE.md`](docs/AGENT_USAGE.md)
-- JSON schemas: [`docs/SCHEMAS.md`](docs/SCHEMAS.md)
-- CLI design notes: [`docs/CLI_DESIGN.md`](docs/CLI_DESIGN.md)
-- Publishing notes: [`docs/PUBLISHING.md`](docs/PUBLISHING.md)
