@@ -1,4 +1,5 @@
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
+import { readFile, readdir } from 'node:fs/promises';
 import { firstPositionalArg, hasFlag, valueAfter } from '../cli/args.js';
 import { printEnvelope, printUsageError } from '../cli/output.js';
 import { localExport, localHistory } from './data.js';
@@ -51,6 +52,7 @@ async function localStatus(args: string[]): Promise<number> {
   const actualSocketPath = state ? resolveRunControlSocketPath(state) : null;
   const total = state ? await countRunRows(state.outputDir, state.runId) : 0;
   const outputDir = resolve(state?.outputDir ?? valueAfter(args, '--output') ?? defaultRunsDir());
+  const bootstrap = !alive ? await findLatestStartingDetachedBootstrap(outputDir, taskId) : null;
   const staleRun = state && !alive ? await preserveStaleRunSummary(state, total) : null;
   const lastRun = staleRun ?? await findLastLocalRun(outputDir, taskId);
   const currentRun = alive && state ? controlStateToPublicRun(state, total, actualSocketPath) : null;
@@ -76,6 +78,20 @@ async function localStatus(args: string[]): Promise<number> {
           lastRunId: state.runId,
           total
         }
+      : bootstrap
+        ? {
+            taskId,
+            active: true,
+            status: 'starting',
+            currentRun: null,
+            lastRun,
+            detached: true,
+            pid: bootstrap.pid,
+            bootstrapDir: bootstrap.dir,
+            stdout: bootstrap.stdout,
+            stderr: bootstrap.stderr,
+            updatedAt: bootstrap.updatedAt
+          }
       : {
           taskId,
           active: false,
@@ -102,11 +118,68 @@ async function localStatus(args: string[]): Promise<number> {
     console.log(`Cleaned stale local state from previous run: ${state.runId}`);
     printLastRun(lastRun);
     console.log(`Rows: ${total}`);
+  } else if (bootstrap) {
+    console.log(`${taskId}  starting`);
+    if (bootstrap.pid) console.log(`PID: ${bootstrap.pid}`);
+    console.log(`Bootstrap: ${bootstrap.dir}`);
+    if (bootstrap.stdout) console.log(`Stdout: ${bootstrap.stdout}`);
+    if (bootstrap.stderr) console.log(`Stderr: ${bootstrap.stderr}`);
   } else {
     console.log(`${taskId}  idle`);
     printLastRun(lastRun);
   }
   return EXIT_OK;
+}
+
+interface DetachedBootstrap {
+  dir: string;
+  taskId?: string;
+  pid?: number;
+  status?: string;
+  stdout?: string;
+  stderr?: string;
+  updatedAt?: string;
+}
+
+async function findLatestStartingDetachedBootstrap(outputDir: string, taskId: string): Promise<DetachedBootstrap | null> {
+  let entries: string[] = [];
+  try {
+    entries = await readdir(outputDir);
+  } catch {
+    return null;
+  }
+
+  const candidates: DetachedBootstrap[] = [];
+  for (const entry of entries) {
+    if (!entry.startsWith('.detach_')) continue;
+    const dir = join(outputDir, entry);
+    const bootstrap = await readDetachedBootstrap(dir);
+    if (!bootstrap || bootstrap.taskId !== taskId) continue;
+    if (bootstrap.status !== 'spawning' && bootstrap.status !== 'spawned' && bootstrap.status !== 'starting') continue;
+    if (!isProcessAlive(bootstrap.pid)) continue;
+    candidates.push(bootstrap);
+  }
+  candidates.sort((a, b) => String(b.updatedAt ?? '').localeCompare(String(a.updatedAt ?? '')));
+  return candidates[0] ?? null;
+}
+
+async function readDetachedBootstrap(dir: string): Promise<DetachedBootstrap | null> {
+  try {
+    const bootstrap = JSON.parse(await readFile(join(dir, 'bootstrap.json'), 'utf8')) as DetachedBootstrap;
+    return { ...bootstrap, dir };
+  } catch {
+    return null;
+  }
+}
+
+function isProcessAlive(pid: unknown): pid is number {
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function preserveStaleRunSummary(state: Awaited<ReturnType<typeof readTaskControlState>>, total: number): Promise<RunSummary | null> {

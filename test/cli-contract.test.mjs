@@ -657,6 +657,48 @@ test('local status reports idle with last run summary', async () => {
   assert.match(humanResult.stdout, /Last run: stopped  rows=2  lot=lot_20260429010101/);
 });
 
+test('local status reports starting for live detached bootstrap before control channel is ready', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'octo-local-status-detach-'));
+  const home = join(root, 'home');
+  const output = join(root, 'runs');
+  const bootstrapDir = join(output, '.detach_detach-starting-task_20260429010101');
+  await mkdir(bootstrapDir, { recursive: true });
+  await writeFile(join(bootstrapDir, 'bootstrap.json'), `${JSON.stringify({
+    taskId: 'detach-starting-task',
+    pid: process.pid,
+    status: 'starting',
+    stdout: join(bootstrapDir, 'stdout.log'),
+    stderr: join(bootstrapDir, 'stderr.log'),
+    updatedAt: '2026-04-29T01:01:01.000Z'
+  }, null, 2)}\n`);
+
+  const jsonResult = await runCli([
+    'local',
+    'status',
+    'detach-starting-task',
+    '--output',
+    output,
+    '--json'
+  ], { apiKey: 'dummy', home });
+  const payload = assertJsonSuccess(jsonResult);
+  assert.equal(payload.data.status, 'starting');
+  assert.equal(payload.data.active, true);
+  assert.equal(payload.data.detached, true);
+  assert.equal(payload.data.pid, process.pid);
+  assert.equal(payload.data.bootstrapDir, bootstrapDir);
+
+  const humanResult = await runCli([
+    'local',
+    'status',
+    'detach-starting-task',
+    '--output',
+    output
+  ], { apiKey: 'dummy', home });
+  assert.equal(humanResult.code, 0, formatCliResult(humanResult));
+  assert.match(humanResult.stdout, /detach-starting-task  starting/);
+  assert.match(humanResult.stdout, /Bootstrap:/);
+});
+
 test('local history reports row count from rows artifact', async () => {
   const root = await mkdtemp(join(tmpdir(), 'octo-history-rows-'));
   const output = join(root, 'runs');

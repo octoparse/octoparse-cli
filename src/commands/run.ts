@@ -174,6 +174,13 @@ async function startDetachedRun(taskId: string, args: string[], options: RunOpti
   }
 
   const state = startup.state;
+  if (!state) {
+    await writeDetachedBootstrap(bootstrap.dir, {
+      pid: child.pid,
+      status: 'starting',
+      updatedAt: new Date().toISOString()
+    });
+  }
   const data = {
     taskId,
     detached: true,

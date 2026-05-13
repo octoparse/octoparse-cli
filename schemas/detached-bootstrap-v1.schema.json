@@ -12,7 +12,7 @@
     },
     "status": {
       "type": "string",
-      "enum": ["spawning", "spawned", "running", "completed", "failed", "stopped"]
+      "enum": ["spawning", "spawned", "starting", "running", "completed", "failed", "stopped"]
     },
     "runId": { "type": "string" },
     "lotId": { "type": "string" },
