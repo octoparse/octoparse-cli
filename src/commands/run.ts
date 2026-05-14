@@ -455,7 +455,6 @@ async function executeTask(
       runtimeConsole.stdout(`Task: ${finalSummary.taskId}`);
       runtimeConsole.stdout(`Rows: ${finalSummary.total}`);
       if (finalSummary.stopReason === 'max_rows') runtimeConsole.stdout(`Stop reason: max_rows (${finalSummary.maxRows})`);
-      runtimeConsole.stdout(`Artifacts: ${runDir}`);
       runtimeConsole.stdout(`View data: ${localDataExportCommand(finalSummary)}`);
     }
     return EXIT_OK;
