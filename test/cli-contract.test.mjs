@@ -153,6 +153,67 @@ test('auth login verifies API key before saving', async () => {
   await assert.rejects(access(join(home, '.octoparse', 'credentials.json')));
 });
 
+test('auth status fails when no API key is configured', async () => {
+  const result = await runCli(['auth', 'status', '--json']);
+  const payload = assertJsonFailure(result, 'AUTH_REQUIRED');
+  assert.match(payload.error.message, /octoparse auth login/);
+});
+
+test('auth status fails when configured API key is invalid', async () => {
+  const result = await runCli(['auth', 'status', '--json'], {
+    apiKey: 'bad-key',
+    apiBaseUrl: 'http://127.0.0.1:9'
+  });
+  assertJsonFailure(result, 'AUTH_STATUS_FAILED');
+});
+
+test('auth status verifies configured API key before reporting success', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.OCTO_ENGINE_API_KEY;
+  const originalBaseUrl = process.env.OCTO_ENGINE_API_BASE_URL;
+  const originalLog = console.log;
+  const lines = [];
+  process.env.OCTO_ENGINE_API_KEY = 'test-key';
+  process.env.OCTO_ENGINE_API_BASE_URL = 'https://example.invalid';
+  globalThis.fetch = async (url, init) => {
+    assert.equal(String(url), 'https://example.invalid/api/account/getAccount');
+    assert.equal(init?.headers['x-api-key'], 'test-key');
+    return new Response(JSON.stringify({
+      isSuccess: true,
+      data: {
+        userId: 'u_status',
+        email: 'status@example.com'
+      }
+    }), {
+      status: 200,
+      statusText: 'OK',
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+  console.log = (...args) => {
+    lines.push(args.map((value) => String(value)).join(' '));
+  };
+
+  try {
+    const code = await authCommand('status', ['--json']);
+    assert.equal(code, 0);
+    assert.equal(lines.length, 1);
+    const payload = JSON.parse(lines[0]);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.data.authenticated, true);
+    assert.equal(payload.data.source, 'env');
+    assert.equal(payload.data.verified, true);
+    assert.equal(payload.data.apiBaseUrl, 'https://example.invalid');
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+    if (originalApiKey === undefined) delete process.env.OCTO_ENGINE_API_KEY;
+    else process.env.OCTO_ENGINE_API_KEY = originalApiKey;
+    if (originalBaseUrl === undefined) delete process.env.OCTO_ENGINE_API_BASE_URL;
+    else process.env.OCTO_ENGINE_API_BASE_URL = originalBaseUrl;
+  }
+});
+
 test('auth login accepts API key as a positional argument', async () => {
   const home = await mkdtemp(join(tmpdir(), 'octo-auth-arg-'));
   const originalHome = process.env.HOME;
@@ -518,7 +579,6 @@ test('agent-facing commands expose json envelopes for key contract paths', async
   const apiKey = 'dummy';
 
   const successCases = [
-    ['auth', 'status', '--json'],
     ['env', 'status', '--json'],
     ['doctor', '--chrome-path', process.execPath, '--json'],
     ['local', 'cleanup', '--json'],

@@ -161,27 +161,56 @@ function openUrl(url: string): Promise<void> {
 
 async function authStatus(args: string[]): Promise<number> {
   const json = hasFlag(args, '--json');
-  const { apiKey: _apiKey, ...status } = await resolveAuth();
-
-  if (json) {
-    printEnvelope(true, status);
-    return EXIT_OK;
-  }
-
-  if (!status.authenticated) {
+  const auth = await resolveAuth();
+  if (!auth.authenticated || !auth.apiKey) {
+    if (json) {
+      return printAuthRequired(true);
+    }
     console.log('Not authenticated');
     console.log('Run: octoparse auth login');
-    return EXIT_OK;
+    return EXIT_OPERATION_FAILED;
   }
 
-  console.log(`Authenticated: yes (${status.source})`);
-  console.log(`API key: ${status.keyPreview}`);
-  if (status.source === 'env') {
-    console.log(`Source: ${API_KEY_ENV}`);
-  } else {
-    console.log(`Credentials: ${status.credentialsFile}`);
+  try {
+    const validation = await validateApiKey({
+      apiKey: auth.apiKey,
+      baseUrl: valueAfter(args, '--api-base-url')
+    });
+    const { apiKey: _apiKey, ...status } = auth;
+    const result = {
+      ...status,
+      verified: true,
+      apiBaseUrl: validation.baseUrl
+    };
+
+    if (json) {
+      printEnvelope(true, result);
+      return EXIT_OK;
+    }
+
+    console.log(`Authenticated: yes (${status.source})`);
+    console.log('Verified: yes');
+    console.log(`API: ${validation.baseUrl}`);
+    console.log(`API key: ${status.keyPreview}`);
+    if (status.source === 'env') {
+      console.log(`Source: ${API_KEY_ENV}`);
+    } else {
+      console.log(`Credentials: ${status.credentialsFile}`);
+    }
+    return EXIT_OK;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const code = error instanceof ApiRequestError ? error.code : 'AUTH_STATUS_FAILED';
+    if (json) {
+      printEnvelope(false, undefined, code, message);
+    } else {
+      console.error(`Authentication failed: ${message}`);
+      if (code === 'AUTH_INVALID') {
+        console.error('Re-login with: octoparse auth login');
+      }
+    }
+    return EXIT_OPERATION_FAILED;
   }
-  return EXIT_OK;
 }
 
 async function authLogout(args: string[]): Promise<number> {
