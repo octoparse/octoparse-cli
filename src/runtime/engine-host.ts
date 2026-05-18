@@ -18,7 +18,13 @@ import { EventEmitter } from 'node:events';
 import { createRequire } from 'node:module';
 import type { CaptchaRequest, RunOptions, RunSummary, TaskDefinition } from '../types.js';
 import { BridgeHub } from './bridge-hub.js';
-import { collectProxyLog, describeProxyForLog, resolveProxy, solveCaptcha } from './run-services.js';
+import {
+  BillingRuntimeError,
+  collectProxyLog,
+  describeProxyForLog,
+  resolveProxy,
+  solveCaptcha
+} from './run-services.js';
 import { maybePrintRuntimeSecurityNotice } from './security-notice.js';
 
 const require = createRequire(import.meta.url);
@@ -33,11 +39,42 @@ export interface EngineHostEvents {
   'run.started': { runId: string; lotId: string; taskId: string; taskName: string };
   row: { runId: string; total: number; data: Record<string, unknown> };
   log: { runId: string; level: string; message: string };
-  captcha: { runId: string; request: CaptchaRequest };
-  proxy: { runId: string };
+  captcha: RuntimeCaptchaEvent;
+  proxy: RuntimeProxyEvent;
+  'billing.error': RuntimeBillingErrorEvent;
   'run.paused': { runId: string; taskId: string };
   'run.resumed': { runId: string; taskId: string };
   'run.stopped': RunSummary;
+}
+
+export interface RuntimeCaptchaEvent {
+  runId: string;
+  phase: 'requested' | 'resolved' | 'failed';
+  request?: CaptchaRequest;
+  captchaType?: CaptchaRequest['captchaType'];
+  numericCaptchaType?: number;
+  code?: string;
+  status?: number;
+  message?: string;
+}
+
+export interface RuntimeProxyEvent {
+  runId: string;
+  phase: 'requested' | 'resolving' | 'resolved' | 'sent' | 'failed';
+  taskId?: string;
+  lotId?: string;
+  hasProxy?: boolean;
+  code?: string;
+  status?: number;
+  message?: string;
+}
+
+export interface RuntimeBillingErrorEvent {
+  runId: string;
+  capability: 'captcha' | 'proxy';
+  code: string;
+  message: string;
+  status?: number;
 }
 
 export class EngineHost extends EventEmitter {
@@ -127,12 +164,23 @@ export class EngineHost extends EventEmitter {
 
     workflow.on(WorkflowEvents.Captcha, (message: any) => {
       const request = normalizeCaptchaRequest(message?.data ?? message);
-      this.emit('captcha', { runId, request });
+      this.emit('captcha', {
+        runId,
+        phase: 'requested',
+        request,
+        captchaType: request.captchaType,
+        numericCaptchaType: numericCaptchaType(request.captchaType)
+      } satisfies RuntimeCaptchaEvent);
       void this.resolveCaptcha(workflow, request, task, lotId, options, runId);
     });
 
     workflow.on(WorkflowEvents.GetProxy, () => {
-      this.emit('proxy', { runId });
+      this.emit('proxy', {
+        runId,
+        phase: 'requested',
+        taskId: task.taskId,
+        lotId
+      } satisfies RuntimeProxyEvent);
       void this.resolveProxy(workflow, task, lotId, options, runId);
     });
 
@@ -289,12 +337,38 @@ export class EngineHost extends EventEmitter {
         captchaType: numericCaptchaType(request.captchaType),
         ...answer
       });
+      this.emit('captcha', {
+        runId,
+        phase: 'resolved',
+        captchaType: request.captchaType,
+        numericCaptchaType: numericCaptchaType(request.captchaType),
+        status: statusValue(answer)
+      } satisfies RuntimeCaptchaEvent);
       this.emit('log', {
         runId,
         level: 'info',
         message: `captcha resolved type=${String(request.captchaType ?? 'unknown')}`
       });
     } catch (error) {
+      const runtimeError = normalizeRuntimeError(error);
+      this.emit('captcha', {
+        runId,
+        phase: 'failed',
+        captchaType: request.captchaType,
+        numericCaptchaType: numericCaptchaType(request.captchaType),
+        code: runtimeError.code,
+        status: runtimeError.status,
+        message: runtimeError.message
+      } satisfies RuntimeCaptchaEvent);
+      if (error instanceof BillingRuntimeError) {
+        this.emit('billing.error', {
+          runId,
+          capability: 'captcha',
+          code: error.code,
+          message: error.message,
+          status: error.status
+        } satisfies RuntimeBillingErrorEvent);
+      }
       this.emit('log', {
         runId,
         level: 'error',
@@ -314,24 +388,63 @@ export class EngineHost extends EventEmitter {
     runId: string
   ): Promise<void> {
     try {
+      this.emit('proxy', {
+        runId,
+        phase: 'resolving',
+        taskId: task.taskId,
+        lotId
+      } satisfies RuntimeProxyEvent);
       this.emit('log', {
         runId,
         level: 'debug',
         message: 'proxy resolving'
       });
       const answer = await resolveProxy(task, lotId);
+      this.emit('proxy', {
+        runId,
+        phase: 'resolved',
+        taskId: task.taskId,
+        lotId,
+        hasProxy: Boolean(answer?.proxyIp?.ip)
+      } satisfies RuntimeProxyEvent);
       this.emit('log', {
         runId,
         level: 'debug',
         message: `proxy resolved ${describeProxyForLog(answer)}`
       });
       workflow.sendProxy(answer ?? { proxyIp: {} });
+      this.emit('proxy', {
+        runId,
+        phase: 'sent',
+        taskId: task.taskId,
+        lotId,
+        hasProxy: Boolean(answer?.proxyIp?.ip)
+      } satisfies RuntimeProxyEvent);
       this.emit('log', {
         runId,
         level: 'info',
         message: answer ? 'proxy sent' : 'proxy sent none'
       });
     } catch (error) {
+      const runtimeError = normalizeRuntimeError(error);
+      this.emit('proxy', {
+        runId,
+        phase: 'failed',
+        taskId: task.taskId,
+        lotId,
+        code: runtimeError.code,
+        status: runtimeError.status,
+        message: runtimeError.message
+      } satisfies RuntimeProxyEvent);
+      if (error instanceof BillingRuntimeError) {
+        this.emit('billing.error', {
+          runId,
+          capability: 'proxy',
+          code: error.code,
+          message: error.message,
+          status: error.status
+        } satisfies RuntimeBillingErrorEvent);
+      }
       this.emit('log', {
         runId,
         level: 'error',
@@ -342,6 +455,22 @@ export class EngineHost extends EventEmitter {
       }
     }
   }
+}
+
+function normalizeRuntimeError(error: unknown): { code: string; status?: number; message: string } {
+  if (error instanceof BillingRuntimeError) {
+    return { code: error.code, status: error.status, message: error.message };
+  }
+  return {
+    code: 'RUNTIME_SERVICE_FAILED',
+    message: error instanceof Error ? error.message : String(error)
+  };
+}
+
+function statusValue(answer: unknown): number | undefined {
+  if (!answer || typeof answer !== 'object') return undefined;
+  const status = (answer as Record<string, unknown>).status;
+  return typeof status === 'number' && Number.isFinite(status) ? status : undefined;
 }
 
 function normalizeCaptchaRequest(data: any): CaptchaRequest {

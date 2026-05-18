@@ -3,13 +3,18 @@ import { mkdir, open, readFile, writeFile, type FileHandle } from 'node:fs/promi
 import { join, resolve } from 'node:path';
 import { hasFlag, parsePositiveInt, valueAfter } from '../cli/args.js';
 import { printEnvelope, printUsageError } from '../cli/output.js';
-import { resolveOPLocalRunPolicy } from '../runtime/account-capabilities.js';
-import { ApiRequestError, fetchAccountInfo, fetchQuantityLimitSettings } from '../runtime/api-client.js';
 import { appendJsonLine, ensureRunDir, writeRunSummary } from '../runtime/artifacts.js';
 import { resolveAuth } from '../runtime/auth.js';
+import {
+  BillingPreflightError,
+  checkPaidCapabilityPreflight,
+  checkTemplateBillingPreflight,
+  type BillingWarning
+} from '../runtime/billing.js';
 import { EngineHost } from '../runtime/engine-host.js';
 import { defaultRunsDir } from '../runtime/local-runs.js';
 import { safeFileName } from '../runtime/naming.js';
+import { BillingRuntimeError } from '../runtime/run-services.js';
 import {
   isRunControlReachable,
   listActiveTaskControlStates,
@@ -19,6 +24,15 @@ import {
   type RunControlServer
 } from '../runtime/run-control.js';
 import { TaskDefinitionProvider } from '../runtime/task-definition-provider.js';
+import {
+  collectEndTrackingEvents,
+  collectStartTrackingEvent,
+  createTrackingClient,
+  createTrackingRunContext,
+  markTrackingRunStarted,
+  markTrackingTaskLoaded,
+  taskSettingsTrackingEvent
+} from '../runtime/tracking.js';
 import {
   EXIT_OK,
   EXIT_OPERATION_FAILED,
@@ -30,6 +44,17 @@ import {
 
 const DETACHED_CHILD_ENV = 'OCTO_ENGINE_DETACHED_CHILD';
 const DETACHED_BOOTSTRAP_DIR_ENV = 'OCTO_ENGINE_DETACHED_BOOTSTRAP_DIR';
+const LOCAL_RUN_WARNING_THRESHOLD = 4;
+const LOCAL_RUN_STRONG_WARNING_THRESHOLD = 6;
+
+export interface LocalRunResourceWarning {
+  code: 'LOCAL_RUN_RESOURCE_WARNING';
+  severity: 'warning' | 'strong_warning';
+  activeLocalRuns: number;
+  requestedLocalRuns: number;
+  projectedLocalRuns: number;
+  message: string;
+}
 
 export async function runTask(taskId: string | undefined, args: string[]): Promise<number> {
   const json = hasFlag([taskId ?? '', ...args], '--json') || hasFlag([taskId ?? '', ...args], '--jsonl');
@@ -78,64 +103,77 @@ export async function runTask(taskId: string | undefined, args: string[]): Promi
     return EXIT_OPERATION_FAILED;
   }
 
-  if (process.env[DETACHED_CHILD_ENV] !== '1') {
-    const limitExitCode = await enforceLocalRunLimit(args, options);
-    if (limitExitCode !== EXIT_OK) return limitExitCode;
-  }
+  const resourceWarning = process.env[DETACHED_CHILD_ENV] !== '1'
+    ? await resolveLocalRunResourceWarning(1)
+    : undefined;
 
   if (options.detach && process.env[DETACHED_CHILD_ENV] !== '1') {
-    return startDetachedRun(taskId, args, options);
+    printLocalRunResourceWarning(options, resourceWarning);
+    return startDetachedRun(taskId, args, options, resourceWarning);
   }
 
+  printLocalRunResourceWarning(options, resourceWarning);
   const provider = new TaskDefinitionProvider();
-  return executeTask(taskId, options, () => provider.getTask(taskId, options.taskFile));
+  return executeTask(taskId, options, () => provider.getTask(taskId, options.taskFile), resourceWarning);
 }
 
-async function enforceLocalRunLimit(args: string[], options: RunOptions): Promise<number> {
-  try {
-    const auth = await resolveAuth();
-    if (!auth.apiKey) return EXIT_OK;
+async function resolveLocalRunResourceWarning(requestedLocalRuns: number): Promise<LocalRunResourceWarning | undefined> {
+  const activeRuns = await listActiveTaskControlStates();
+  return buildLocalRunResourceWarning(activeRuns.length, requestedLocalRuns);
+}
 
-    const baseUrl = valueAfter(args, '--api-base-url');
-    const [account, limits] = await Promise.all([
-      fetchAccountInfo({
-        apiKey: auth.apiKey,
-        baseUrl
-      }),
-      fetchQuantityLimitSettings({
-        apiKey: auth.apiKey,
-        baseUrl
-      })
-    ]);
-    const policy = resolveOPLocalRunPolicy(account.data, limits.data);
-    if (policy.maxActiveLocalRuns === undefined || policy.maxActiveLocalRuns === null) {
-      return EXIT_OK;
-    }
+export function buildLocalRunResourceWarning(
+  activeLocalRuns: number,
+  requestedLocalRuns: number
+): LocalRunResourceWarning | undefined {
+  const projectedLocalRuns = activeLocalRuns + requestedLocalRuns;
+  if (projectedLocalRuns < LOCAL_RUN_WARNING_THRESHOLD) return undefined;
 
-    const activeRuns = await listActiveTaskControlStates();
-    if (activeRuns.length < policy.maxActiveLocalRuns) {
-      return EXIT_OK;
-    }
+  const severity = projectedLocalRuns >= LOCAL_RUN_STRONG_WARNING_THRESHOLD ? 'strong_warning' : 'warning';
+  return {
+    code: 'LOCAL_RUN_RESOURCE_WARNING',
+    severity,
+    activeLocalRuns,
+    requestedLocalRuns,
+    projectedLocalRuns,
+    message: [
+      `${activeLocalRuns} local extraction task${activeLocalRuns === 1 ? ' is' : 's are'} already running; `,
+      `starting this task will bring the total to ${projectedLocalRuns}. `,
+      'Each task starts an independent Chrome process. Too many local runs can consume significant memory and CPU, ',
+      'slow extraction, crash browser pages, or make the system unresponsive. ',
+      'Consider stopping tasks you no longer need with octoparse local status and octoparse local stop.'
+    ].join('')
+  };
+}
 
-    const message = `Local extraction concurrency reached the current account limit (${policy.maxActiveLocalRuns}). Stop a running task before starting another.`;
-    if (options.json || options.jsonl) {
-      printEnvelope(false, undefined, 'LOCAL_RUN_LIMIT_EXCEEDED', message);
-    } else {
-      console.error(message);
-    }
-    return EXIT_OPERATION_FAILED;
-  } catch (error) {
-    if (error instanceof ApiRequestError && error.code === 'AUTH_INVALID') {
-      const message = error.message;
-      if (options.json || options.jsonl) printEnvelope(false, undefined, error.code, message);
-      else console.error(`Authentication failed: ${message}`);
-      return EXIT_OPERATION_FAILED;
-    }
-    return EXIT_OK;
+function printLocalRunResourceWarning(options: RunOptions, warning: LocalRunResourceWarning | undefined): void {
+  if (!warning) return;
+  if (options.json) return;
+  if (options.jsonl) {
+    printEnvelopeLikeJsonLine({
+      event: 'warning',
+      code: warning.code,
+      severity: warning.severity,
+      activeLocalRuns: warning.activeLocalRuns,
+      requestedLocalRuns: warning.requestedLocalRuns,
+      projectedLocalRuns: warning.projectedLocalRuns,
+      message: warning.message
+    });
+    return;
   }
+  console.error(`Warning: ${warning.message}`);
 }
 
-async function startDetachedRun(taskId: string, args: string[], options: RunOptions): Promise<number> {
+function printEnvelopeLikeJsonLine(value: unknown): void {
+  console.log(JSON.stringify(value));
+}
+
+async function startDetachedRun(
+  taskId: string,
+  args: string[],
+  options: RunOptions,
+  resourceWarning?: LocalRunResourceWarning
+): Promise<number> {
   const bootstrap = await createDetachedBootstrap(taskId, options.outputDir);
   const childArgs = [
     process.argv[1],
@@ -189,7 +227,8 @@ async function startDetachedRun(taskId: string, args: string[], options: RunOpti
     outputDir: state?.outputDir,
     bootstrapDir: bootstrap.dir,
     stdout: bootstrap.stdoutPath,
-    stderr: bootstrap.stderrPath
+    stderr: bootstrap.stderrPath,
+    warnings: resourceWarning ? [resourceWarning] : []
   };
 
   if (options.json) {
@@ -208,7 +247,8 @@ async function startDetachedRun(taskId: string, args: string[], options: RunOpti
 async function executeTask(
   taskId: string,
   options: RunOptions,
-  loadTask: () => Promise<TaskDefinition>
+  loadTask: () => Promise<TaskDefinition>,
+  resourceWarning?: LocalRunResourceWarning
 ): Promise<number> {
   const host = new EngineHost();
   let currentRunDir = '';
@@ -222,11 +262,23 @@ async function executeTask(
   let artifactQueue = Promise.resolve();
   let signalHandler: (() => void) | null = null;
   let savedRows = 0;
+  let captchaRequests = 0;
+  let proxyRequests = 0;
   let rowLimitReached = false;
   let stopReason: string | undefined;
   const runtimeConsole = maybeSuppressRuntimeConsole(options);
   const detachedBootstrapDir = process.env[DETACHED_BOOTSTRAP_DIR_ENV];
   const startedAt = new Date().toISOString();
+  const auth = await resolveAuth().catch(() => undefined);
+  const tracking = createTrackingClient({ authSource: auth?.source });
+  const trackingRun = createTrackingRunContext({
+    taskId,
+    runOptions: options,
+    billingWarningCount: 0
+  });
+  let trackingStartSent = false;
+  let loadedTask: TaskDefinition | null = null;
+  let billingWarnings: BillingWarning[] = [];
 
   const appendRunArtifact = (fileName: string, value: unknown) => {
     if (!runDirReady) return;
@@ -255,6 +307,7 @@ async function executeTask(
     currentRunId = event.runId;
     currentLotId = event.lotId;
     currentTaskName = event.taskName;
+    markTrackingRunStarted(trackingRun, event);
     currentRunDir = join(options.outputDir, event.runId);
     runDirReady = ensureRunDir(options.outputDir, event.runId);
     if (detachedBootstrapDir) {
@@ -304,7 +357,17 @@ async function executeTask(
     });
     void controlServerReady.catch(() => undefined);
     appendRunArtifact('events.jsonl', { event: 'run.started', ...event });
+    for (const warning of billingWarnings) {
+      appendRunArtifact('events.jsonl', { event: 'billing.warning', ...warning });
+    }
     if (options.jsonl) printRunJsonLine(runtimeConsole, { event: 'run.started', ...event });
+    if (loadedTask) {
+      tracking.sendMany([
+        collectStartTrackingEvent(trackingRun, true),
+        taskSettingsTrackingEvent(trackingRun, loadedTask)
+      ]);
+      trackingStartSent = true;
+    }
   });
 
   host.on('row', (event) => {
@@ -362,17 +425,33 @@ async function executeTask(
   });
 
   host.on('captcha', (event) => {
+    if (event.phase === 'requested') captchaRequests += 1;
     appendRunArtifact('events.jsonl', { event: 'captcha', ...event });
     if (options.jsonl) printRunJsonLine(runtimeConsole, { event: 'captcha', ...event });
   });
 
   host.on('proxy', (event) => {
+    if (event.phase === 'requested') proxyRequests += 1;
     appendRunArtifact('events.jsonl', { event: 'proxy', ...event });
     if (options.jsonl) printRunJsonLine(runtimeConsole, { event: 'proxy', ...event });
   });
 
+  host.on('billing.error', (event) => {
+    appendRunArtifact('events.jsonl', { event: 'billing.error', ...event });
+    if (options.jsonl) printRunJsonLine(runtimeConsole, { event: 'billing.error', ...event });
+    else if (!options.json) runtimeConsole.stderr(`Billing error: ${event.message}`);
+  });
+
   try {
     const task = await loadTask();
+    loadedTask = task;
+    markTrackingTaskLoaded(trackingRun, task);
+    billingWarnings = [
+      ...(await checkTemplateBillingPreflight(task)),
+      ...(await checkPaidCapabilityPreflight(task))
+    ];
+    trackingRun.billingWarningCount = billingWarnings.length;
+    printBillingWarnings(options, runtimeConsole, billingWarnings);
 
     let interruptCount = 0;
     const interrupted = new Promise<RunSummary>((resolveInterrupted) => {
@@ -434,6 +513,17 @@ async function executeTask(
     await appendJsonLine(join(runDir, 'events.jsonl'), { event: 'run.stopped', ...finalSummary, outputDir: runDir });
     await closeControlServer();
     await host.close();
+    const trackingEndWay = finalSummary.status === 'completed' || finalSummary.stopReason === 'max_rows' ? 'finish' : 'manual';
+    tracking.sendMany(collectEndTrackingEvents(trackingRun, {
+      status: finalSummary.status,
+      endWay: trackingEndWay,
+      success: finalSummary.status === 'completed' || finalSummary.status === 'stopped',
+      failReason: finalSummary.stopReason ?? '',
+      total: finalSummary.total,
+      stoppedAt: finalSummary.stoppedAt,
+      useCaptchaCount: captchaRequests,
+      useProxyCount: proxyRequests
+    }));
     if (detachedBootstrapDir) {
       await writeDetachedBootstrap(detachedBootstrapDir, {
         status: finalSummary.status,
@@ -449,7 +539,15 @@ async function executeTask(
     if (options.jsonl) {
       printRunJsonLine(runtimeConsole, { event: 'run.stopped', ...finalSummary, outputDir: runDir });
     } else if (options.json) {
-      printRunEnvelope(runtimeConsole, true, { ...finalSummary, outputDir: runDir });
+      printRunEnvelope(runtimeConsole, true, {
+        ...finalSummary,
+        outputDir: runDir,
+        warnings: [...(resourceWarning ? [resourceWarning] : []), ...billingWarnings],
+        usage: {
+          captchaRequests,
+          proxyRequests
+        }
+      });
     } else {
       runtimeConsole.stdout(`Run completed: ${finalSummary.runId}`);
       runtimeConsole.stdout(`Task: ${finalSummary.taskId}`);
@@ -464,6 +562,7 @@ async function executeTask(
       signalHandler = null;
     }
     const message = error instanceof Error ? error.message : String(error);
+    const errorCode = runErrorCode(error);
     if (currentRunDir && currentRunId) {
       runStatus = 'failed';
       await waitControlServer();
@@ -473,11 +572,26 @@ async function executeTask(
         event: 'run.failed',
         runId: currentRunId,
         taskId,
+        code: errorCode,
+        status: error instanceof BillingRuntimeError ? error.status : undefined,
         error: message
       }).catch(() => undefined);
       await closeControlServer();
     }
     await host.close();
+    const trackingEndEvents = collectEndTrackingEvents(trackingRun, {
+      status: 'failed',
+      endWay: 'manual',
+      success: false,
+      failReason: message,
+      total: savedRows,
+      stoppedAt: new Date().toISOString(),
+      useCaptchaCount: captchaRequests,
+      useProxyCount: proxyRequests
+    });
+    tracking.sendMany(trackingStartSent
+      ? trackingEndEvents
+      : [collectStartTrackingEvent(trackingRun, false, message), ...trackingEndEvents]);
     if (detachedBootstrapDir) {
       await writeDetachedBootstrap(detachedBootstrapDir, {
         status: 'failed',
@@ -489,7 +603,7 @@ async function executeTask(
       }).catch(() => undefined);
     }
     if (options.json || options.jsonl) {
-      printRunEnvelope(runtimeConsole, false, undefined, 'ENGINE_RUN_FAILED', message);
+      printRunEnvelope(runtimeConsole, false, undefined, errorCode, message);
     } else {
       runtimeConsole.stderr(`Run failed: ${message}`);
     }
@@ -499,6 +613,27 @@ async function executeTask(
 
 export function localDataExportCommand(summary: Pick<RunSummary, 'taskId' | 'lotId'>): string {
   return `octoparse data export ${summary.taskId} --source local --lot-id ${summary.lotId}`;
+}
+
+function printBillingWarnings(
+  options: RunOptions,
+  runtimeConsole: ReturnType<typeof maybeSuppressRuntimeConsole>,
+  warnings: BillingWarning[]
+): void {
+  for (const warning of warnings) {
+    if (options.json) continue;
+    if (options.jsonl) {
+      printRunJsonLine(runtimeConsole, { event: 'billing.warning', ...warning });
+    } else {
+      runtimeConsole.stderr(`Warning: ${warning.message}`);
+    }
+  }
+}
+
+function runErrorCode(error: unknown): string {
+  if (error instanceof BillingPreflightError) return error.code;
+  if (error instanceof BillingRuntimeError) return error.code;
+  return 'ENGINE_RUN_FAILED';
 }
 
 function parseRunOptions(taskId: string, args: string[]): RunOptions {

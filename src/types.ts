@@ -14,6 +14,10 @@ export interface TaskDefinition {
   fieldNames: string[];
   workflowSetting?: unknown;
   brokerSettings?: unknown;
+  template?: unknown;
+  workFlowType?: number;
+  templateVersionId?: string | number;
+  isTemplate?: boolean;
   userAgent?: string;
   disableAD?: boolean;
   disableImage?: boolean;

@@ -42,6 +42,10 @@ export class TaskDefinitionProvider {
       fieldNames: Array.isArray(parsed.fieldNames) ? parsed.fieldNames : [],
       workflowSetting: parsed.workflowSetting,
       brokerSettings: parsed.brokerSettings,
+      template: parsed.template,
+      workFlowType: parsed.workFlowType,
+      templateVersionId: parsed.templateVersionId,
+      isTemplate: parsed.isTemplate,
       userAgent: parsed.userAgent,
       disableAD: parsed.disableAD,
       disableImage: parsed.disableImage
@@ -147,6 +151,10 @@ function remoteTaskInfoToDefinition(info: RemoteTaskInfo, fallbackTaskId: string
     fieldNames: extractFieldNames(xml),
     workflowSetting: info.workflowSetting,
     brokerSettings: info.brokerSettings ?? info.TaskSettings,
+    template: info.template ?? info.Template,
+    workFlowType: numberValue(info.workFlowType) ?? numberValue(info.WorkFlowType),
+    templateVersionId: stringValue(info.templateVersionId) || stringValue(info.TemplateVersionId) || undefined,
+    isTemplate: booleanValue(info.isTemplate) || booleanValue(info.IsTemplate),
     userAgent: stringValue(info.userAgent) || stringValue(info.UserAgent) || undefined,
     disableAD: booleanValue(info.disableAD) || booleanValue(info.adBlockEnable) || booleanValue(info.AdBlockEnable),
     disableImage: booleanValue(info.disableImage) || booleanValue(info.DisableImage)
@@ -240,11 +248,20 @@ function decodeTaskXml(xoml: string): string {
 }
 
 function stringValue(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : '';
+  return typeof value === 'string' ? value.trim() : value === undefined || value === null ? '' : String(value).trim();
 }
 
 function booleanValue(value: unknown): boolean {
-  return value === true || value === 'true';
+  return value === true || value === 'true' || value === 1 || value === '1';
+}
+
+function numberValue(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
 }
 
 const OTD_AES_KEY = Int8Array.from([

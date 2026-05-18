@@ -222,7 +222,21 @@ test('auth login accepts API key as a positional argument', async () => {
   const originalLog = console.log;
   process.env.HOME = home;
   globalThis.fetch = async (url, init) => {
-    seen.push({ url: String(url), headers: init?.headers ?? {} });
+    const urlString = String(url);
+    seen.push({ url: urlString, headers: init?.headers ?? {} });
+    if (urlString === 'https://example.invalid/api/user/balances') {
+      return new Response(JSON.stringify({
+        isSuccess: true,
+        data: {
+          balance: 12,
+          totalBalance: 12
+        }
+      }), {
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' }
+      });
+    }
     return new Response(JSON.stringify({
       isSuccess: true,
       data: {
@@ -244,9 +258,11 @@ test('auth login accepts API key as a positional argument', async () => {
       'https://example.invalid'
     ]);
     assert.equal(code, 0);
-    assert.equal(seen.length, 1);
+    assert.equal(seen.length, 2);
     assert.equal(seen[0].url, 'https://example.invalid/api/account/getAccount');
     assert.equal(seen[0].headers['x-api-key'], 'arg-key-123');
+    assert.equal(seen[1].url, 'https://example.invalid/api/user/balances');
+    assert.equal(seen[1].headers['x-api-key'], 'arg-key-123');
     const credentials = JSON.parse(await readFile(join(home, '.octoparse', 'credentials.json'), 'utf8'));
     assert.equal(credentials.apiKey, 'arg-key-123');
   } finally {

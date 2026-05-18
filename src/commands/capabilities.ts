@@ -13,14 +13,14 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
     authentication: {
       requiredForUse: true,
       loginVerifiesKeyBeforeSaving: true,
-      setupCommandsWithoutAuth: ['auth login', 'auth status', 'auth logout', 'env status', 'env prod', 'env online'],
+      setupCommandsWithoutAuth: ['auth login', 'auth status', 'auth info', 'auth logout', 'env status', 'env prod', 'env online'],
       diagnosticCommandsWithoutAuth: ['--help', '--version', 'capabilities', 'doctor', 'browser doctor'],
       env: API_KEY_ENV,
       file: join(homedir(), '.octoparse', 'credentials.json')
     },
     output: {
       jsonEnvelope: { success: { ok: true, data: {} }, failure: { ok: false, error: { code: 'ERROR_CODE', message: 'message' } } },
-      jsonlEvents: ['run.started', 'row', 'log', 'run.paused', 'run.resumed', 'run.stopping', 'run.stopped'],
+      jsonlEvents: ['warning', 'billing.warning', 'billing.error', 'run.started', 'row', 'log', 'captcha', 'proxy', 'run.paused', 'run.resumed', 'run.stopping', 'run.stopped', 'run.failed'],
       detachedBootstrap: ['bootstrap.json', 'stdout.log', 'stderr.log'],
       stdout: 'machine data only in --json/--jsonl mode',
       stderr: 'human diagnostics and failures'
@@ -47,11 +47,23 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
           'USAGE_ERROR',
           'UNKNOWN_COMMAND',
           'TASK_INVALID',
+          'TEMPLATE_BALANCE_NOT_ENOUGH',
+          'TEMPLATE_NOT_ALLOWED',
+          'CAPTCHA_BALANCE_LOW',
+          'CAPTCHA_ACCOUNT_EXPIRED',
+          'CAPTCHA_BALANCE_NOT_ENOUGH',
+          'CAPTCHA_DAILY_LIMIT_REACHED',
+          'CAPTCHA_SERVICE_ERROR',
+          'CAPTCHA_SERVICE_FAILED',
+          'PROXY_BALANCE_NOT_ENOUGH',
+          'PROXY_USER_NOT_ALLOWED',
+          'PROXY_LIMIT_REACHED',
+          'PROXY_SERVICE_UNAVAILABLE',
+          'PROXY_SERVICE_FAILED',
           'RUN_FORMAT_UNSUPPORTED',
           'DETACHED_RUN_FAILED',
           'ENGINE_RUN_FAILED',
           'LOCAL_RUN_ALREADY_RUNNING',
-          'LOCAL_RUN_LIMIT_EXCEEDED',
           'LOCAL_RUN_CONTROL_FAILED',
           'RUN_CONTROL_FAILED',
           'RUN_NOT_FOUND',
@@ -63,7 +75,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
         flag: '--jsonl',
         command: 'run <taskId>',
         eventField: 'event',
-        stableEvents: ['run.started', 'row', 'log', 'run.paused', 'run.resumed', 'run.stopping', 'run.stopped'],
+        stableEvents: ['warning', 'billing.warning', 'billing.error', 'run.started', 'row', 'log', 'captcha', 'proxy', 'run.paused', 'run.resumed', 'run.stopping', 'run.stopped', 'run.failed'],
         rowLimitFlag: '--max-rows'
       },
       artifacts: {
@@ -75,6 +87,13 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
         daemonRequired: false,
         activeRunIdentity: 'taskId',
         artifactRunIdentity: 'runId',
+        accountLocalRunLimit: false,
+        localRunResourceWarning: {
+          code: 'LOCAL_RUN_RESOURCE_WARNING',
+          threshold: 4,
+          strongThreshold: 6,
+          blocking: false
+        },
         maxActiveLocalRunsPerTaskId: 1,
         orphanDetection: true,
         cleanupCommands: ['local cleanup', 'runs cleanup']
@@ -88,7 +107,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
     },
     commands: [
       { command: 'doctor', risk: 'low', json: true, authRequired: false },
-      { command: 'auth login/status/logout', risk: 'medium', json: true, authRequired: false },
+      { command: 'auth login/status/info/logout', risk: 'medium', json: true, authRequired: false },
       { command: 'env prod/online/status', risk: 'medium', json: true, hidden: true, authRequired: false },
       { command: 'task list', risk: 'low', json: true, authRequired: true },
       { command: 'task inspect/validate', risk: 'low', json: true, authRequired: true },

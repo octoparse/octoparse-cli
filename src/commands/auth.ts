@@ -9,6 +9,19 @@ import { EXIT_OK, EXIT_OPERATION_FAILED } from '../types.js';
 
 export const API_KEYS_URL = 'https://www.octoparse.com/console/account-center/api-keys';
 
+const ACCOUNT_LEVEL_NAMES = new Map<number, string>([
+  [1, 'Free'],
+  [2, 'Standard'],
+  [3, 'Professional'],
+  [4, 'Private Cloud'],
+  [11, 'Basic'],
+  [31, 'Ultimate Plus'],
+  [110, 'Personal'],
+  [120, 'Team'],
+  [130, 'Business'],
+  [140, 'Business Member']
+]);
+
 export async function authCommand(subcommand: string | undefined, args: string[]): Promise<number> {
   const json = hasFlag([subcommand ?? '', ...args], '--json');
   if (subcommand === 'login') {
@@ -19,11 +32,15 @@ export async function authCommand(subcommand: string | undefined, args: string[]
     return authStatus(args);
   }
 
+  if (subcommand === 'info') {
+    return authInfo(args);
+  }
+
   if (subcommand === 'logout') {
     return authLogout(args);
   }
 
-  return printUsageError(json, 'Error: invalid auth subcommand', 'Usage: octoparse auth <login|status|logout> [--json]');
+  return printUsageError(json, 'Error: invalid auth subcommand', 'Usage: octoparse auth <login|status|info|logout> [--json]');
 }
 
 export async function ensureAuthenticated(json: boolean): Promise<number> {
@@ -80,8 +97,7 @@ async function authLogin(args: string[]): Promise<number> {
       source: 'file',
       keyPreview: maskApiKey(credentials.apiKey),
       credentialsFile: join(homedir(), '.octoparse', 'credentials.json'),
-      verified: true,
-      apiBaseUrl: validation.baseUrl
+      ...verifiedAccountFields(validation)
     };
 
     if (json) {
@@ -89,6 +105,12 @@ async function authLogin(args: string[]): Promise<number> {
     } else {
       console.log(`API key verified and saved: ${status.keyPreview}`);
       console.log(`API: ${status.apiBaseUrl}`);
+      if (status.currentAccountLevel !== undefined) {
+        console.log(`Account plan: ${formatAccountLevel(status.currentAccountLevel, status.currentAccountLevelName)}`);
+      }
+      if (status.accountBalance !== undefined) {
+        console.log(`Account balance: ${status.accountBalance}`);
+      }
       console.log(`Credentials: ${status.credentialsFile}`);
       console.log('');
       console.log('Next:');
@@ -179,8 +201,7 @@ async function authStatus(args: string[]): Promise<number> {
     const { apiKey: _apiKey, ...status } = auth;
     const result = {
       ...status,
-      verified: true,
-      apiBaseUrl: validation.baseUrl
+      ...verifiedAccountFields(validation)
     };
 
     if (json) {
@@ -191,6 +212,12 @@ async function authStatus(args: string[]): Promise<number> {
     console.log(`Authenticated: yes (${status.source})`);
     console.log('Verified: yes');
     console.log(`API: ${validation.baseUrl}`);
+    if (result.currentAccountLevel !== undefined) {
+      console.log(`Account plan: ${formatAccountLevel(result.currentAccountLevel, result.currentAccountLevelName)}`);
+    }
+    if (result.accountBalance !== undefined) {
+      console.log(`Account balance: ${result.accountBalance}`);
+    }
     console.log(`API key: ${status.keyPreview}`);
     if (status.source === 'env') {
       console.log(`Source: ${API_KEY_ENV}`);
@@ -205,6 +232,47 @@ async function authStatus(args: string[]): Promise<number> {
       printEnvelope(false, undefined, code, message);
     } else {
       console.error(`Authentication failed: ${message}`);
+      if (code === 'AUTH_INVALID') {
+        console.error('Re-login with: octoparse auth login');
+      }
+    }
+    return EXIT_OPERATION_FAILED;
+  }
+}
+
+async function authInfo(args: string[]): Promise<number> {
+  const json = hasFlag(args, '--json');
+  const auth = await resolveAuth();
+  if (!auth.authenticated || !auth.apiKey) {
+    return printAuthRequired(json);
+  }
+
+  try {
+    const validation = await validateApiKey({
+      apiKey: auth.apiKey,
+      baseUrl: valueAfter(args, '--api-base-url')
+    });
+    const { apiKey: _apiKey, ...status } = auth;
+    const result = {
+      ...status,
+      ...verifiedAccountFields(validation),
+      account: validation.account
+    };
+
+    if (json) {
+      printEnvelope(true, result);
+      return EXIT_OK;
+    }
+
+    printAccountInfo(result);
+    return EXIT_OK;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const code = error instanceof ApiRequestError ? error.code : 'AUTH_INFO_FAILED';
+    if (json) {
+      printEnvelope(false, undefined, code, message);
+    } else {
+      console.error(`Failed to get account info: ${message}`);
       if (code === 'AUTH_INVALID') {
         console.error('Re-login with: octoparse auth login');
       }
@@ -229,6 +297,56 @@ async function authLogout(args: string[]): Promise<number> {
     console.log(`${API_KEY_ENV} is still set and will continue to be used for this shell.`);
   }
   return EXIT_OK;
+}
+
+function accountLevelName(level: unknown): string | undefined {
+  return typeof level === 'number' ? ACCOUNT_LEVEL_NAMES.get(level) : undefined;
+}
+
+function formatAccountLevel(level: number, name: string | undefined): string {
+  return name ?? String(level);
+}
+
+function verifiedAccountFields(validation: Awaited<ReturnType<typeof validateApiKey>>) {
+  return {
+    verified: true,
+    apiBaseUrl: validation.baseUrl,
+    currentAccountLevel: validation.account.currentAccountLevel ?? validation.account.type,
+    currentAccountLevelName: accountLevelName(validation.account.currentAccountLevel ?? validation.account.type),
+    accountBalance: validation.balance?.totalBalance ?? validation.balance?.balance ?? validation.account.accountBalance
+  };
+}
+
+function printAccountInfo(result: ReturnType<typeof verifiedAccountFields> & {
+  authenticated: boolean;
+  source: string;
+  keyPreview?: string;
+  credentialsFile: string;
+  account: Record<string, unknown>;
+}): void {
+  console.log(`Authenticated: yes (${result.source})`);
+  const userName = stringField(result.account.userName);
+  const email = stringField(result.account.email);
+  const mobile = stringField(result.account.mobile);
+  const userId = stringField(result.account.userId);
+  if (userName) console.log(`User name: ${userName}`);
+  if (email) console.log(`Email: ${email}`);
+  if (mobile) console.log(`Mobile: ${mobile}`);
+  if (userId) console.log(`User ID: ${userId}`);
+  if (result.currentAccountLevel !== undefined) {
+    console.log(`Account plan: ${formatAccountLevel(result.currentAccountLevel, result.currentAccountLevelName)}`);
+  }
+  if (result.accountBalance !== undefined) {
+    console.log(`Account balance: ${result.accountBalance}`);
+  }
+  const effectiveDate = stringField(result.account.effectiveDate);
+  if (effectiveDate) console.log(`Effective date: ${effectiveDate}`);
+  console.log(`API key: ${result.keyPreview}`);
+  if (result.source === 'env') console.log(`Source: ${API_KEY_ENV}`);
+}
+
+function stringField(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 async function readApiKeyFromStdin(): Promise<string> {

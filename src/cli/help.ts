@@ -18,6 +18,7 @@ Authentication:
   octoparse auth login <apiKey> [--api-base-url <url>] [--json]
   octoparse auth login [--stdin] [--no-open] [--api-base-url <url>] [--json]
   octoparse auth status [--json]
+  octoparse auth info [--json]
   octoparse auth logout [--json]
 
 API key:

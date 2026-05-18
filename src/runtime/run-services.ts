@@ -16,6 +16,17 @@ const PROXY_CBC_KEY = Int8Array.from([
 ]);
 const PROXY_CBC_IV = Int8Array.from([75, 77, 13, 73, 107, 74, 134, 35, 251, 32, 92, 14, 44, 177, 14, 80]);
 
+export class BillingRuntimeError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly status?: number
+  ) {
+    super(message);
+    this.name = 'BillingRuntimeError';
+  }
+}
+
 export type CaptchaAnswer =
   | { token: string }
   | { distance: number; status: number; isAvailable: boolean }
@@ -95,7 +106,7 @@ export async function resolveProxy(task: TaskDefinition, lotId: string, webPageU
   if (!data) throw new Error('proxy response is missing data');
   const status = numberValue(data.status) ?? PROXY_OK;
   if (status !== PROXY_OK) {
-    throw new Error(`proxy service returned status ${status}`);
+    throw proxyStatusError(status);
   }
 
   const encryptedIp = stringValue(data.ip);
@@ -251,7 +262,7 @@ async function postCaptcha(endpoint: string, body: Record<string, unknown>, body
   const data = getRecord(getRecord(result)?.data);
   const status = numberValue(data?.status) ?? 0;
   if (status !== CAPTCHA_SUCCESS) {
-    throw new Error(`captcha service returned status ${status}`);
+    throw captchaStatusError(status);
   }
   return {
     status,
@@ -307,6 +318,22 @@ function encodeRequestBody(body: Record<string, unknown>, format: 'json' | 'form
     }
   }
   return form.toString();
+}
+
+function captchaStatusError(status: number): BillingRuntimeError {
+  if (status === 2) return new BillingRuntimeError('CAPTCHA_ACCOUNT_EXPIRED', 'CAPTCHA service is unavailable because the current account plan is expired or has no entitlement.', status);
+  if (status === 3) return new BillingRuntimeError('CAPTCHA_BALANCE_NOT_ENOUGH', 'CAPTCHA balance is insufficient. Please top up and try again.', status);
+  if (status === 4) return new BillingRuntimeError('CAPTCHA_DAILY_LIMIT_REACHED', 'CAPTCHA daily usage limit has been reached. Try again tomorrow or adjust account entitlements.', status);
+  if (status === 9) return new BillingRuntimeError('CAPTCHA_SERVICE_ERROR', 'CAPTCHA service is temporarily unavailable. Please try again later.', status);
+  return new BillingRuntimeError('CAPTCHA_SERVICE_FAILED', `CAPTCHA service returned unexpected status: ${status}`, status);
+}
+
+function proxyStatusError(status: number): BillingRuntimeError {
+  if (status === 2 || status === 3) return new BillingRuntimeError('PROXY_LIMIT_REACHED', 'Premium proxy usage limit has been reached. Check account entitlements or try again later.', status);
+  if (status === 4) return new BillingRuntimeError('PROXY_BALANCE_NOT_ENOUGH', 'Premium proxy balance is insufficient. Please top up and try again.', status);
+  if (status === 5) return new BillingRuntimeError('PROXY_USER_NOT_ALLOWED', 'This account is not allowed to use premium proxies. Check plan entitlements.', status);
+  if (status === 503) return new BillingRuntimeError('PROXY_SERVICE_UNAVAILABLE', 'Premium proxy service is temporarily unavailable. Please try again later.', status);
+  return new BillingRuntimeError('PROXY_SERVICE_FAILED', `Premium proxy service returned unexpected status: ${status}`, status);
 }
 
 function numericCaptchaType(value: unknown): number | undefined {

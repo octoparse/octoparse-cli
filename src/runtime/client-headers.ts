@@ -12,7 +12,7 @@ export function clientHeaders(): Record<string, string> {
   };
 }
 
-function clientVersion(): string {
+export function clientVersion(): string {
   if (cachedVersion) return cachedVersion;
   try {
     const packageJsonUrl = new URL('../../package.json', import.meta.url);
