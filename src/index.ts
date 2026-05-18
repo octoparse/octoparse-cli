@@ -30,12 +30,15 @@ import { localCommand } from './commands/local.js';
 import { runTask } from './commands/run.js';
 import { runsCleanup, runsControl, runsData, runsList, runsLogs, runsStatus } from './commands/runs.js';
 import { taskInspect, taskList } from './commands/task.js';
+import { maybePrintUpdateNotice } from './runtime/update-check.js';
 import {
   EXIT_OK,
   EXIT_OPERATION_FAILED
 } from './types.js';
 
 const VERSION = loadPackageVersion();
+const PACKAGE_NAME = loadPackageName();
+const RELEASE_NOTES_URL = loadReleaseNotesUrl();
 
 function loadPackageVersion(): string {
   const packageJsonUrl = new URL('../package.json', import.meta.url);
@@ -43,7 +46,34 @@ function loadPackageVersion(): string {
   return packageJson.version ?? '0.0.0';
 }
 
+function loadPackageName(): string {
+  const packageJsonUrl = new URL('../package.json', import.meta.url);
+  const packageJson = JSON.parse(readFileSync(packageJsonUrl, 'utf8')) as { name?: string };
+  return packageJson.name ?? '@octoparse-cli/octoparse-cli';
+}
+
+function loadReleaseNotesUrl(): string {
+  const packageJsonUrl = new URL('../package.json', import.meta.url);
+  const packageJson = JSON.parse(readFileSync(packageJsonUrl, 'utf8')) as {
+    repository?: { url?: string };
+    homepage?: string;
+  };
+  const repositoryUrl = packageJson.repository?.url
+    ?.replace(/^git\+/, '')
+    .replace(/\.git$/, '');
+  const baseUrl = repositoryUrl || packageJson.homepage?.replace(/#.*$/, '') || 'https://github.com/octoparse/octoparse-cli';
+  return `${baseUrl}/releases/latest`;
+}
+
 async function main(argv: string[]): Promise<number> {
+  await maybePrintUpdateNotice({
+    args: argv,
+    cliName: 'octoparse',
+    packageName: PACKAGE_NAME,
+    currentVersion: VERSION,
+    releaseNotesUrl: RELEASE_NOTES_URL
+  });
+
   const [command, subcommand, ...rest] = argv;
 
   if (!command || command === '--help' || command === '-h') {
