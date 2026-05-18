@@ -17,7 +17,7 @@ runs, and export collected data.
 Install the CLI globally:
 
 ```bash
-npm install -g octoparse-cli
+npm install -g @octoparse-cli/octoparse-cli
 ```
 
 The installed command is:

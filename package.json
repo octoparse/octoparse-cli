@@ -1,5 +1,5 @@
 {
-  "name": "octoparse-cli",
+  "name": "@octoparse-cli/octoparse-cli",
   "version": "0.1.15",
   "description": "Standalone Octoparse engine CLI that runs local extraction without the Electron client.",
   "private": false,
