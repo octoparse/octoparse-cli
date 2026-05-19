@@ -2,7 +2,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { printEnvelope } from '../cli/output.js';
 import { API_BASE_URL_ENV } from '../runtime/api-client.js';
-import { API_KEY_ENV } from '../runtime/auth.js';
+import { ACCESS_TOKEN_ENV, API_KEY_ENV } from '../runtime/auth.js';
 import { EXIT_OK } from '../types.js';
 
 export async function capabilitiesCommand(version: string, json: boolean): Promise<number> {
@@ -12,10 +12,13 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
     agentContractVersion: 1,
     authentication: {
       requiredForUse: true,
+      methods: ['oauth', 'apiKey'],
       loginVerifiesKeyBeforeSaving: true,
+      loginSupportsOAuthBrowserFlow: true,
       setupCommandsWithoutAuth: ['auth login', 'auth status', 'auth info', 'auth logout', 'env status', 'env prod', 'env online'],
       diagnosticCommandsWithoutAuth: ['--help', '--version', 'capabilities', 'doctor', 'browser doctor'],
       env: API_KEY_ENV,
+      accessTokenEnv: ACCESS_TOKEN_ENV,
       file: join(homedir(), '.octoparse', 'credentials.json')
     },
     output: {
@@ -127,6 +130,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
     exportFormats: ['xlsx', 'csv', 'html', 'json', 'xml'],
     env: {
       apiKey: API_KEY_ENV,
+      accessToken: ACCESS_TOKEN_ENV,
       apiBaseUrl: API_BASE_URL_ENV
     }
   };

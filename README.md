@@ -8,7 +8,7 @@ runs, and export collected data.
 ## Requirements
 
 - Node.js 20 or newer
-- A valid Octoparse API key
+- A valid Octoparse account or API key
 
 ## Quick start
 
@@ -33,18 +33,25 @@ octoparse --version
 octoparse doctor
 ```
 
-### 2. Log in with an API key
+### 2. Log in
 
-Most commands require a Octoparse API key. Run:
+Most commands require Octoparse credentials. Run:
 
 ```bash
 octoparse auth login
 ```
 
-`auth login` opens the API key page automatically in a browser when possible,
-then verifies and saves the key locally.
+`auth login` lets you choose OAuth or API key login. OAuth opens the browser,
+then saves the token locally after login.
 
-Create the key here:
+To force OAuth login:
+
+```bash
+octoparse auth login --oauth
+```
+
+API key login is still supported. Create the key here:
+
 
 ```text
 https://www.octoparse.com/console/account-center/api-keys
@@ -56,10 +63,11 @@ If you already copied the key, you can save time and pass it directly:
 octoparse auth login XXXXX
 ```
 
-For CI or scripts, set the key with an environment variable instead:
+For CI or scripts, set an environment variable instead:
 
 ```bash
 OCTO_ENGINE_API_KEY=xxx octoparse task list --json
+OCTO_ENGINE_ACCESS_TOKEN=xxx octoparse task list --json
 ```
 
 ### 3. Use the CLI
@@ -116,6 +124,7 @@ octoparse browser doctor
 
 # Authentication
 octoparse auth login
+octoparse auth login --oauth
 octoparse auth login XXXXX
 octoparse auth status
 octoparse auth logout
@@ -158,22 +167,23 @@ octoparse data history <taskId> --source local --output ./runs
 octoparse data export <taskId> --source local --output ./runs --format xlsx
 ```
 
-## API key
+## Authentication
 
-Most commands require an API key. Only setup and diagnostic commands such as
+Most commands require OAuth or API key credentials. Only setup and diagnostic commands such as
 `--help`, `--version`, `doctor`, `browser doctor`, `capabilities`, and `auth`
 can run before login.
+
+For interactive OAuth login:
+
+```bash
+octoparse auth login
+octoparse auth login --oauth
+```
 
 Create API keys in the Octoparse console:
 
 ```text
 https://www.octoparse.com/console/account-center/api-keys
-```
-
-For interactive use:
-
-```bash
-octoparse auth login
 ```
 
 If the API key is already copied:
@@ -192,13 +202,15 @@ For CI or scripts:
 
 ```bash
 OCTO_ENGINE_API_KEY=xxx octoparse task list --json
+OCTO_ENGINE_ACCESS_TOKEN=xxx octoparse task list --json
 ```
 
 Credential precedence:
 
 ```text
 1. OCTO_ENGINE_API_KEY
-2. ~/.octoparse/credentials.json
+2. OCTO_ENGINE_ACCESS_TOKEN
+3. ~/.octoparse/credentials.json
 ```
 
 ## Local task files

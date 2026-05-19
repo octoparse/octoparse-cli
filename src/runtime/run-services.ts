@@ -1,6 +1,6 @@
 import { createDecipheriv } from 'node:crypto';
 import { ApiRequestError, resolveApiBaseUrl } from './api-client.js';
-import { resolveAuth } from './auth.js';
+import { resolveAuth, type AuthCredential } from './auth.js';
 import { clientHeaders } from './client-headers.js';
 import type { CaptchaRequest, ProxyResponse, TaskDefinition } from '../types.js';
 
@@ -278,7 +278,7 @@ async function apiRequest(options: {
   bodyFormat?: 'json' | 'form';
 }): Promise<unknown> {
   const auth = await resolveAuth();
-  if (!auth.apiKey) throw new ApiRequestError('API key required. Run "octoparse auth login".', 'AUTH_REQUIRED');
+  if (!auth.credential) throw new ApiRequestError('Authentication required. Run "octoparse auth login".', 'AUTH_REQUIRED');
   const baseUrl = await resolveApiBaseUrl();
   const url = new URL(options.endpoint, `${baseUrl}/`);
   for (const [key, value] of Object.entries(options.query ?? {})) {
@@ -293,7 +293,7 @@ async function apiRequest(options: {
       'Accept-Language': 'en-US',
       'Content-Type': bodyFormat === 'form' ? 'application/x-www-form-urlencoded' : 'application/json',
       ...clientHeaders(),
-      'x-api-key': auth.apiKey
+      ...authHeaders(auth.credential)
     },
     body: options.method === 'POST' ? encodeRequestBody(options.body ?? {}, bodyFormat) : undefined
   });
@@ -307,6 +307,12 @@ async function apiRequest(options: {
   } catch {
     throw new ApiRequestError('API response is not valid JSON', 'INVALID_JSON', response.status, text);
   }
+}
+
+function authHeaders(credential: AuthCredential): Record<string, string> {
+  return credential.type === 'bearer'
+    ? { Authorization: `Bearer ${credential.value}` }
+    : { 'x-api-key': credential.value };
 }
 
 function encodeRequestBody(body: Record<string, unknown>, format: 'json' | 'form'): string {

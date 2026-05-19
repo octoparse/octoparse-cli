@@ -44,11 +44,11 @@ export async function checkTemplateBillingPreflight(task: TaskDefinition): Promi
   if (!taskUsesPaidTemplate(task)) return [];
 
   const auth = await resolveAuth();
-  if (!auth.apiKey) return [];
+  if (!auth.credential) return [];
 
   let result: Awaited<ReturnType<typeof fetchTemplateBillingInfo>>;
   try {
-    result = await fetchTemplateBillingInfo({ apiKey: auth.apiKey, taskId: task.taskId });
+    result = await fetchTemplateBillingInfo({ auth: auth.credential, taskId: task.taskId });
   } catch (error) {
     if (isOptionalTemplateBillingFailure(error)) return [];
     throw error;
@@ -94,12 +94,12 @@ export async function checkTemplateBillingPreflight(task: TaskDefinition): Promi
 
 export async function checkPaidCapabilityPreflight(task: TaskDefinition): Promise<BillingWarning[]> {
   const auth = await resolveAuth();
-  if (!auth.apiKey) return [];
+  if (!auth.credential) return [];
 
   const warnings: BillingWarning[] = [];
 
   if (taskUsesStrongProxy(task)) {
-    const proxyBalanceResult = await fetchProxyBalance({ apiKey: auth.apiKey }).catch(() => undefined);
+    const proxyBalanceResult = await fetchProxyBalance({ auth: auth.credential }).catch(() => undefined);
     const balance = proxyBalanceResult?.totalBalance ?? proxyBalanceResult?.balance;
 
     if (balance !== undefined && balance < PROXY_BALANCE_WARNING_THRESHOLD) {
@@ -113,8 +113,8 @@ export async function checkPaidCapabilityPreflight(task: TaskDefinition): Promis
 
   if (taskUsesCaptcha(task)) {
     const [accountBalanceResult, captchaRemainResult] = await Promise.allSettled([
-      fetchAccountBalance({ apiKey: auth.apiKey }),
-      fetchCaptchaRemain({ apiKey: auth.apiKey })
+      fetchAccountBalance({ auth: auth.credential }),
+      fetchCaptchaRemain({ auth: auth.credential })
     ]);
     const balance = accountBalanceResult.status === 'fulfilled'
       ? accountBalanceResult.value.totalBalance ?? accountBalanceResult.value.balance

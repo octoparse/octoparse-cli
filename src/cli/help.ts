@@ -1,5 +1,5 @@
 import { API_BASE_URL_ENV } from '../runtime/api-client.js';
-import { API_KEY_ENV } from '../runtime/auth.js';
+import { ACCESS_TOKEN_ENV, API_KEY_ENV } from '../runtime/auth.js';
 import { API_KEYS_URL } from '../commands/auth.js';
 
 export function printCommandHelp(command: string, subcommand?: string): void {
@@ -12,26 +12,32 @@ Purpose:
   Print machine-readable CLI capabilities for agents.
 
 Authentication:
-  Does not require an API key. Functional commands do.
+  Does not require login. Functional commands do.
 `,
   auth: `Usage:
+  octoparse auth login [--oauth] [--no-open] [--json]
+  octoparse auth login --api-key <apiKey> [--api-base-url <url>] [--json]
   octoparse auth login <apiKey> [--api-base-url <url>] [--json]
   octoparse auth login [--stdin] [--no-open] [--api-base-url <url>] [--json]
   octoparse auth status [--json]
   octoparse auth info [--json]
   octoparse auth logout [--json]
 
-API key:
+Login methods:
+  Interactive login lets you choose OAuth or API key.
+  OAuth opens the browser and stores an access/refresh token locally.
   Create one at ${API_KEYS_URL}
-  Interactive login opens this page automatically, then verifies and stores the key.
+  API key login opens this page automatically, then verifies and stores the key.
   If the browser does not open, copy the URL above and open it manually.
 
 Agent notes:
+  Use "auth login --oauth" to force browser-based OAuth.
   Use "auth login <apiKey>" to verify and save a copied key directly.
   Use "auth login --stdin" for non-interactive setup.
   login verifies the API key before saving; invalid keys are not stored.
   ${API_KEY_ENV} overrides stored credentials.
-  Functional commands require a configured API key, including local task-file and OTD runs.
+  ${ACCESS_TOKEN_ENV} can provide a bearer access token for CI.
+  Functional commands require configured credentials, including local task-file and OTD runs.
 `,
     env: `Usage:
   octoparse env prod [--json]
@@ -71,7 +77,7 @@ Examples:
   octoparse run <taskId> [--task-file <file.json|file.xml|file.otd>] [--output <dir>] [--chrome-path <path>] [--headless] [--max-rows <n>] [--detach] [--json|--jsonl]
 
 Agent notes:
-  Requires a configured API key even when --task-file points to a local JSON, XML, or OTD file.
+  Requires configured credentials even when --task-file points to a local JSON, XML, or OTD file.
   Use --detach for background local extraction.
   Use --max-rows <n> to stop automatically after saving n rows.
   Use --jsonl for foreground event streams.
@@ -143,6 +149,8 @@ Standalone Octoparse engine CLI.
 Usage:
   octoparse capabilities [--json]
   octoparse doctor [--chrome-path <path>] [--json]
+  octoparse auth login [--oauth] [--no-open] [--json]
+  octoparse auth login --api-key <apiKey> [--api-base-url <url>] [--json]
   octoparse auth login <apiKey> [--api-base-url <url>] [--json]
   octoparse auth login [--stdin] [--no-open] [--api-base-url <url>] [--json]
   octoparse auth status [--json]
@@ -187,14 +195,16 @@ Design:
   - Does not support kernel browser or legacy workflow in v1.
 
 Authentication:
-  API key is required for all functional commands, including local --task-file and .otd runs.
+  OAuth or API key credentials are required for all functional commands, including local --task-file and .otd runs.
   Only setup/diagnostic commands can run without it: --help, --version, capabilities, doctor, browser doctor, auth, env.
   API key page:                   ${API_KEYS_URL}
+  octoparse auth login --oauth   open browser OAuth login and store tokens
   octoparse auth login <key>     verify and store a copied API key directly
-  octoparse auth login          open API key page, verify pasted key, then store it
+  octoparse auth login          choose OAuth or API key interactively
   octoparse auth login --stdin  read API key from stdin, verify it, then store it
   octoparse auth login --no-open do not open the browser during interactive login
   ${API_KEY_ENV}                  overrides stored credentials
+  ${ACCESS_TOKEN_ENV}             uses a bearer access token instead of stored credentials
   ${API_BASE_URL_ENV}             overrides API base URL; default is the production API
 
 Run diagnostics:

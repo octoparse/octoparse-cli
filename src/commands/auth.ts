@@ -1,10 +1,22 @@
 import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import prompts from 'prompts';
 import { firstPositionalArg, hasFlag, valueAfter } from '../cli/args.js';
 import { printEnvelope, printUsageError } from '../cli/output.js';
-import { API_BASE_URL_ENV, ApiRequestError, validateApiKey } from '../runtime/api-client.js';
-import { API_KEY_ENV, maskApiKey, normalizeApiKey, removeApiKey, resolveAuth, saveApiKey } from '../runtime/auth.js';
+import { API_BASE_URL_ENV, ApiRequestError, fetchAccountBalance, fetchAccountInfo, validateApiKey } from '../runtime/api-client.js';
+import {
+  ACCESS_TOKEN_ENV,
+  API_KEY_ENV,
+  maskAccessToken,
+  maskApiKey,
+  normalizeApiKey,
+  removeApiKey,
+  resolveAuth,
+  saveApiKey,
+  saveOAuthToken
+} from '../runtime/auth.js';
+import { buildEndSessionUrl, resolveOAuthConfig, runOAuthLogin } from '../runtime/oauth.js';
 import { EXIT_OK, EXIT_OPERATION_FAILED } from '../types.js';
 
 export const API_KEYS_URL = 'https://www.octoparse.com/console/account-center/api-keys';
@@ -52,22 +64,20 @@ export async function ensureAuthenticated(json: boolean): Promise<number> {
 
 export function printAuthRequired(json: boolean): number {
   const message = [
-    'API key required.',
-    `Create one at ${API_KEYS_URL}, then run "octoparse auth login".`,
-    `For CI, set ${API_KEY_ENV}.`
+    'Authentication required.',
+    'Run "octoparse auth login" and choose OAuth or API key.',
+    `API keys can be created at ${API_KEYS_URL}.`,
+    `For CI, set ${API_KEY_ENV} or ${ACCESS_TOKEN_ENV}.`
   ].join(' ');
   if (json) {
     printEnvelope(false, undefined, 'AUTH_REQUIRED', message);
   } else {
-    console.error('Authentication failed: an API key is required.');
-    console.error('');
-    console.error('Create an API key:');
-    console.error(`  ${API_KEYS_URL}`);
+    console.error('Authentication failed: login is required.');
     console.error('');
     console.error('Then run:');
     console.error('  octoparse auth login');
     console.error('');
-    console.error(`For CI or scripts, set ${API_KEY_ENV}.`);
+    console.error(`For CI or scripts, set ${API_KEY_ENV} or ${ACCESS_TOKEN_ENV}.`);
   }
   return EXIT_OPERATION_FAILED;
 }
@@ -76,6 +86,14 @@ async function authLogin(args: string[]): Promise<number> {
   const json = hasFlag(args, '--json');
   const readFromStdin = hasFlag(args, '--stdin');
   const providedApiKey = normalizeApiKey(firstPositionalArg(args, ['--api-base-url']) ?? '');
+  const method = await resolveLoginMethod(args, json, readFromStdin, Boolean(providedApiKey));
+  if (method === 'oauth') {
+    return authLoginOAuth(args);
+  }
+  return authLoginApiKey(args, json, readFromStdin, providedApiKey);
+}
+
+async function authLoginApiKey(args: string[], json: boolean, readFromStdin: boolean, providedApiKey: string): Promise<number> {
   const shouldOpen = shouldOpenApiKeyPage(args, json, readFromStdin, Boolean(providedApiKey));
 
   try {
@@ -95,7 +113,8 @@ async function authLogin(args: string[]): Promise<number> {
     const status = {
       authenticated: true,
       source: 'file',
-      keyPreview: maskApiKey(credentials.apiKey),
+      method: 'apiKey',
+      keyPreview: maskApiKey(credentials.apiKey ?? apiKey),
       credentialsFile: join(homedir(), '.octoparse', 'credentials.json'),
       ...verifiedAccountFields(validation)
     };
@@ -134,6 +153,70 @@ async function authLogin(args: string[]): Promise<number> {
     }
     return EXIT_OPERATION_FAILED;
   }
+}
+
+async function authLoginOAuth(args: string[]): Promise<number> {
+  const json = hasFlag(args, '--json');
+  const shouldOpen = !hasFlag(args, '--no-open');
+  try {
+    const config = resolveOAuthConfig();
+    if (!json) {
+      console.log('Opening browser for OAuth login.');
+      console.log('');
+    }
+    const result = await runOAuthLogin({
+      config,
+      openBrowser: async (url) => {
+        process.stderr.write(`Open this URL to log in:\n${url}\n`);
+        if (shouldOpen) await openUrl(url);
+      }
+    });
+    const credentials = await saveOAuthToken(result.token);
+    const status = {
+      authenticated: true,
+      source: 'file',
+      method: 'oauth',
+      tokenPreview: maskAccessToken(result.token.accessToken),
+      credentialsFile: join(homedir(), '.octoparse', 'credentials.json')
+    };
+
+    if (json) {
+      printEnvelope(true, status);
+    } else {
+      console.log(`OAuth token saved: ${status.tokenPreview}`);
+      console.log(`Credentials: ${status.credentialsFile}`);
+      console.log('');
+      console.log('Next:');
+      console.log('  octoparse task list');
+    }
+    return EXIT_OK;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (json) printEnvelope(false, undefined, 'OAUTH_LOGIN_FAILED', message);
+    else {
+      console.error(`OAuth login failed: ${message}`);
+      console.error('Token was not saved.');
+    }
+    return EXIT_OPERATION_FAILED;
+  }
+}
+
+async function resolveLoginMethod(args: string[], json: boolean, readFromStdin: boolean, hasProvidedApiKey: boolean): Promise<'oauth' | 'apiKey'> {
+  if (hasFlag(args, '--oauth')) return 'oauth';
+  if (hasFlag(args, '--api-key')) return 'apiKey';
+  if (readFromStdin || hasProvidedApiKey || json) return 'apiKey';
+  if (!process.stdin.isTTY || !process.stdout.isTTY) return 'apiKey';
+  const response = await prompts({
+    type: 'select',
+    name: 'method',
+    message: 'Choose login method',
+    choices: [
+      { title: 'OAuth login (opens browser)', value: 'oauth' },
+      { title: 'API key', value: 'apiKey' }
+    ],
+    initial: 0
+  });
+  return response.method === 'apiKey' ? 'apiKey' : 'oauth';
 }
 
 function printLoginInstructions(willOpenBrowser: boolean): void {
@@ -184,7 +267,7 @@ function openUrl(url: string): Promise<void> {
 async function authStatus(args: string[]): Promise<number> {
   const json = hasFlag(args, '--json');
   const auth = await resolveAuth();
-  if (!auth.authenticated || !auth.apiKey) {
+  if (!auth.authenticated || !auth.credential) {
     if (json) {
       return printAuthRequired(true);
     }
@@ -194,11 +277,13 @@ async function authStatus(args: string[]): Promise<number> {
   }
 
   try {
-    const validation = await validateApiKey({
-      apiKey: auth.apiKey,
-      baseUrl: valueAfter(args, '--api-base-url')
-    });
-    const { apiKey: _apiKey, ...status } = auth;
+    const validation = auth.apiKey
+      ? await validateApiKey({
+          apiKey: auth.apiKey,
+          baseUrl: valueAfter(args, '--api-base-url')
+        })
+      : await validateCredential(auth.credential, valueAfter(args, '--api-base-url'));
+    const { apiKey: _apiKey, accessToken: _accessToken, oauth: _oauth, credential: _credential, ...status } = auth;
     const result = {
       ...status,
       ...verifiedAccountFields(validation)
@@ -210,6 +295,7 @@ async function authStatus(args: string[]): Promise<number> {
     }
 
     console.log(`Authenticated: yes (${status.source})`);
+    console.log(`Method: ${status.method}`);
     console.log('Verified: yes');
     console.log(`API: ${validation.baseUrl}`);
     if (result.currentAccountLevel !== undefined) {
@@ -218,9 +304,13 @@ async function authStatus(args: string[]): Promise<number> {
     if (result.accountBalance !== undefined) {
       console.log(`Account balance: ${result.accountBalance}`);
     }
-    console.log(`API key: ${status.keyPreview}`);
+    if (status.method === 'oauth') {
+      console.log(`Access token: ${status.tokenPreview}`);
+    } else {
+      console.log(`API key: ${status.keyPreview}`);
+    }
     if (status.source === 'env') {
-      console.log(`Source: ${API_KEY_ENV}`);
+      console.log(`Source: ${status.method === 'oauth' ? ACCESS_TOKEN_ENV : API_KEY_ENV}`);
     } else {
       console.log(`Credentials: ${status.credentialsFile}`);
     }
@@ -243,16 +333,18 @@ async function authStatus(args: string[]): Promise<number> {
 async function authInfo(args: string[]): Promise<number> {
   const json = hasFlag(args, '--json');
   const auth = await resolveAuth();
-  if (!auth.authenticated || !auth.apiKey) {
+  if (!auth.authenticated || !auth.credential) {
     return printAuthRequired(json);
   }
 
   try {
-    const validation = await validateApiKey({
-      apiKey: auth.apiKey,
-      baseUrl: valueAfter(args, '--api-base-url')
-    });
-    const { apiKey: _apiKey, ...status } = auth;
+    const validation = auth.apiKey
+      ? await validateApiKey({
+          apiKey: auth.apiKey,
+          baseUrl: valueAfter(args, '--api-base-url')
+        })
+      : await validateCredential(auth.credential, valueAfter(args, '--api-base-url'));
+    const { apiKey: _apiKey, accessToken: _accessToken, oauth: _oauth, credential: _credential, ...status } = auth;
     const result = {
       ...status,
       ...verifiedAccountFields(validation),
@@ -283,20 +375,37 @@ async function authInfo(args: string[]): Promise<number> {
 
 async function authLogout(args: string[]): Promise<number> {
   const json = hasFlag(args, '--json');
+  const before = await resolveAuth();
+  const logoutUrl = before.method === 'oauth'
+    ? buildEndSessionUrl(resolveOAuthConfig(), before.oauth)
+    : undefined;
   const removed = await removeApiKey();
-  const { apiKey: _apiKey, ...status } = await resolveAuth();
-  const result = { removed, ...status };
+  const { apiKey: _apiKey, accessToken: _accessToken, oauth: _oauth, credential: _credential, ...status } = await resolveAuth();
+  const result = { removed, logoutUrl, ...status };
 
   if (json) {
     printEnvelope(true, result);
     return EXIT_OK;
   }
 
-  console.log(removed ? 'Stored API key removed' : 'No stored API key found');
+  console.log(removed ? 'Stored credentials removed' : 'No stored credentials found');
+  if (logoutUrl) console.log(`Identity logout: ${logoutUrl}`);
   if (status.authenticated && status.source === 'env') {
-    console.log(`${API_KEY_ENV} is still set and will continue to be used for this shell.`);
+    console.log(`${status.method === 'oauth' ? ACCESS_TOKEN_ENV : API_KEY_ENV} is still set and will continue to be used for this shell.`);
   }
   return EXIT_OK;
+}
+
+async function validateCredential(credential: NonNullable<Awaited<ReturnType<typeof resolveAuth>>['credential']>, baseUrl?: string) {
+  const account = await fetchAccountInfo({ auth: credential, baseUrl });
+  const balance = await fetchAccountBalance({ auth: credential, baseUrl }).catch(() => undefined);
+  return {
+    ok: true as const,
+    baseUrl: account.baseUrl,
+    endpoint: account.endpoint,
+    account: account.data,
+    balance
+  };
 }
 
 function accountLevelName(level: unknown): string | undefined {
@@ -320,7 +429,9 @@ function verifiedAccountFields(validation: Awaited<ReturnType<typeof validateApi
 function printAccountInfo(result: ReturnType<typeof verifiedAccountFields> & {
   authenticated: boolean;
   source: string;
+  method: string;
   keyPreview?: string;
+  tokenPreview?: string;
   credentialsFile: string;
   account: Record<string, unknown>;
 }): void {
@@ -341,8 +452,13 @@ function printAccountInfo(result: ReturnType<typeof verifiedAccountFields> & {
   }
   const effectiveDate = stringField(result.account.effectiveDate);
   if (effectiveDate) console.log(`Effective date: ${effectiveDate}`);
-  console.log(`API key: ${result.keyPreview}`);
-  if (result.source === 'env') console.log(`Source: ${API_KEY_ENV}`);
+  console.log(`Method: ${result.method}`);
+  if (result.method === 'oauth') {
+    console.log(`Access token: ${result.tokenPreview}`);
+  } else {
+    console.log(`API key: ${result.keyPreview}`);
+  }
+  if (result.source === 'env') console.log(`Source: ${result.method === 'oauth' ? ACCESS_TOKEN_ENV : API_KEY_ENV}`);
 }
 
 function stringField(value: unknown): string {

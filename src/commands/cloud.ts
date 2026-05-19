@@ -10,7 +10,7 @@ import {
   stopCloudTask,
   type ApiResult
 } from '../runtime/api-client.js';
-import { resolveAuth } from '../runtime/auth.js';
+import { resolveAuth, type AuthCredential } from '../runtime/auth.js';
 import { EXIT_OK, EXIT_OPERATION_FAILED } from '../types.js';
 
 export async function cloudCommand(subcommand: string | undefined, args: string[]): Promise<number> {
@@ -42,14 +42,14 @@ async function cloudAction(command: 'start' | 'stop', args: string[]): Promise<n
   }
 
   const auth = await resolveAuth();
-  if (!auth.authenticated || !auth.apiKey) {
+  if (!auth.authenticated || !auth.credential) {
     return printAuthRequired(json);
   }
 
   try {
     const result = command === 'start'
-      ? await startCloudTask({ apiKey: auth.apiKey, taskId, baseUrl: valueAfter(args, '--api-base-url') })
-      : await stopCloudTask({ apiKey: auth.apiKey, taskId, baseUrl: valueAfter(args, '--api-base-url') });
+      ? await startCloudTask({ auth: auth.credential, taskId, baseUrl: valueAfter(args, '--api-base-url') })
+      : await stopCloudTask({ auth: auth.credential, taskId, baseUrl: valueAfter(args, '--api-base-url') });
     if (json) {
       printEnvelope(true, { taskId, action: command, ...result });
     } else {
@@ -70,12 +70,12 @@ async function cloudStatus(args: string[]): Promise<number> {
   }
 
   const auth = await resolveAuth();
-  if (!auth.authenticated || !auth.apiKey) {
+  if (!auth.authenticated || !auth.credential) {
     return printAuthRequired(json);
   }
 
   try {
-    const result = await fetchCloudStatus({ apiKey: auth.apiKey, taskId, baseUrl: valueAfter(args, '--api-base-url') });
+    const result = await fetchCloudStatus({ auth: auth.credential, taskId, baseUrl: valueAfter(args, '--api-base-url') });
     if (json) {
       printEnvelope(true, { taskId, ...result });
     } else {
@@ -95,14 +95,14 @@ export async function cloudHistory(args: string[]): Promise<number> {
   }
 
   const auth = await resolveAuth();
-  if (!auth.authenticated || !auth.apiKey) {
+  if (!auth.authenticated || !auth.credential) {
     return printAuthRequired(json);
   }
 
   try {
-    const result = await fetchCloudHistory({ apiKey: auth.apiKey, taskId, baseUrl: valueAfter(args, '--api-base-url') });
+    const result = await fetchCloudHistory({ auth: auth.credential, taskId, baseUrl: valueAfter(args, '--api-base-url') });
     const items = await withCloudExportStats({
-      apiKey: auth.apiKey,
+      auth: auth.credential,
       taskId,
       baseUrl: valueAfter(args, '--api-base-url'),
       items: result.data
@@ -127,7 +127,7 @@ export async function cloudHistory(args: string[]): Promise<number> {
 }
 
 async function withCloudExportStats(options: {
-  apiKey: string;
+  auth: AuthCredential;
   taskId: string;
   baseUrl?: string;
   items: unknown[];
@@ -137,7 +137,7 @@ async function withCloudExportStats(options: {
     const lotId = stringValue(record.lot);
     if (!lotId) return item;
     const stats = await fetchCloudExportStats({
-      apiKey: options.apiKey,
+      auth: options.auth,
       taskId: options.taskId,
       lotId,
       baseUrl: options.baseUrl
@@ -147,14 +147,14 @@ async function withCloudExportStats(options: {
 }
 
 async function fetchCloudExportStats(options: {
-  apiKey: string;
+  auth: AuthCredential;
   taskId: string;
   lotId: string;
   baseUrl?: string;
 }): Promise<{ uniqueRows: number; duplicateRows: number; exportRows: number } | null> {
   try {
     const result = await fetchCloudDataBatch({
-      apiKey: options.apiKey,
+      auth: options.auth,
       taskId: options.taskId,
       lotId: options.lotId,
       baseUrl: options.baseUrl,

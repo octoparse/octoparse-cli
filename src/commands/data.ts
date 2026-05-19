@@ -118,7 +118,7 @@ async function cloudDataExport(args: string[]): Promise<number> {
   }
 
   const auth = await resolveAuth();
-  if (!auth.authenticated || !auth.apiKey) {
+  if (!auth.authenticated || !auth.credential) {
     return printAuthRequired(json);
   }
 
@@ -129,7 +129,7 @@ async function cloudDataExport(args: string[]): Promise<number> {
 
   try {
     const rows = await fetchCloudRows({
-      apiKey: auth.apiKey,
+      auth: auth.credential,
       taskId,
       lotId,
       baseUrl: valueAfter(args, '--api-base-url'),
@@ -216,9 +216,9 @@ function deriveLotId(runId: string): string {
 
 async function resolveTaskName(taskId: string): Promise<string> {
   const auth = await resolveAuth();
-  if (!auth.apiKey) return taskId;
+  if (!auth.credential) return taskId;
   try {
-    const info = await fetchTaskInfo({ apiKey: auth.apiKey, taskId });
+    const info = await fetchTaskInfo({ auth: auth.credential, taskId });
     return String(info.taskName ?? info.TaskName ?? taskId).trim() || taskId;
   } catch {
     return taskId;
