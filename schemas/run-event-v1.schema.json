@@ -16,6 +16,9 @@
         "run.resumed",
         "captcha",
         "proxy",
+        "download.started",
+        "download.succeeded",
+        "download.failed",
         "run.stopping",
         "run.stopped"
       ]
@@ -41,6 +44,8 @@
       "minimum": 1
     },
     "data": true,
+    "item": true,
+    "stats": true,
     "outputDir": { "type": "string" }
   },
   "additionalProperties": true

@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { mkdir, open, readFile, writeFile, type FileHandle } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { hasFlag, parsePositiveInt, valueAfter } from '../cli/args.js';
 import { printEnvelope, printUsageError } from '../cli/output.js';
 import { appendJsonLine, ensureRunDir, writeRunSummary } from '../runtime/artifacts.js';
@@ -11,7 +11,7 @@ import {
   checkTemplateBillingPreflight,
   type BillingWarning
 } from '../runtime/billing.js';
-import { EngineHost } from '../runtime/engine-host.js';
+import { EngineHost, type RuntimeDownloadEvent } from '../runtime/engine-host.js';
 import { defaultRunsDir } from '../runtime/local-runs.js';
 import { safeFileName } from '../runtime/naming.js';
 import { BillingRuntimeError } from '../runtime/run-services.js';
@@ -46,6 +46,7 @@ const DETACHED_CHILD_ENV = 'OCTO_ENGINE_DETACHED_CHILD';
 const DETACHED_BOOTSTRAP_DIR_ENV = 'OCTO_ENGINE_DETACHED_BOOTSTRAP_DIR';
 const LOCAL_RUN_WARNING_THRESHOLD = 4;
 const LOCAL_RUN_STRONG_WARNING_THRESHOLD = 6;
+let engineHostFactory = () => new EngineHost();
 
 export interface LocalRunResourceWarning {
   code: 'LOCAL_RUN_RESOURCE_WARNING';
@@ -250,7 +251,7 @@ async function executeTask(
   loadTask: () => Promise<TaskDefinition>,
   resourceWarning?: LocalRunResourceWarning
 ): Promise<number> {
-  const host = new EngineHost();
+  const host = engineHostFactory();
   let currentRunDir = '';
   let currentRunId = '';
   let currentLotId = '';
@@ -279,6 +280,8 @@ async function executeTask(
   let trackingStartSent = false;
   let loadedTask: TaskDefinition | null = null;
   let billingWarnings: BillingWarning[] = [];
+  let downloadStats: RunSummary['downloads'] | undefined;
+  let rowQueue = Promise.resolve();
 
   const appendRunArtifact = (fileName: string, value: unknown) => {
     if (!runDirReady) return;
@@ -296,7 +299,7 @@ async function executeTask(
   };
   const updateControlStatus = async (status: ActiveRunStatus) => {
     const server = controlServer as RunControlServer | null;
-    if (server) await server.updateStatus(status).catch(() => undefined);
+    if (server) await server.updateStatus(status, downloadStats).catch(() => undefined);
   };
   const closeControlServer = async () => {
     const server = controlServer as RunControlServer | null;
@@ -371,6 +374,41 @@ async function executeTask(
   });
 
   host.on('row', (event) => {
+    rowQueue = rowQueue
+      .then(() => handleRowEvent(event))
+      .catch((error) => {
+        appendRunArtifact('events.jsonl', {
+          event: 'log',
+          runId: event.runId,
+          level: 'error',
+          message: `row processing failed: ${error instanceof Error ? error.message : String(error)}`
+        });
+      });
+  });
+
+  host.on('download', (event) => {
+    downloadStats = updateEngineDownloadStats(downloadStats, event);
+    const downloadEvent = {
+      event: event.status === 'failed' ? 'download.failed' : event.status === 'success' ? 'download.succeeded' : 'download.started',
+      runId: event.runId,
+      item: {
+        url: event.url,
+        path: event.filePath,
+        size: event.fileSize,
+        fromField: event.fieldName,
+        rowUuid: event.rowUuid,
+        status: event.status,
+        errorInfo: event.error
+      },
+      stats: downloadStats
+    };
+    appendRunArtifact('downloads.jsonl', downloadEvent);
+    appendRunArtifact('events.jsonl', downloadEvent);
+    if (options.jsonl) printRunJsonLine(runtimeConsole, downloadEvent);
+    void updateControlStatus(runStatus);
+  });
+
+  const handleRowEvent = async (event: { runId: string; total: number; data: Record<string, unknown> }) => {
     if (options.maxRows !== undefined && savedRows >= options.maxRows) {
       if (!rowLimitReached) {
         rowLimitReached = true;
@@ -383,8 +421,9 @@ async function executeTask(
     }
 
     savedRows += 1;
-    const rowEvent = { ...event, total: savedRows };
-    appendRunArtifact('rows.jsonl', event.data);
+    const rowData = event.data;
+    const rowEvent = { ...event, total: savedRows, data: rowData };
+    appendRunArtifact('rows.jsonl', rowData);
     appendRunArtifact('events.jsonl', { event: 'row', ...rowEvent });
     if (options.jsonl) printRunJsonLine(runtimeConsole, { event: 'row', ...rowEvent });
 
@@ -413,7 +452,7 @@ async function executeTask(
       }
       host.stop();
     }
-  });
+  };
 
   host.on('log', (event) => {
     appendRunArtifact('logs.jsonl', event);
@@ -493,6 +532,8 @@ async function executeTask(
       return `Run timeout after ${options.runTimeoutMs}ms`;
     });
     const summary = await Promise.race([runPromise, interrupted]);
+    await rowQueue;
+    if (downloadStats?.total) downloadStats = { ...downloadStats, status: 'completed' };
     runPromise.catch(() => undefined);
     if (signalHandler) {
       process.off('SIGINT', signalHandler);
@@ -503,7 +544,8 @@ async function executeTask(
       ...summary,
       total: savedRows || summary.total,
       ...(stopReason ? { stopReason } : {}),
-      ...(options.maxRows !== undefined ? { maxRows: options.maxRows } : {})
+      ...(options.maxRows !== undefined ? { maxRows: options.maxRows } : {}),
+      ...(downloadStats ? { downloads: downloadStats } : {})
     };
     runStatus = finalSummary.status;
     await waitControlServer();
@@ -552,6 +594,8 @@ async function executeTask(
       runtimeConsole.stdout(`Run completed: ${finalSummary.runId}`);
       runtimeConsole.stdout(`Task: ${finalSummary.taskId}`);
       runtimeConsole.stdout(`Rows: ${finalSummary.total}`);
+      if (downloadStats) runtimeConsole.stdout(`Downloads: ${downloadStats.succeeded}/${downloadStats.total} succeeded, ${downloadStats.failed} failed`);
+      if (downloadStats?.outputDir) runtimeConsole.stdout(`Download files: ${downloadStats.outputDir}`);
       if (finalSummary.stopReason === 'max_rows') runtimeConsole.stdout(`Stop reason: max_rows (${finalSummary.maxRows})`);
       runtimeConsole.stdout(`View data: ${localDataExportCommand(finalSummary)}`);
     }
@@ -611,8 +655,59 @@ async function executeTask(
   }
 }
 
+function updateEngineDownloadStats(
+  current: RunSummary['downloads'] | undefined,
+  event: RuntimeDownloadEvent
+): RunSummary['downloads'] {
+  const outputDir = resolveDownloadOutputDir(current?.outputDir, event.filePath);
+  const downloading = Math.max(
+    0,
+    (current?.downloading ?? 0) + (event.status === 'downloading' ? 1 : event.status === 'success' || event.status === 'failed' ? -1 : 0)
+  );
+  const succeeded = (current?.succeeded ?? 0) + (event.status === 'success' ? 1 : 0);
+  const failed = (current?.failed ?? 0) + (event.status === 'failed' ? 1 : 0);
+  const completed = succeeded + failed + (current?.canceled ?? 0);
+  const total = Math.max(current?.total ?? 0, completed + downloading);
+  return {
+    status: 'downloading',
+    outputDir,
+    total,
+    pending: 0,
+    downloading,
+    succeeded,
+    failed,
+    canceled: current?.canceled ?? 0,
+    completed
+  };
+}
+
+function resolveDownloadOutputDir(current: string | undefined, filePath: string): string | undefined {
+  if (!filePath) return current;
+  const next = dirname(filePath);
+  if (!current) return next;
+  if (current === next) return current;
+  return commonPathPrefix(current, next);
+}
+
+function commonPathPrefix(left: string, right: string): string {
+  const separator = left.includes('\\') || right.includes('\\') ? '\\' : '/';
+  const leftParts = left.split(/[\\/]/);
+  const rightParts = right.split(/[\\/]/);
+  const common: string[] = [];
+  const length = Math.min(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    if (leftParts[index] !== rightParts[index]) break;
+    common.push(leftParts[index]);
+  }
+  return common.join(separator) || left;
+}
+
 export function localDataExportCommand(summary: Pick<RunSummary, 'taskId' | 'lotId'>): string {
   return `octoparse data export ${summary.taskId} --source local --lot-id ${summary.lotId}`;
+}
+
+export function setEngineHostFactoryForTesting(factory: (() => EngineHost) | undefined): void {
+  engineHostFactory = factory ?? (() => new EngineHost());
 }
 
 function printBillingWarnings(

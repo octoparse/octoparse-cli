@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFile, spawn } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { createServer } from 'node:http';
 import { access, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,7 +11,8 @@ import { authCommand } from '../dist/commands/auth.js';
 import { cloudHistory } from '../dist/commands/cloud.js';
 import { ApiRequestError, fetchAccountInfo, validateApiKey } from '../dist/runtime/api-client.js';
 import { DEFAULT_OAUTH_REDIRECT_URI, exchangeCodeForToken, runOAuthLogin } from '../dist/runtime/oauth.js';
-import { localDataExportCommand } from '../dist/commands/run.js';
+import { localDataExportCommand, runTask, setEngineHostFactoryForTesting } from '../dist/commands/run.js';
+import { EngineHost } from '../dist/runtime/engine-host.js';
 import { resolveProxy, solveCaptcha } from '../dist/runtime/run-services.js';
 import { formatTaskListLine } from '../dist/commands/task.js';
 import { TaskDefinitionProvider } from '../dist/runtime/task-definition-provider.js';
@@ -1056,6 +1058,183 @@ test('run validates max rows as a positive integer', async () => {
   assert.match(parseJson(result.stdout).error.message, /--max-rows/);
 });
 
+test('local run records engine download events in artifacts and summary', async () => {
+  const result = await runWithFakeRuntimeEvent('download-runtime', {
+    downloadEvents: [
+      {
+        url: 'https://example.com/file.webp',
+        filePath: '/tmp/octoparse-downloads/task/Field 1/file.webp',
+        fileSize: 1234,
+        status: 'downloading',
+        fieldName: 'Field 1',
+        rowUuid: 'row-1'
+      },
+      {
+        url: 'https://example.com/file.webp',
+        filePath: '/tmp/octoparse-downloads/task/Field 1/file.webp',
+        fileSize: 1234,
+        status: 'success',
+        fieldName: 'Field 1',
+        rowUuid: 'row-1'
+      },
+      {
+        url: 'https://example.com/file-2.webp',
+        filePath: '/tmp/octoparse-downloads/task/Field 2/file-2.webp',
+        fileSize: 5678,
+        status: 'downloading',
+        fieldName: 'Field 2',
+        rowUuid: 'row-2'
+      },
+      {
+        url: 'https://example.com/file-2.webp',
+        filePath: '/tmp/octoparse-downloads/task/Field 2/file-2.webp',
+        fileSize: 5678,
+        status: 'success',
+        fieldName: 'Field 2',
+        rowUuid: 'row-2'
+      }
+    ]
+  });
+  assert.equal(result.code, 0);
+  assert.ok(result.events.find((event) => event.event === 'download.succeeded'));
+  const stopped = result.events.find((event) => event.event === 'run.stopped');
+  assert.equal(stopped.downloads.total, 2);
+  assert.equal(stopped.downloads.succeeded, 2);
+  assert.equal(stopped.downloads.outputDir, '/tmp/octoparse-downloads/task');
+  assert.equal(result.downloads.length, 4);
+});
+
+test('run preflight ignores stored strong proxy settings when switch IP is disabled', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.OCTO_ENGINE_API_KEY;
+  const originalLog = console.log;
+  const originalError = console.error;
+  const originalStdoutWrite = process.stdout.write;
+  const originalStderrWrite = process.stderr.write;
+  const seen = [];
+  const dir = await mkdtemp(join(tmpdir(), 'octo-proxy-task-'));
+  const taskFile = join(dir, 'proxy-task.json');
+  const minimalTask = JSON.parse(await readFile('examples/minimal-task.json', 'utf8'));
+  await writeFile(taskFile, JSON.stringify({
+    ...minimalTask,
+    taskId: 'proxy-low-balance',
+    taskName: 'Proxy Low Balance',
+    brokerSettings: {
+      ipProxySettings: {
+        ipProxyFromType: 1
+      }
+    }
+  }));
+  process.env.OCTO_ENGINE_API_KEY = 'billing-key';
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(String(url));
+    seen.push(parsed.pathname);
+    if (parsed.pathname === '/api/HttpProxy/Balance') {
+      return new Response(JSON.stringify({
+        data: 0,
+        error: 'success'
+      }), {
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    return new Response(JSON.stringify({ error: 'not found' }), {
+      status: 404,
+      statusText: 'Not Found',
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+  console.log = () => {};
+  console.error = () => {};
+  process.stdout.write = (() => true);
+  process.stderr.write = (() => true);
+
+  try {
+    const result = await runWithFakeRuntimeEvent('proxy-low-balance', {
+      taskFile
+    });
+    assert.equal(result.code, 0);
+    assert.equal(seen.includes('/api/HttpProxy/Balance'), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+    console.error = originalError;
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
+    if (originalApiKey === undefined) delete process.env.OCTO_ENGINE_API_KEY;
+    else process.env.OCTO_ENGINE_API_KEY = originalApiKey;
+  }
+});
+
+test('run preflight warns for strong proxy balance risk without blocking startup', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.OCTO_ENGINE_API_KEY;
+  const originalLog = console.log;
+  const originalError = console.error;
+  const originalStdoutWrite = process.stdout.write;
+  const originalStderrWrite = process.stderr.write;
+  const seen = [];
+  const dir = await mkdtemp(join(tmpdir(), 'octo-proxy-task-'));
+  const taskFile = join(dir, 'proxy-task.json');
+  const minimalTask = JSON.parse(await readFile('examples/minimal-task.json', 'utf8'));
+  await writeFile(taskFile, JSON.stringify({
+    ...minimalTask,
+    taskId: 'proxy-low-balance',
+    taskName: 'Proxy Low Balance',
+    xml: minimalTask.xml.replace('EnableSwitchIp="false"', 'EnableSwitchIp="true"').replace('IPType="None"', 'IPType="0"'),
+    brokerSettings: {
+      ipProxySettings: {
+        ipProxyFromType: 1
+      }
+    }
+  }));
+  process.env.OCTO_ENGINE_API_KEY = 'billing-key';
+  globalThis.fetch = async (url) => {
+    const parsed = new URL(String(url));
+    seen.push(parsed.pathname);
+    if (parsed.pathname === '/api/HttpProxy/Balance') {
+      return new Response(JSON.stringify({
+        data: 3,
+        error: 'success'
+      }), {
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    return new Response(JSON.stringify({ error: 'not found' }), {
+      status: 404,
+      statusText: 'Not Found',
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+  console.log = () => {};
+  console.error = () => {};
+  process.stdout.write = (() => true);
+  process.stderr.write = (() => true);
+
+  try {
+    const result = await runWithFakeRuntimeEvent('proxy-low-balance', {
+      taskFile
+    });
+    assert.equal(result.code, 0);
+    const warning = result.jsonl.find((item) => item?.code === 'PROXY_BALANCE_LOW');
+    assert.equal(warning?.severity, 'warning');
+    assert.match(warning?.message, /Premium proxy balance is low/);
+    assert.ok(result.events.some((item) => item.event === 'billing.warning' && item.code === 'PROXY_BALANCE_LOW'));
+    assert.equal(seen.includes('/api/HttpProxy/Balance'), true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+    console.error = originalError;
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
+    if (originalApiKey === undefined) delete process.env.OCTO_ENGINE_API_KEY;
+    else process.env.OCTO_ENGINE_API_KEY = originalApiKey;
+  }
+});
+
 test('run completion prints a copyable local data export command', () => {
   assert.equal(
     localDataExportCommand({ taskId: 'task-1', lotId: '1778123456789' }),
@@ -1121,3 +1300,119 @@ test('detached startup failure writes bootstrap artifact', async () => {
   assert.match(bootstrap.error, /actionType|Nothing to execute|executable/);
   assert.equal(bootstrap.taskId, 'invalid-detach');
 });
+
+async function runWithFakeRuntimeEvent(scenario, options = {}) {
+  const originalApiKey = process.env.OCTO_ENGINE_API_KEY;
+  const originalLog = console.log;
+  const originalError = console.error;
+  const originalStdoutWrite = process.stdout.write;
+  const originalStderrWrite = process.stderr.write;
+  const lines = [];
+  const root = await mkdtemp(join(tmpdir(), `octoparse-${scenario}-`));
+  const output = join(root, 'runs');
+  let taskFile = options.taskFile;
+  if (!taskFile) {
+    taskFile = join(root, 'task.json');
+    const minimalTask = JSON.parse(await readFile('examples/minimal-task.json', 'utf8'));
+    await writeFile(taskFile, JSON.stringify({
+      ...minimalTask,
+      taskId: scenario,
+      taskName: scenario
+    }));
+  }
+  process.env.OCTO_ENGINE_API_KEY = 'runtime-key';
+
+  const workflowEvents = {
+    ExtraData: 'extraData',
+    Log: 'log',
+    Stopped: 'stopped',
+    Captcha: 'captcha',
+    GetProxy: 'getProxy',
+    DownloadFile: 'downloadFile',
+    CollectProxyLog: 'collectProxyLog'
+  };
+  class FakeWorkflow extends EventEmitter {
+    async start() {
+      setImmediate(() => {
+        for (const event of options.downloadEvents ?? []) {
+          this.emit(workflowEvents.DownloadFile, { data: event });
+        }
+        setTimeout(() => {
+          this.emit(workflowEvents.Stopped, { data: { status: 'completed' } });
+        }, 20);
+      });
+    }
+
+    stop() {}
+    stopTask() {}
+    pauseTask() {}
+    resumeTask() {}
+    close() {}
+  }
+
+  const fakeEngine = {
+    default: FakeWorkflow,
+    WorkflowEvents: workflowEvents,
+    resolveChrome: async () => ({ executablePath: process.execPath })
+  };
+  const fakeBridgeFactory = () => new FakeBridgeHub();
+
+  console.log = (...args) => { lines.push(args.map(String).join(' ')); };
+  console.error = (...args) => { lines.push(args.map(String).join(' ')); };
+  process.stdout.write = ((chunk) => {
+    lines.push(String(chunk).trimEnd());
+    return true;
+  });
+  process.stderr.write = ((chunk) => {
+    lines.push(String(chunk).trimEnd());
+    return true;
+  });
+  setEngineHostFactoryForTesting(() => new EngineHost(fakeEngine, fakeBridgeFactory));
+
+  try {
+    const code = await runTask(scenario, [
+      '--task-file',
+      taskFile,
+      '--output',
+      output,
+      '--jsonl',
+      '--timeout-ms',
+      '2000'
+    ]);
+    const jsonl = lines.flatMap((line) => {
+      try { return [JSON.parse(line)]; } catch { return []; }
+    });
+    const stopped = jsonl.find((item) => item.event === 'run.stopped');
+    const eventsPath = join(stopped.outputDir, 'events.jsonl');
+    const events = (await readFile(eventsPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    const downloadsPath = join(stopped.outputDir, 'downloads.jsonl');
+    let downloads = [];
+    try {
+      downloads = (await readFile(downloadsPath, 'utf8')).trim().split('\n').filter(Boolean).map((line) => JSON.parse(line));
+    } catch {}
+    return {
+      code,
+      jsonl,
+      events,
+      downloads
+    };
+  } finally {
+    setEngineHostFactoryForTesting(undefined);
+    console.log = originalLog;
+    console.error = originalError;
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
+    if (originalApiKey === undefined) delete process.env.OCTO_ENGINE_API_KEY;
+    else process.env.OCTO_ENGINE_API_KEY = originalApiKey;
+  }
+}
+
+class FakeBridgeHub extends EventEmitter {
+  async createSessionBridge() {
+    return {};
+  }
+
+  async waitForSessionConnected() {}
+
+  close() {}
+}

@@ -52,6 +52,17 @@ export interface RunSummary {
   stoppedAt?: string;
   stopReason?: string;
   maxRows?: number;
+  downloads?: {
+    status: string;
+    outputDir?: string;
+    total: number;
+    pending: number;
+    downloading: number;
+    succeeded: number;
+    failed: number;
+    canceled: number;
+    completed: number;
+  };
 }
 
 export type CaptchaType =

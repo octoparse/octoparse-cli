@@ -23,7 +23,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
     },
     output: {
       jsonEnvelope: { success: { ok: true, data: {} }, failure: { ok: false, error: { code: 'ERROR_CODE', message: 'message' } } },
-      jsonlEvents: ['warning', 'billing.warning', 'billing.error', 'run.started', 'row', 'log', 'captcha', 'proxy', 'run.paused', 'run.resumed', 'run.stopping', 'run.stopped', 'run.failed'],
+      jsonlEvents: ['warning', 'billing.warning', 'billing.error', 'run.started', 'row', 'log', 'captcha', 'proxy', 'download.started', 'download.succeeded', 'download.failed', 'run.paused', 'run.resumed', 'run.stopping', 'run.stopped', 'run.failed'],
       detachedBootstrap: ['bootstrap.json', 'stdout.log', 'stderr.log'],
       stdout: 'machine data only in --json/--jsonl mode',
       stderr: 'human diagnostics and failures'
@@ -52,6 +52,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
           'TASK_INVALID',
           'TEMPLATE_BALANCE_NOT_ENOUGH',
           'TEMPLATE_NOT_ALLOWED',
+          'PROXY_BALANCE_LOW',
           'CAPTCHA_BALANCE_LOW',
           'CAPTCHA_ACCOUNT_EXPIRED',
           'CAPTCHA_BALANCE_NOT_ENOUGH',
@@ -78,11 +79,11 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
         flag: '--jsonl',
         command: 'run <taskId>',
         eventField: 'event',
-        stableEvents: ['warning', 'billing.warning', 'billing.error', 'run.started', 'row', 'log', 'captcha', 'proxy', 'run.paused', 'run.resumed', 'run.stopping', 'run.stopped', 'run.failed'],
+        stableEvents: ['warning', 'billing.warning', 'billing.error', 'run.started', 'row', 'log', 'captcha', 'proxy', 'download.started', 'download.succeeded', 'download.failed', 'run.paused', 'run.resumed', 'run.stopping', 'run.stopped', 'run.failed'],
         rowLimitFlag: '--max-rows'
       },
       artifacts: {
-        localRunDir: ['meta.json', 'control.json', 'events.jsonl', 'logs.jsonl', 'rows.jsonl'],
+        localRunDir: ['meta.json', 'control.json', 'events.jsonl', 'logs.jsonl', 'rows.jsonl', 'downloads.jsonl'],
         detachedBootstrapDir: ['bootstrap.json', 'stdout.log', 'stderr.log']
       },
       lifecycle: {

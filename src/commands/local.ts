@@ -109,6 +109,10 @@ async function localStatus(args: string[]): Promise<number> {
     console.log(`${taskId}  ${state?.status}`);
     console.log(`PID: ${state?.pid}`);
     console.log(`Rows: ${total}`);
+    if (state.downloads) {
+      console.log(`Downloads: ${state.downloads.succeeded}/${state.downloads.total} succeeded, ${state.downloads.failed} failed`);
+      if (state.downloads.outputDir) console.log(`Download files: ${state.downloads.outputDir}`);
+    }
     console.log(`Output: ${state?.outputDir}`);
     if (actualSocketPath && actualSocketPath !== state.socketPath) {
       console.log(`Control socket: ${actualSocketPath}`);
@@ -220,7 +224,8 @@ function controlStateToPublicRun(
     outputDir: state.outputDir,
     pid: state.pid,
     controlSocketPath,
-    updatedAt: state.updatedAt
+    updatedAt: state.updatedAt,
+    downloads: state.downloads
   };
 }
 
@@ -228,6 +233,10 @@ function printLastRun(lastRun: RunSummary | null): void {
   if (!lastRun) return;
   const lot = lastRun.lotId ? `  lot=${lastRun.lotId}` : '';
   console.log(`Last run: ${lastRun.status}  rows=${lastRun.total}${lot}`);
+  if (lastRun.downloads) {
+    console.log(`Downloads: ${lastRun.downloads.succeeded}/${lastRun.downloads.total} succeeded, ${lastRun.downloads.failed} failed`);
+    if (lastRun.downloads.outputDir) console.log(`Download files: ${lastRun.downloads.outputDir}`);
+  }
 }
 
 async function localControl(command: 'pause' | 'resume' | 'stop', args: string[]): Promise<number> {

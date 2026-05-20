@@ -19,6 +19,7 @@ export interface RunControlState {
   status: ActiveRunStatus;
   outputDir: string;
   updatedAt: string;
+  downloads?: RunSummary['downloads'];
 }
 
 export interface RunControlResponse {
@@ -29,7 +30,7 @@ export interface RunControlResponse {
 
 export interface RunControlServer {
   socketPath: string;
-  updateStatus(status: ActiveRunStatus): Promise<void>;
+  updateStatus(status: ActiveRunStatus, downloads?: RunSummary['downloads']): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -100,8 +101,8 @@ export async function startRunControlServer(options: {
 
   return {
     socketPath,
-    async updateStatus(status: ActiveRunStatus) {
-      state = { ...state, status, updatedAt: new Date().toISOString() };
+    async updateStatus(status: ActiveRunStatus, downloads?: RunSummary['downloads']) {
+      state = { ...state, status, downloads, updatedAt: new Date().toISOString() };
       await writeState();
     },
     async close() {
@@ -265,7 +266,8 @@ async function readControlStateFile(filePath: string, fallbackOutputDir: string)
       socketPath: parsed.socketPath,
       status: parsed.status as ActiveRunStatus,
       outputDir: typeof parsed.outputDir === 'string' ? parsed.outputDir : fallbackOutputDir,
-      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : ''
+      updatedAt: typeof parsed.updatedAt === 'string' ? parsed.updatedAt : '',
+      downloads: normalizeDownloadStats(parsed.downloads)
     };
   } catch {
     return null;
@@ -281,8 +283,29 @@ export function controlStateToSummary(state: RunControlState): RunSummary {
     status: state.status,
     total: 0,
     outputDir: join(state.outputDir, state.runId),
-    startedAt: state.updatedAt
+    startedAt: state.updatedAt,
+    downloads: state.downloads
   };
+}
+
+function normalizeDownloadStats(value: unknown): RunSummary['downloads'] | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  return {
+    status: typeof record.status === 'string' ? record.status : '',
+    outputDir: typeof record.outputDir === 'string' ? record.outputDir : undefined,
+    total: numberValue(record.total),
+    pending: numberValue(record.pending),
+    downloading: numberValue(record.downloading),
+    succeeded: numberValue(record.succeeded),
+    failed: numberValue(record.failed),
+    canceled: numberValue(record.canceled),
+    completed: numberValue(record.completed)
+  };
+}
+
+function numberValue(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }
 
 function controlFilePath(runDir: string): string {

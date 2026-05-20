@@ -20,6 +20,7 @@ import { gunzipSync } from 'node:zlib';
 import type { TaskDefinition } from '../types.js';
 import { ApiRequestError, fetchTaskInfo, fetchTaskList, type RemoteTaskInfo } from './api-client.js';
 import { ACCESS_TOKEN_ENV, API_KEY_ENV, resolveAuth } from './auth.js';
+import { extractFieldNamesWithDownloadOutputs } from './download-config.js';
 
 const require = createRequire(import.meta.url);
 const { transformer } = require('@octopus/engine/transformer') as {
@@ -55,6 +56,7 @@ export class TaskDefinitionProvider {
       task.xoml = await transformXml(task.xml);
     }
 
+    enrichDownloadMetadata(task);
     validateTask(task);
     return task;
   }
@@ -80,6 +82,7 @@ async function getRemoteTaskDefinition(taskId: string): Promise<TaskDefinition> 
     task.xoml = await transformXml(task.xml);
   }
 
+  enrichDownloadMetadata(task);
   validateTask(task);
   return task;
 }
@@ -293,11 +296,19 @@ function xmlBool(xml: string, tagName: string): boolean {
 }
 
 function extractFieldNames(taskXml: string): string[] {
+  const parsedNames = extractFieldNamesWithDownloadOutputs(taskXml);
+  if (parsedNames.length) return parsedNames;
   const decoded = decodeXmlEntities(taskXml);
   const names = [...decoded.matchAll(/<Header>([\s\S]*?)<\/Header>/gi)]
     .map((match) => decodeXmlEntities(match[1].trim()))
     .filter((name) => name && name !== 'Root');
   return [...new Set(names)];
+}
+
+function enrichDownloadMetadata(task: TaskDefinition): void {
+  if (!task.fieldNames.length) {
+    task.fieldNames = extractFieldNames(task.xml);
+  }
 }
 
 function decodeXmlEntities(value: string): string {

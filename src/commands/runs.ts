@@ -79,6 +79,10 @@ export async function runsStatus(args: string[]): Promise<number> {
     printEnvelope(true, summary);
   } else {
     console.log(`${summary.runId}  ${summary.status}  ${summary.taskId}  rows=${summary.total}`);
+    if (summary.downloads) {
+      console.log(`Downloads: ${summary.downloads.succeeded}/${summary.downloads.total} succeeded, ${summary.downloads.failed} failed`);
+      if (summary.downloads.outputDir) console.log(`Download files: ${summary.downloads.outputDir}`);
+    }
     console.log(`Artifacts: ${summary.outputDir}`);
   }
   return EXIT_OK;
