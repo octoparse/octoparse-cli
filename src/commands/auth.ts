@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { homedir } from 'node:os';
+import { mkdtemp, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import prompts from 'prompts';
 import { firstPositionalArg, hasFlag, valueAfter } from '../cli/args.js';
@@ -243,15 +244,18 @@ function shouldOpenApiKeyPage(args: string[], json: boolean, readFromStdin: bool
   return Boolean(process.stdin.isTTY && process.stdout.isTTY);
 }
 
-function openUrl(url: string): Promise<void> {
+async function openUrl(url: string): Promise<void> {
+  const target = process.platform === 'win32'
+    ? await createWindowsUrlLauncherFile(url)
+    : url;
   const command = process.platform === 'darwin'
     ? 'open'
     : process.platform === 'win32'
       ? 'cmd'
       : 'xdg-open';
   const args = process.platform === 'win32'
-    ? ['/c', 'start', '', url]
-    : [url];
+    ? ['/c', 'start', '', target]
+    : [target];
 
   return new Promise((resolveOpen) => {
     const child = spawn(command, args, {
@@ -262,6 +266,38 @@ function openUrl(url: string): Promise<void> {
     child.unref();
     resolveOpen();
   });
+}
+
+export async function createWindowsUrlLauncherFile(url: string): Promise<string> {
+  const dir = await mkdtemp(join(tmpdir(), 'octoparse-oauth-'));
+  const filePath = join(dir, 'login.html');
+  await writeFile(filePath, renderUrlLauncherPage(url), 'utf8');
+  return filePath;
+}
+
+function renderUrlLauncherPage(url: string): string {
+  const escapedUrl = escapeHtmlAttribute(url);
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="refresh" content="0;url=${escapedUrl}">
+  <title>Octoparse OAuth Login</title>
+  <script>location.replace(${JSON.stringify(url)});</script>
+</head>
+<body>
+  <p>Opening OAuth login...</p>
+  <p><a href="${escapedUrl}">Continue to login</a></p>
+</body>
+</html>`;
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;');
 }
 
 async function authStatus(args: string[]): Promise<number> {
