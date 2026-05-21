@@ -68,8 +68,8 @@ export class TrackingClient {
 
   private async upload(events: TrackingEvent[]): Promise<void> {
     const payload = {
-      product: 'octoparse-cli',
-      channel: 'cli',
+      product: 'Octoparse',
+      channel: 'Cli',
       version: clientVersion(),
       common: {
         launchId: this.launchId,

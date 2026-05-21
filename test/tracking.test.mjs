@@ -43,8 +43,8 @@ test('tracking upload uses overseas endpoint and encrypted CLI payload', async (
     assert.equal(requests[0].url, 'https://tracking.example/extract/upload');
     const body = JSON.parse(requests[0].init.body);
     const payload = decryptTrackingPayload(body.data);
-    assert.equal(payload.product, 'octoparse-cli');
-    assert.equal(payload.channel, 'cli');
+    assert.equal(payload.product, 'Octoparse');
+    assert.equal(payload.channel, 'Cli');
     assert.equal(payload.common.userId, 'user-1');
     assert.equal(payload.common.keySource, 'env');
     assert.match(payload.common.time, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}[+-]\d{2}:\d{2}$/);
