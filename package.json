@@ -37,7 +37,7 @@
   },
   "dependencies": {
     "@octopus/bpmn": "1.0.4",
-    "@octopus/engine": "1.0.21",
+    "@octopus/engine": "1.0.22",
     "@puppeteer/browsers": "2.8.0",
     "@types/lodash": "^4.14.0",
     "@types/lodash-es": "4.17.12",
