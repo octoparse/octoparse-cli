@@ -11,6 +11,8 @@
       "type": "object",
       "required": [
         "name",
+        "packageName",
+        "primaryBinary",
         "version",
         "agentContractVersion",
         "authentication",
@@ -24,6 +26,18 @@
       ],
       "properties": {
         "name": { "const": "octoparse" },
+        "packageName": { "const": "@octoparse-cli/octoparse-cli" },
+        "primaryBinary": { "const": "octoparse" },
+        "invocation": {
+          "type": "object",
+          "required": ["installed", "npmExec", "note"],
+          "properties": {
+            "installed": { "const": "octoparse" },
+            "npmExec": { "const": "npx @octoparse-cli/octoparse-cli" },
+            "note": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
         "version": {
           "type": "string",
           "minLength": 1
@@ -79,6 +93,42 @@
           "properties": {
             "stable": { "const": true },
             "defaultOutput": { "const": "human" },
+            "agentEntrypoint": {
+              "type": "object",
+              "required": ["firstCommand", "packageFirstCommand", "rule", "acceptedUserRequestExamples"],
+              "properties": {
+                "firstCommand": { "const": "octoparse capabilities --json" },
+                "packageFirstCommand": { "const": "npx @octoparse-cli/octoparse-cli capabilities --json" },
+                "rule": { "type": "string" },
+                "agentInvocationPolicy": {
+                  "type": "object",
+                  "required": [
+                    "shouldUseCliForUserTaskCreationRequests",
+                    "preferredRecipe",
+                    "doNotFallbackToHandwrittenTaskJson",
+                    "doNotAskUserForInternalFlags",
+                    "routingRule"
+                  ],
+                  "properties": {
+                    "shouldUseCliForUserTaskCreationRequests": { "const": true },
+                    "preferredRecipe": { "const": "machineContract.recipes.createTaskFromUrlWithAgent" },
+                    "doNotFallbackToHandwrittenTaskJson": { "const": true },
+                    "doNotAskUserForInternalFlags": { "const": true },
+                    "routingRule": { "type": "string" }
+                  },
+                  "additionalProperties": true
+                },
+                "intentAliases": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                },
+                "acceptedUserRequestExamples": {
+                  "type": "array",
+                  "items": { "type": "string" }
+                }
+              },
+              "additionalProperties": true
+            },
             "schemas": {
               "type": "object",
               "required": ["capabilities", "jsonEnvelope", "runEvent", "detachedBootstrap"],
@@ -174,6 +224,52 @@
                 }
               },
               "additionalProperties": true
+            },
+            "recipes": {
+              "type": "object",
+              "properties": {
+                "createTaskFromUrlWithAgent": {
+                  "type": "object",
+                  "required": ["intent", "summary", "preferredWorkflow"],
+                  "properties": {
+                    "intent": { "type": "string" },
+                    "summary": { "type": "string" },
+                    "agentShouldChooseThisRecipeWhen": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    },
+                    "searchWorkflow": { "type": "object" },
+                    "loginWorkflow": { "type": "object" },
+                    "agentResponsibilities": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    },
+                    "preferredWorkflow": {
+                      "type": "array",
+                      "minItems": 1,
+                      "items": {
+                        "type": "object",
+                        "required": ["step"],
+                        "properties": {
+                          "step": { "type": "string" },
+                          "command": { "type": "string" },
+                          "action": { "type": "string" },
+                          "output": { "type": "string" },
+                          "requiredAction": { "type": "string" }
+                        },
+                        "additionalProperties": true
+                      }
+                    },
+                    "oneShotWrapper": { "type": "object" },
+                    "nonGoals": {
+                      "type": "array",
+                      "items": { "type": "string" }
+                    }
+                  },
+                  "additionalProperties": true
+                }
+              },
+              "additionalProperties": true
             }
           },
           "additionalProperties": true
@@ -197,6 +293,7 @@
               "json": { "type": "boolean" },
               "jsonl": { "type": "boolean" },
               "authRequired": { "type": "boolean" },
+              "agentWorkflow": { "type": "string" },
               "hidden": { "type": "boolean" },
               "internal": { "type": "boolean" }
             },

@@ -41,6 +41,7 @@ export class TaskDefinitionProvider {
       xml: parsed.xml ?? '',
       xoml: parsed.xoml ?? '',
       fieldNames: Array.isArray(parsed.fieldNames) ? parsed.fieldNames : [],
+      recognition: parsed.recognition,
       workflowSetting: parsed.workflowSetting,
       brokerSettings: parsed.brokerSettings,
       template: parsed.template,
@@ -322,7 +323,7 @@ function decodeXmlEntities(value: string): string {
     .replace(/&#([0-9]+);?/g, (_match, code) => String.fromCodePoint(Number.parseInt(code, 10)));
 }
 
-async function transformXml(xml: string): Promise<string> {
+export async function transformXml(xml: string): Promise<string> {
   return new Promise((resolve, reject) => {
     try {
       transformer(xml, (content) => resolve(String(content)));

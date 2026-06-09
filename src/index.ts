@@ -27,6 +27,7 @@ import { dataExport, dataHistory } from './commands/data.js';
 import { browserDoctorCommand, doctorCommand } from './commands/doctor.js';
 import { hiddenEnvCommand } from './commands/env.js';
 import { localCommand } from './commands/local.js';
+import { recognizeCommand, runUrlCommand } from './commands/recognize.js';
 import { runTask } from './commands/run.js';
 import { runsCleanup, runsControl, runsData, runsList, runsLogs, runsStatus } from './commands/runs.js';
 import { taskInspect, taskList } from './commands/task.js';
@@ -95,7 +96,7 @@ async function main(argv: string[]): Promise<number> {
     return EXIT_OK;
   }
 
-  if (requiresAuthentication(command)) {
+  if (requiresAuthentication(argv)) {
     const authExitCode = await ensureAuthenticated(hasFlag(argv, '--json') || hasFlag(argv, '--jsonl'));
     if (authExitCode !== EXIT_OK) return authExitCode;
   }
@@ -144,6 +145,14 @@ async function main(argv: string[]): Promise<number> {
     return runTask(subcommand, rest);
   }
 
+  if (command === 'run-url') {
+    return runUrlCommand(subcommand, rest);
+  }
+
+  if (command === 'recognize') {
+    return recognizeCommand([subcommand ?? '', ...rest].filter(Boolean));
+  }
+
   if (command === 'runs' && subcommand === 'list') {
     return runsList(rest);
   }
@@ -185,13 +194,24 @@ async function main(argv: string[]): Promise<number> {
   );
 }
 
-function requiresAuthentication(command: string): boolean {
+function requiresAuthentication(argv: string[]): boolean {
+  const [command] = argv;
+  if (command === 'recognize' && (hasFlagWithValue(argv, '--preview-agent-plan') || hasFlagWithValue(argv, '--apply-agent-plan'))) {
+    return false;
+  }
   return command === 'task'
     || command === 'run'
+    || command === 'run-url'
+    || command === 'recognize'
     || command === 'cloud'
     || command === 'local'
     || command === 'data'
     || command === 'runs';
+}
+
+function hasFlagWithValue(args: string[], flag: string): boolean {
+  const index = args.indexOf(flag);
+  return index >= 0 && Boolean(args[index + 1]) && !args[index + 1].startsWith('-');
 }
 
 main(process.argv.slice(2))

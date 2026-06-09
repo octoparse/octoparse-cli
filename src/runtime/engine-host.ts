@@ -25,7 +25,9 @@ import {
   resolveProxy,
   solveCaptcha
 } from './run-services.js';
+import { formatChromeResolveStatus, type ChromeResolveStatus } from './chrome-progress.js';
 import { maybePrintRuntimeSecurityNotice } from './security-notice.js';
+import { startVirtualDisplayIfNeeded, type VirtualDisplayHandle } from './virtual-display.js';
 
 const require = createRequire(import.meta.url);
 const defaultEngineModule = require('@octopus/engine');
@@ -34,7 +36,7 @@ export interface EngineModuleLike {
   default?: new (options: Record<string, unknown>) => any;
   WorkflowEvents: Record<string, string>;
   resolveChrome: (options?: {
-    onStatus?: (status: { state: string; progress?: number }) => void;
+    onStatus?: (status: ChromeResolveStatus) => void;
   }) => Promise<{ executablePath: string }>;
 }
 
@@ -103,6 +105,7 @@ export interface RuntimeBillingErrorEvent {
 export class EngineHost extends EventEmitter {
   private workflow: any | null = null;
   private bridgeHub: BridgeHubLike | null = null;
+  private virtualDisplay: VirtualDisplayHandle | null = null;
 
   constructor(
     private readonly engineModule: EngineModuleLike = defaultEngineModule,
@@ -123,15 +126,15 @@ export class EngineHost extends EventEmitter {
     this.emit('run.started', { runId, lotId, taskId: task.taskId, taskName: task.taskName });
 
     this.bridgeHub = this.bridgeHubFactory();
+    this.virtualDisplay = await startVirtualDisplayIfNeeded();
     this.attachBridgeDiagnostics(this.bridgeHub, runId, options.debugBridge);
     const extensionBridge = await this.bridgeHub.createSessionBridge(runId);
     const chromePath = options.chromePath ?? (await resolveChrome({
       onStatus: (status) => {
-        const progress = typeof status.progress === 'number' ? ` ${status.progress.toFixed(0)}%` : '';
         this.emit('log', {
           runId,
           level: status.state === 'failed' ? 'error' : 'info',
-          message: `runtime.chrome.resolve ${status.state}${progress}`
+          message: `runtime.chrome.resolve ${formatChromeResolveStatus(status)}`
         });
       }
     })).executablePath;
@@ -301,8 +304,10 @@ export class EngineHost extends EventEmitter {
     if (browserClosed && workflow) workflow.browser = null;
     workflow?.close();
     this.bridgeHub?.close();
+    await this.virtualDisplay?.close();
     this.workflow = null;
     this.bridgeHub = null;
+    this.virtualDisplay = null;
   }
 
   private attachBridgeDiagnostics(bridgeHub: BridgeHubLike, runId: string, debugBridge: boolean): void {

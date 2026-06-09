@@ -14,7 +14,9 @@ import {
 import { EngineHost, type RuntimeDownloadEvent } from '../runtime/engine-host.js';
 import { defaultRunsDir } from '../runtime/local-runs.js';
 import { safeFileName } from '../runtime/naming.js';
+import { LINUX_ARM64_UNSUPPORTED_CODE, LINUX_ARM64_UNSUPPORTED_MESSAGE, isLocalChromeRuntimeSupported } from '../runtime/platform-support.js';
 import { BillingRuntimeError } from '../runtime/run-services.js';
+import { cookieHeaderFromSession, loadBrowserSession } from '../runtime/browser-session.js';
 import {
   isRunControlReachable,
   listActiveTaskControlStates,
@@ -23,7 +25,7 @@ import {
   type ActiveRunStatus,
   type RunControlServer
 } from '../runtime/run-control.js';
-import { TaskDefinitionProvider } from '../runtime/task-definition-provider.js';
+import { TaskDefinitionProvider, transformXml } from '../runtime/task-definition-provider.js';
 import {
   collectEndTrackingEvents,
   collectStartTrackingEvent,
@@ -86,6 +88,12 @@ export async function runTask(taskId: string | undefined, args: string[]): Promi
   }
 
   const options = parseRunOptions(taskId, args);
+  if (!isLocalChromeRuntimeSupported()) {
+    if (options.json || options.jsonl) printEnvelope(false, undefined, LINUX_ARM64_UNSUPPORTED_CODE, LINUX_ARM64_UNSUPPORTED_MESSAGE);
+    else console.error(LINUX_ARM64_UNSUPPORTED_MESSAGE);
+    return EXIT_RUNTIME_FAILED;
+  }
+
   const maxRowsError = validateMaxRows(args);
   if (maxRowsError) {
     return printUsageError(
@@ -483,6 +491,7 @@ async function executeTask(
 
   try {
     const task = await loadTask();
+    await applyTaskBrowserSession(task, options, runtimeConsole);
     loadedTask = task;
     markTrackingTaskLoaded(trackingRun, task);
     billingWarnings = [
@@ -748,6 +757,61 @@ function parseRunOptions(taskId: string, args: string[]): RunOptions {
     detach: hasFlag(args, '--detach'),
     maxRows: parseOptionalPositiveInt(valueAfter(args, '--max-rows'))
   };
+}
+
+async function applyTaskBrowserSession(
+  task: TaskDefinition,
+  options: RunOptions,
+  runtimeConsole: ReturnType<typeof maybeSuppressRuntimeConsole>
+): Promise<void> {
+  const sessionName = task.recognition?.session?.name;
+  if (!sessionName) return;
+  const session = await loadBrowserSession(sessionName);
+  const cookieHeader = cookieHeaderFromSession(session);
+  if (!cookieHeader) {
+    throw new Error(`Task requires browser session ${sessionName}, but the local session has no usable cookies`);
+  }
+  task.xml = injectGlobalCookie(task.xml, cookieHeader);
+  task.xoml = await transformXml(task.xml);
+  if (!options.json && !options.jsonl) {
+    runtimeConsole.stderr(`Using browser session: ${session.name} (${session.cookieCount} cookies, cookies-only)`);
+  }
+}
+
+export function injectGlobalCookie(xml: string, cookieHeader: string): string {
+  const escaped = escapeXmlAttr(cookieHeader);
+  const rootMatch = xml.match(/<[A-Za-z_][\w:.-]*(?:\s[^>]*)?>/);
+  return replaceRootCookieAttrs(xml, rootMatch?.[0] ?? '', escaped);
+}
+
+function replaceRootCookieAttrs(xml: string, rootTag: string, escapedCookieHeader: string): string {
+  if (!rootTag) throw new Error('task xml is missing a root node, cannot inject browser session cookies');
+  let nextRoot = rootTag;
+  if (/\bglobalCookie="[^"]*"/i.test(nextRoot)) {
+    nextRoot = nextRoot.replace(/\bglobalCookie="[^"]*"/i, `globalCookie="${escapedCookieHeader}"`);
+  } else {
+    nextRoot = insertRootAttr(nextRoot, `globalCookie="${escapedCookieHeader}"`);
+  }
+  if (/\bisSetGlobalCookie="[^"]*"/i.test(nextRoot)) {
+    nextRoot = nextRoot.replace(/\bisSetGlobalCookie="[^"]*"/i, 'isSetGlobalCookie="true"');
+  } else {
+    nextRoot = insertRootAttr(nextRoot, 'isSetGlobalCookie="true"');
+  }
+  if (nextRoot === rootTag) throw new Error('task xml root node cannot accept browser session cookies');
+  return xml.replace(rootTag, nextRoot);
+}
+
+function insertRootAttr(rootTag: string, attr: string): string {
+  if (/\/>$/.test(rootTag)) return rootTag.replace(/\s*\/>$/, ` ${attr} />`);
+  return rootTag.replace(/>$/, ` ${attr}>`);
+}
+
+function escapeXmlAttr(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 function parseOptionalPositiveInt(value: string | undefined): number | undefined {

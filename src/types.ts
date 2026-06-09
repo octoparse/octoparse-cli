@@ -12,6 +12,18 @@ export interface TaskDefinition {
   xml: string;
   xoml: string;
   fieldNames: string[];
+  recognition?: {
+    session?: {
+      name: string;
+      origin: string;
+      savedAt?: string;
+      cookieCount?: number;
+      kind?: string;
+      compatibility?: string;
+      hosts?: string[];
+    };
+    [key: string]: unknown;
+  };
   workflowSetting?: unknown;
   brokerSettings?: unknown;
   template?: unknown;

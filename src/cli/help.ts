@@ -10,6 +10,18 @@ export function printCommandHelp(command: string, subcommand?: string): void {
 
 Purpose:
   Print machine-readable CLI capabilities for agents.
+  Agents should call this before planning multi-step workflows such as creating
+  a scraping task from a URL. The response includes machineContract.recipes with
+  the recommended recognize/plan/preview/apply/validate sequence.
+  For user requests like "use octoparse to create a task for this URL",
+  LLM/agent tools should choose machineContract.recipes.createTaskFromUrlWithAgent
+  and run the CLI workflow themselves.
+  Agent task creation context includes the user goal and a full-page screenshot
+  by default.
+  @octoparse-cli/octoparse-cli is the npm package name; octoparse is the installed binary.
+  If a user says "use octoparse to create a task for this URL", agents should
+  inspect this command and then execute the recipe without asking the user to
+  explain internal recognize flags.
 
 Authentication:
   Does not require login. Functional commands do.
@@ -83,6 +95,78 @@ Agent notes:
   Use --jsonl for foreground event streams.
   JSONL now includes captcha and proxy request events when the runtime asks for them.
   run only starts local extraction. Use data export <taskId> --lot-id <lotId> for files.
+  Local Chrome execution supports macOS x64/arm64, Windows x64, and Linux x64.
+  Linux arm64 is not supported because Chrome for Testing has no Linux arm64 browser package.
+`,
+    recognize: `Usage:
+  octoparse recognize <url> --auto [--goal <text>] [--output task.json] [--llm-rank] [--no-dismiss-popups] [--json]
+  octoparse recognize <url> --manual [--goal <text>] [--llm-rank] [--no-dismiss-popups]
+  octoparse recognize <url> --agent --agent-command <cmd> [--goal <text>] [--output task.json] [--yes]
+  octoparse recognize <url> --prepare-agent --json [--goal <text>] [--output context.json]
+  octoparse recognize --preview-agent-plan plan.json --agent-context context.json [--json]
+  octoparse recognize --apply-agent-plan plan.json --agent-context context.json --output task.json [--json]
+
+Purpose:
+  Open the Octoparse extension browser, inspect the page, and list candidate data regions
+  such as tables, repeated cards, search results, link collections, and forms.
+
+Notes:
+  Quote URLs that contain '&', '?' or other shell metacharacters, for example:
+  octoparse recognize 'https://example.com/page?a=1&b=2' --manual
+  The first pass is deterministic and does not require an LLM. --auto chooses the
+  best candidate and generates a task. --manual opens a guided flow for login,
+  popup handling, choosing the highlighted data region, optional session save,
+  and task-file generation.
+  On Linux servers without DISPLAY/WAYLAND_DISPLAY, non-manual recognition
+  automatically uses Xvfb when installed. Manual recognition needs a visible
+  desktop/VNC display because the user must interact with the browser overlay.
+  Use --query <keyword> or --input <name=value> to search first, then recognize
+  and generate a task from the result page. Generated tasks preserve the search
+  input XPath and submit action before extracting results.
+  If a search page opens a login/captcha/paywall gate, recognize pauses in
+  interactive/manual mode so the user can complete login in the browser. Use
+  --save-session to store same-site cookies; generated tasks inject that session
+  before replaying the search.
+  recognize uses the protected SmartProxy runtime by default. It requires a
+  bundled private @octopus/octopus-protect native module. Protected Smart resources are
+  fetched encrypted, decrypted in memory, and never written to task files.
+  Use --legacy-recognizer only for debugging the previous heuristic detector.
+  If --output is omitted when generating a task, a recognized_<host>.json file is created automatically.
+  Login/cookie/ad overlays are dismissed automatically when a safe close control is found.
+  Use --no-dismiss-popups to inspect the page without this cleanup.
+  The manual session-save option stores same-site cookies locally and writes only
+  a session reference in generated task files; later local runs load that session automatically.
+  Cookie sessions do not cover every site, especially pages that require localStorage,
+  device binding, or fresh verification.
+  Agents should discover this workflow via "octoparse capabilities --json" and
+  machineContract.recipes.createTaskFromUrlWithAgent; users should not need to
+  explain the prepare/plan/preview/apply sequence manually.
+  If an LLM/agent is helping the user create a scraping task, prefer that recipe
+  over handwritten task JSON. The agent should run recognize --prepare-agent,
+  write a plan from context.json, preview it, apply it, and validate the task.
+  Agent workflows generate a full-page screenshot by default and store its path
+  in context.screenshot. Pass the user request through --goal so the agent can
+  judge candidates against both the natural-language intent and the screenshot.
+  Local Chrome execution supports macOS x64/arm64, Windows x64, and Linux x64.
+  Linux arm64 is not supported because Chrome for Testing has no Linux arm64 browser package.
+  --agent is a one-shot wrapper for external LLM/agent tools. The CLI writes a
+  temporary context JSON, runs --agent-command (or OCTOPARSE_AGENT_COMMAND), expects
+  a plan JSON at OCTOPARSE_AGENT_PLAN or stdout, previews risk, asks for confirmation
+  unless --yes is set, then generates the task. --agent-command executes a local
+  shell command; only pass a trusted agent runner. Use --keep-agent-files to retain
+  the context/plan for audit. Low-level --prepare-agent/--preview-agent-plan/
+  --apply-agent-plan commands remain available for automation and debugging.
+`,
+    'run-url': `Usage:
+  octoparse run-url <url> --auto|--select <candidateId> [--goal <text>] [--input <name=value>] [--max-rows <n>] [--json|--jsonl]
+
+Purpose:
+  Recognize a URL, generate a temporary task file, then run it locally.
+
+Notes:
+  Use --auto for the recommended candidate or --select <candidateId> after inspecting
+  octoparse recognize output. run-url requires credentials because it creates and
+  runs a local task through the protected runtime.
 `,
     cloud: `Usage:
   octoparse cloud start <taskId> [--json]
@@ -159,6 +243,13 @@ Usage:
   octoparse task list [--page <n>] [--page-size <n>] [--limit <n>] [--keyword <text>] [--json]
   octoparse task inspect <taskId> [--task-file <file.json|file.xml|file.otd>] [--json]
   octoparse task validate <taskId> [--task-file <file.json|file.xml|file.otd>] [--json]
+  octoparse recognize URL --auto [--goal <text>] [--output task.json] [--llm-rank] [--no-dismiss-popups] [--json]
+  octoparse recognize URL --manual [--goal <text>] [--llm-rank] [--no-dismiss-popups]
+  octoparse recognize URL --agent --agent-command <cmd> [--output task.json] [--yes]
+  octoparse recognize URL --prepare-agent --json --goal <text> --output context.json
+  octoparse recognize --preview-agent-plan plan.json --agent-context context.json [--json]
+  octoparse recognize --apply-agent-plan plan.json --agent-context context.json --output task.json
+  octoparse run-url <url> --auto|--select <candidateId> [--goal <text>] [--input <name=value>] [--max-rows <n>] [--json|--jsonl]
   octoparse run <taskId> [--task-file <file.json|file.xml|file.otd>] [--output <dir>] [--chrome-path <path>] [--headless] [--max-rows <n>] [--detach] [--json|--jsonl]
   octoparse cloud start <taskId> [--json]
   octoparse cloud stop <taskId> [--json]
@@ -190,6 +281,8 @@ Task file format:
 Design:
   - Runs embedded @octopus/engine directly.
   - Uses independent Chrome only.
+  - Supports local Chrome execution on macOS x64/arm64, Windows x64, and Linux x64.
+  - Does not support Linux arm64 local execution because Chrome for Testing has no Linux arm64 browser package.
   - Does not require the Electron client.
   - Cloud extraction is controlled through backend APIs; local extraction is controlled by the local engine.
   - Does not support kernel browser or legacy workflow in v1.

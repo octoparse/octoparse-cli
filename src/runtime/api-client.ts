@@ -139,6 +139,12 @@ export interface CaptchaRemainInfo {
   raw: unknown;
 }
 
+export interface ClientSourceResult {
+  name: string;
+  encryptedContent: string;
+  raw: unknown;
+}
+
 export class ApiRequestError extends Error {
   constructor(
     message: string,
@@ -378,6 +384,51 @@ export async function fetchCaptchaRemain(options: { apiKey?: string; auth?: Auth
   };
 }
 
+export async function fetchClientServerKey(options: { apiKey?: string; auth?: AuthCredential; baseUrl?: string }): Promise<string> {
+  const result = await apiResult<string>({
+    apiKey: options.apiKey,
+    auth: options.auth,
+    baseUrl: options.baseUrl,
+    endpoint: '/api/user/serverKey',
+    method: 'GET'
+  });
+  if (typeof result.data !== 'string' || !result.data) {
+    throw new ApiRequestError('Client source server key response is missing data', 'CLIENT_SOURCE_SERVER_KEY_INVALID');
+  }
+  return result.data;
+}
+
+export async function fetchClientSource(options: {
+  apiKey?: string;
+  auth?: AuthCredential;
+  baseUrl?: string;
+  serverKey: string;
+  sourceFileName: string;
+}): Promise<ClientSourceResult> {
+  const result = await apiResult<Record<string, unknown>>({
+    apiKey: options.apiKey,
+    auth: options.auth,
+    baseUrl: options.baseUrl,
+    endpoint: '/api/clientsource',
+    method: 'POST',
+    body: {
+      serverKey: options.serverKey,
+      sourceFileNames: options.sourceFileName
+    }
+  });
+  const data = getRecord(result.data);
+  const sourceValue = data?.[options.sourceFileName];
+  const encryptedContent = typeof sourceValue === 'string' ? sourceValue : '';
+  if (!encryptedContent) {
+    throw new ApiRequestError(`Client source response is missing ${options.sourceFileName}`, 'CLIENT_SOURCE_INVALID');
+  }
+  return {
+    name: options.sourceFileName,
+    encryptedContent,
+    raw: result.raw
+  };
+}
+
 export async function fetchTaskInfo(options: { apiKey?: string; auth?: AuthCredential; taskId: string; baseUrl?: string }): Promise<RemoteTaskInfo> {
   const { payload } = await apiRequest({
     apiKey: options.apiKey,
@@ -474,6 +525,7 @@ async function apiResult<T = unknown>(options: {
   endpoint: string;
   query?: Record<string, string>;
   method: 'GET' | 'POST';
+  body?: unknown;
 }): Promise<ApiResult<T>> {
   const { payload, baseUrl } = await apiRequest(options);
   return {
@@ -491,6 +543,7 @@ async function apiRequest(options: {
   endpoint: string;
   query?: Record<string, string>;
   method: 'GET' | 'POST';
+  body?: unknown;
 }): Promise<{ payload: unknown; baseUrl: string }> {
   const baseUrl = await resolveApiBaseUrl(options.baseUrl);
   const url = new URL(options.endpoint, `${baseUrl}/`);
@@ -503,9 +556,11 @@ async function apiRequest(options: {
     headers: {
       Accept: 'application/json',
       'Accept-Language': 'en-US',
+      ...(options.body === undefined ? {} : { 'Content-Type': 'application/json' }),
       ...clientHeaders(),
       ...authHeaders(requireAuthCredential(options))
-    }
+    },
+    ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) })
   });
 
   const body = await response.text();

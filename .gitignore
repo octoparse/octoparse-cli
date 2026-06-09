@@ -8,6 +8,8 @@ dist/
 *.tgz
 *.log
 .DS_Store
+.package.prepack-backup/
+.package.json.prepack-backup
 
 # Internal planning docs that should stay out of public repositories.
 docs/TASK_API_COMMAND_PLAN.md

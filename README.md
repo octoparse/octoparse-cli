@@ -91,6 +91,38 @@ Run a task locally:
 octoparse run <taskId>
 ```
 
+Local Chrome execution is supported on macOS x64/arm64, Windows x64, and
+Linux x64. Linux arm64 is not supported by the local CLI runtime because Chrome
+for Testing does not currently provide a Linux arm64 browser package; use a
+supported local platform or cloud extraction there.
+
+Create a local task from a URL:
+
+```bash
+octoparse recognize 'https://example.com/list' --auto --output task.json
+octoparse recognize 'https://example.com/search' --manual --query keyword --save-session --output task.json
+octoparse run-url 'https://example.com/list' --auto --max-rows 20 --jsonl
+```
+
+`recognize` uses the protected SmartProxy recognizer by default and requires
+configured credentials. Manual mode can save a cookies-only browser session for
+later local runs. Agent mode is available through `--agent --agent-command`;
+that command executes a local shell command and should only point to a trusted
+agent runner.
+
+If an LLM/agent is helping a user create a task with Octoparse CLI, it should
+run `octoparse capabilities --json` first and follow
+`machineContract.recipes.createTaskFromUrlWithAgent`. That recipe tells the
+agent to prepare deterministic context, write a plan, preview it, apply it, and
+validate the generated task instead of asking the user to explain internal
+recognize flags or hand-write JSON. Agent workflows generate a full-page
+screenshot by default and store it in `context.screenshot`; pass the user's
+natural-language request with `--goal` so the agent can judge candidates against
+both the visual page and the stated intent. The context also includes
+`resultValidationPolicy`; agents should treat isolated missing fields in ads,
+topic cards, sponsored items, or heterogeneous rows as normal partial data
+instead of repeatedly recreating the task.
+
 Run in the background:
 
 ```bash
@@ -134,6 +166,11 @@ octoparse task list
 octoparse task list --page 2 --page-size 20
 octoparse task list --keyword news --page 2 --page-size 10
 octoparse task inspect <taskId>
+
+# Task creation
+octoparse recognize 'https://example.com/list' --auto --output task.json
+octoparse recognize 'https://example.com/search' --manual --query keyword --save-session --output task.json
+octoparse run-url 'https://example.com/list' --auto --max-rows 20 --jsonl
 
 # Local extraction
 octoparse run <taskId>
@@ -274,6 +311,10 @@ If the browser is not detected automatically, pass its path:
 ```bash
 octoparse run <taskId> --chrome-path "/path/to/chrome"
 ```
+
+Linux arm64 local execution is not supported, even with `--chrome-path`,
+because the bundled local runtime depends on Chrome for Testing platform
+support.
 
 Clean stale local control state:
 
