@@ -7,7 +7,8 @@ import { mock, test } from 'node:test';
 import { buildAgentContextForTesting, buildTaskFromAgentPlan, previewAgentPlanForTesting, recognizeCommand, resolveAgentScreenshotPathForTesting, resolveAvailableRecognizedTaskFile, runInlineAgentRecognizeForTesting, runUrlCommand, splitRunUrlArgs } from '../dist/commands/recognize.js';
 import { browserSessionPath, loadBrowserSession, saveBrowserSession } from '../dist/runtime/browser-session.js';
 import { hasLinuxDisplayEnvironment, requiresVirtualDisplay } from '../dist/runtime/virtual-display.js';
-import { dedupeEquivalentCandidates, detectInteractivePaginationOptionsForTesting, detectPageObstructionsForTesting, detectPaginationForCandidatesForTesting, dismissPageObstructionsForTesting, filterRecognizedBoilerplateCandidates, findSearchInputCandidatesForTesting, isPlausiblePaginationOptionForTesting, pageLooksLikeSearchResultForTesting, preferredPaginationForTesting, refineCandidateFieldsForTesting, resetManualOverlayHintKeysForTesting, resolveSearchSubmitButtonByGeometryForTesting, resolveSearchSubmitButtonForTesting, scoreSearchResultPageForTesting, shouldPromptForLoginInterventionForTesting, writeManualOverlayHintOnceForTesting } from '../dist/runtime/recognizer/page-recognizer.js';
+import { applyGoalScoresForTesting, dedupeEquivalentCandidates, detectInteractivePaginationOptionsForTesting, detectPageObstructionsForTesting, detectPaginationForCandidatesForTesting, detectSearchResultBlocksForTesting, dismissPageObstructionsForTesting, filterRecognizedBoilerplateCandidates, findSearchInputCandidatesForTesting, isPlausiblePaginationOptionForTesting, pageLooksLikeSearchResultForTesting, preferredPaginationForTesting, refineCandidateFieldsForTesting, resetManualOverlayHintKeysForTesting, resolveSearchSubmitButtonByGeometryForTesting, resolveSearchSubmitButtonForTesting, scoreSearchResultPageForTesting, shouldPromptForLoginInterventionForTesting, writeManualOverlayHintOnceForTesting } from '../dist/runtime/recognizer/page-recognizer.js';
+import { protectedSmartResultToCandidatesForTesting } from '../dist/runtime/recognizer/protected-smart.js';
 import { buildTaskFromCandidate } from '../dist/runtime/recognizer/xml.js';
 
 test('resolveAvailableRecognizedTaskFile creates a default file without overwriting existing tasks', async () => {
@@ -180,11 +181,11 @@ test('manual overlay CLI hint is deduped by workflow stage across page changes',
     }
   };
 
-  writeManualOverlayHintOnceForTesting(runtimeConsole, { url: () => 'https://example.com/a' }, 'pagination', 'Confirm pagination\n');
-  writeManualOverlayHintOnceForTesting(runtimeConsole, { url: () => 'https://example.com/b' }, 'pagination', 'Confirm pagination\n');
-  writeManualOverlayHintOnceForTesting(runtimeConsole, { url: () => 'https://example.com/b' }, 'candidate', 'Confirm recognition result\n');
+  writeManualOverlayHintOnceForTesting(runtimeConsole, { url: () => 'https://example.com/a' }, 'pagination', '确认翻页\n');
+  writeManualOverlayHintOnceForTesting(runtimeConsole, { url: () => 'https://example.com/b' }, 'pagination', '确认翻页\n');
+  writeManualOverlayHintOnceForTesting(runtimeConsole, { url: () => 'https://example.com/b' }, 'candidate', '确认识别结果\n');
 
-  assert.deepEqual(messages, ['Confirm pagination\n', 'Confirm recognition result\n']);
+  assert.deepEqual(messages, ['确认翻页\n', '确认识别结果\n']);
 });
 
 test('dedupeEquivalentCandidates collapses duplicate card/list detections', () => {
@@ -233,6 +234,1087 @@ test('dedupeEquivalentCandidates collapses duplicate card/list detections', () =
 
   assert.equal(deduped.length, 1);
   assert.equal(deduped[0].id, 'repeated_card_5');
+});
+
+test('protected Smart field cleanup removes action noise and preserves row mapping', () => {
+  const [candidate] = protectedSmartResultToCandidatesForTesting({
+    List: [{
+      type: 3,
+      sort: 1,
+      element: {
+        xpath: '/html/body/main/article',
+        fullColRate: 1,
+        data: [
+          ['Alpha Project', 'Beta Project'],
+          ['https://example.com/alpha', 'https://example.com/beta'],
+          ['https://example.com/login?return_to=%2Falpha', 'https://example.com/login?return_to=%2Fbeta'],
+          ['Star', 'Star'],
+          ['A useful package for scraping pages', 'A CLI helper for data extraction'],
+          ['https://example.com/tag/scraping', 'https://example.com/tag/cli'],
+          ['scraping', 'cli'],
+          ['https://cdn.example.com/a.png', 'https://cdn.example.com/b.png'],
+          ['https://cdn.example.com/avatar-a.png', 'https://cdn.example.com/avatar-b.png'],
+          ['2026-06-10', '2026-06-09'],
+          ['1,234', '987']
+        ],
+        scheme: [
+          { Name: '字段', RelativeXPath: '/A[1]', Attribute: 'text' },
+          { Name: '字段1', RelativeXPath: '/A[1]', Attribute: 'href' },
+          { Name: 'tooltipped_链接', RelativeXPath: '/A[2]', Attribute: 'href' },
+          { Name: 'dnone', RelativeXPath: '/SPAN[1]', Attribute: 'text' },
+          { Name: '8fbbd57d', RelativeXPath: '/P[1]', Attribute: 'text' },
+          { Name: 'cf33f2b9_链接', RelativeXPath: '/UL[1]/LI[1]/A[1]', Attribute: 'href' },
+          { Name: 'cf33f2b9', RelativeXPath: '/UL[1]/LI[1]/A[1]', Attribute: 'text' },
+          { Name: '图片', RelativeXPath: '/IMG[1]', Attribute: 'src' },
+          { Name: '头像', RelativeXPath: '/DIV[1]/IMG[1]', Attribute: 'src' },
+          { Name: 'updatedat', RelativeXPath: '/TIME[1]', Attribute: 'text' },
+          { Name: '下载', RelativeXPath: '/SPAN[2]', Attribute: 'text' }
+        ]
+      }
+    }]
+  }, 1);
+
+  assert.deepEqual(candidate.fields.map((field) => field.name), [
+    '标题',
+    '标题链接',
+    '描述',
+    '标签链接',
+    '标签',
+    '图片',
+    '时间',
+    '下载'
+  ]);
+  assert.deepEqual(candidate.sampleRows[0], {
+    '标题': 'Alpha Project',
+    '标题链接': 'https://example.com/alpha',
+    '描述': 'A useful package for scraping pages',
+    '标签链接': 'https://example.com/tag/scraping',
+    '标签': 'scraping',
+    '图片': 'https://cdn.example.com/a.png',
+    '时间': '2026-06-10',
+    '下载': '1,234'
+  });
+});
+
+test('protected Smart field cleanup compacts repository-style source and navigation noise', () => {
+  const [candidate] = protectedSmartResultToCandidatesForTesting({
+    List: [{
+      type: 3,
+      sort: 1,
+      element: {
+        xpath: '/html/body/main/article',
+        fullColRate: 1,
+        data: [
+          ['freeCodeCamp', 'project-based-learning'],
+          ['https://github.com/freeCodeCamp/freeCodeCamp?ref=topic', 'https://github.com/practical-tutorials/project-based-learning?ref=topic'],
+          ['https://github.com/freeCodeCamp/freeCodeCamp?tab=readme', 'https://github.com/practical-tutorials/project-based-learning?tab=readme'],
+          ['https://github.com/freeCodeCamp', 'https://github.com/practical-tutorials'],
+          ['freeCodeCamp', 'practical-tutorials'],
+          ['(github.com/freeCodeCamp)', '(github.com/practical-tutorials)'],
+          ['https://news.ycombinator.com/from?site=github.com/freeCodeCamp', 'https://news.ycombinator.com/from?site=github.com/practical-tutorials'],
+          ['github.com/freeCodeCamp', 'github.com/practical-tutorials'],
+          ['Code', 'Code'],
+          ['Sponsor', ''],
+          ['Updated', 'Updated'],
+          ['freeCodeCamp.org open-source codebase and curriculum.', 'The library for web and native user interfaces.'],
+          ['447k', '246k']
+        ],
+        scheme: [
+          { Name: '字段', RelativeXPath: '/H3[1]/A[1]', Attribute: 'text' },
+          { Name: '字段1', RelativeXPath: '/H3[1]/A[1]', Attribute: 'href' },
+          { Name: 'overlay_链接', RelativeXPath: '/A[2]', Attribute: 'href' },
+          { Name: 'link_链接', RelativeXPath: '/SPAN[1]/A[1]', Attribute: 'href' },
+          { Name: 'link', RelativeXPath: '/SPAN[1]/A[1]', Attribute: 'text' },
+          { Name: 'source', RelativeXPath: '/SPAN[2]', Attribute: 'text' },
+          { Name: 'source_链接', RelativeXPath: '/SPAN[2]/A[1]', Attribute: 'href' },
+          { Name: 'sourceText', RelativeXPath: '/SPAN[2]/A[1]/SPAN[1]', Attribute: 'text' },
+          { Name: 'tabnav', RelativeXPath: '/NAV[1]/A[1]', Attribute: 'text' },
+          { Name: 'valignmiddle', RelativeXPath: '/SPAN[3]', Attribute: 'text' },
+          { Name: 'updatedat', RelativeXPath: '/SPAN[4]', Attribute: 'text' },
+          { Name: 'colorfgmuted', RelativeXPath: '/P[1]', Attribute: 'text' },
+          { Name: 'counter', RelativeXPath: '/SPAN[5]', Attribute: 'text' }
+        ]
+      }
+    }]
+  }, 1);
+
+  assert.deepEqual(candidate.fields.map((field) => field.name), [
+    '标题',
+    '标题链接',
+    '作者链接',
+    '作者',
+    '来源链接',
+    '来源',
+    '数量'
+  ]);
+  assert.deepEqual(candidate.sampleRows[0], {
+    '标题': 'freeCodeCamp',
+    '标题链接': 'https://github.com/freeCodeCamp/freeCodeCamp?ref=topic',
+    '作者链接': 'https://github.com/freeCodeCamp',
+    '作者': 'freeCodeCamp',
+    '来源链接': 'https://news.ycombinator.com/from?site=github.com/freeCodeCamp',
+    '来源': 'github.com/freeCodeCamp',
+    '数量': '447k'
+  });
+});
+
+test('protected Smart field cleanup renames ordinal and author samples while dropping commerce actions', () => {
+  const [candidate] = protectedSmartResultToCandidatesForTesting({
+    List: [{
+      type: 3,
+      sort: 1,
+      element: {
+        xpath: '/html/body/main/ol/li',
+        fullColRate: 1,
+        data: [
+          ['Cancer review', 'Dementia study'],
+          ['https://example.com/articles/1', 'https://example.com/articles/2'],
+          ['1.', '2.'],
+          ['Mclaughlin M, Sanal-Hayes NEM.', 'Wang CC, Liu HC, Lin WL.'],
+          ['https://www.ebay.com/myb/WatchListAdd?item=1', 'https://www.ebay.com/myb/WatchListAdd?item=2'],
+          ['今すぐ買う', '今すぐ買う']
+        ],
+        scheme: [
+          { Name: '字段', RelativeXPath: '/A[1]', Attribute: 'text' },
+          { Name: '字段1', RelativeXPath: '/A[1]', Attribute: 'href' },
+          { Name: 'flexshrink', RelativeXPath: '/SPAN[1]', Attribute: 'text' },
+          { Name: 'usalist', RelativeXPath: '/DIV[1]', Attribute: 'text' },
+          { Name: 'scard_watchheartclick_链接', RelativeXPath: '/BUTTON[1]', Attribute: 'href' },
+          { Name: 'sucardcontainer_attributes_primary', RelativeXPath: '/BUTTON[2]', Attribute: 'text' }
+        ]
+      }
+    }]
+  }, 1);
+
+  assert.deepEqual(candidate.fields.map((field) => field.name), [
+    '标题',
+    '标题链接',
+    '编号',
+    '作者'
+  ]);
+  assert.deepEqual(candidate.sampleRows[0], {
+    '标题': 'Cancer review',
+    '标题链接': 'https://example.com/articles/1',
+    '编号': '1.',
+    '作者': 'Mclaughlin M, Sanal-Hayes NEM.'
+  });
+});
+
+test('protected Smart field cleanup normalizes generated semantic fields', () => {
+  const [candidate] = protectedSmartResultToCandidatesForTesting({
+    List: [{
+      type: 3,
+      sort: 1,
+      element: {
+        xpath: '/html/body/main/article',
+        fullColRate: 1,
+        data: [
+          ['Plugin Alpha', 'Plugin Beta'],
+          ['https://example.com/plugins/alpha', 'https://example.com/plugins/beta'],
+          ['(7,440 total ratings )', '(120 total ratings )'],
+          ['Grow organic traffic with schema automation and useful built-in SEO recommendations.', 'Improve search visibility with content checks and actionable indexing guidance.'],
+          ['4+ million active installations', '200,000+ active installations'],
+          ['Tested with 7.0', 'Tested with 6.9.4'],
+          ['New York, NY, USA', 'San Francisco, CA, USA'],
+          ['The AI platform for private markets investors', 'Supplying America industrial teams with critical materials'],
+          ['SUMMER 2025', 'SUMMER 2025'],
+          ['https://example.com/companies?industry=B2B', 'https://example.com/companies?industry=Industrials'],
+          ['B2B', 'INDUSTRIALS'],
+          ['View in Page ', 'View in Page '],
+          ['90%', '82%'],
+          ['•', '•'],
+          ['Imported by ', 'Imported by '],
+          ['1,776,917', '36,104']
+        ],
+        scheme: [
+          { Name: '字段', RelativeXPath: '/A[1]', Attribute: 'text' },
+          { Name: '字段1', RelativeXPath: '/A[1]', Attribute: 'href' },
+          { Name: 'ratingcount', RelativeXPath: '/SPAN[1]', Attribute: 'text' },
+          { Name: 'time', RelativeXPath: '/P[1]', Attribute: 'text' },
+          { Name: 'activeinstalls', RelativeXPath: '/SPAN[2]', Attribute: 'text' },
+          { Name: 'testedwith', RelativeXPath: '/SPAN[3]', Attribute: 'text' },
+          { Name: 'my', RelativeXPath: '/DIV[1]', Attribute: 'text' },
+          { Name: 'mb', RelativeXPath: '/DIV[2]', Attribute: 'text' },
+          { Name: 'pill', RelativeXPath: '/SPAN[4]', Attribute: 'text' },
+          { Name: 'pillwrapper_18olp_33_链接', RelativeXPath: '/A[2]', Attribute: 'href' },
+          { Name: 'pill1', RelativeXPath: '/SPAN[5]', Attribute: 'text' },
+          { Name: 'resultreadmore', RelativeXPath: '/SPAN[6]', Attribute: 'text' },
+          { Name: 'jstilelink', RelativeXPath: '/SPAN[7]', Attribute: 'text' },
+          { Name: 'wfull', RelativeXPath: '/SPAN[8]', Attribute: 'text' },
+          { Name: 'imported', RelativeXPath: '/SPAN[9]', Attribute: 'text' },
+          { Name: 'counter', RelativeXPath: '/SPAN[10]', Attribute: 'text' }
+        ]
+      }
+    }]
+  }, 1);
+
+  assert.deepEqual(candidate.fields.map((field) => field.name), [
+    '标题',
+    '标题链接',
+    '评分数',
+    '描述',
+    '安装量',
+    '兼容版本',
+    '位置',
+    '描述2',
+    '标签',
+    '类型_链接',
+    '评分',
+    '数量'
+  ]);
+  assert.deepEqual(candidate.sampleRows[0], {
+    '标题': 'Plugin Alpha',
+    '标题链接': 'https://example.com/plugins/alpha',
+    '评分数': '(7,440 total ratings )',
+    '描述': 'Grow organic traffic with schema automation and useful built-in SEO recommendations.',
+    '安装量': '4+ million active installations',
+    '兼容版本': 'Tested with 7.0',
+    '位置': 'New York, NY, USA',
+    '描述2': 'The AI platform for private markets investors',
+    '标签': 'SUMMER 2025',
+    '类型_链接': 'https://example.com/companies?industry=B2B',
+    '评分': '90%',
+    '数量': '1,776,917'
+  });
+});
+
+test('protected Smart field cleanup removes parent text and collapses repeated category fields', () => {
+  const [candidate] = protectedSmartResultToCandidatesForTesting({
+    List: [{
+      type: 3,
+      sort: 1,
+      element: {
+        xpath: '/html/body/main/ol/li',
+        fullColRate: 0.65,
+        data: [
+          [
+            'NEW Senior Python AI/ML Engineer| Hybrid| Full-time P.R.GLOlinks Consulting Private Limited',
+            'NEW Founding ML/Data Scientist (Remote, UK) MyDataValue'
+          ],
+          ['https://www.python.org/jobs/8090/', 'https://www.python.org/jobs/8089/'],
+          ['Senior Python AI/ML Engineer| Hybrid| Full-time', 'Founding ML/Data Scientist (Remote, UK)'],
+          ['https://www.python.org/jobs/location/bangalore-pune-india/', 'https://www.python.org/jobs/location/remote-london-uk-united-kingdom/'],
+          ['Bangalore, Pune, India', 'Remote - London UK, United Kingdom'],
+          ['AI/ML', 'Back end, Big Data, Machine Learning, ML Engineer'],
+          ['https://www.python.org/jobs/type/back-end/', 'https://www.python.org/jobs/type/back-end/'],
+          ['Back end', 'Back end'],
+          ['https://www.python.org/jobs/type/big-data/', 'https://www.python.org/jobs/type/lead/'],
+          ['Big Data', 'Lead'],
+          ['08 June 2026', '03 June 2026'],
+          ['https://www.python.org/jobs/category/developer-engineer/', 'https://www.python.org/jobs/category/researcher-scientist/']
+        ],
+        scheme: [
+          { Name: '公司名', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"listing-company-name")]', Attribute: 'text' },
+          { Name: '标题链接', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"listing-company-name")]//A[1]', Attribute: 'href' },
+          { Name: '标题', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"listing-company-name")]//A[1]', Attribute: 'text' },
+          { Name: '位置_链接', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"listing-location")]//A[1]', Attribute: 'href' },
+          { Name: '位置', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"listing-location")]//A[1]', Attribute: 'text' },
+          { Name: '类型', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"listing-job-type")]', Attribute: 'text' },
+          { Name: '类型_链接', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"listing-job-type")]//A[1]', Attribute: 'href' },
+          { Name: '类型2', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"listing-job-type")]//A[1]', Attribute: 'text' },
+          { Name: '类型_链接3', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"listing-job-type")]//A[2]', Attribute: 'href' },
+          { Name: '类型4', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"listing-job-type")]//A[2]', Attribute: 'text' },
+          { Name: '时间', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"listing-posted")]//TIME[1]', Attribute: 'text' },
+          { Name: '类别_链接', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"listing-company-category")]//A[1]', Attribute: 'href' }
+        ]
+      }
+    }]
+  }, 1);
+
+  assert.deepEqual(candidate.fields.map((field) => field.name), [
+    '标题链接',
+    '标题',
+    '位置_链接',
+    '位置',
+    '类型',
+    '类型_链接',
+    '时间'
+  ]);
+  assert.deepEqual(candidate.sampleRows[0], {
+    '标题链接': 'https://www.python.org/jobs/8090/',
+    '标题': 'Senior Python AI/ML Engineer| Hybrid| Full-time',
+    '位置_链接': 'https://www.python.org/jobs/location/bangalore-pune-india/',
+    '位置': 'Bangalore, Pune, India',
+    '类型': 'AI/ML',
+    '类型_链接': 'https://www.python.org/jobs/type/back-end/',
+    '时间': '08 June 2026'
+  });
+});
+
+test('protected Smart field cleanup removes search toggles and names citation metadata', () => {
+  const [candidate] = protectedSmartResultToCandidatesForTesting({
+    List: [{
+      type: 3,
+      sort: 1,
+      element: {
+        xpath: '/html/body/main/div',
+        fullColRate: 0.8,
+        data: [
+          ['StatPearls [Internet].', 'Database of Abstracts of Reviews of Effects (DARE): Quality-assessed Reviews [Internet].'],
+          ['https://www.ncbi.nlm.nih.gov/books/NBK430685/?term=cancer', 'https://www.ncbi.nlm.nih.gov/books/NBK285222/?term=cancer'],
+          ['https://www.ncbi.nlm.nih.gov/corehtml/pmc/pmcgifs/bookshelf/thumbs/th-statpearls.png', 'https://www.ncbi.nlm.nih.gov/corehtml/pmc/pmcgifs/bookshelf/thumbs/th-dare.png'],
+          ['1.', '2.'],
+          ['Cancer', 'Cancer'],
+          ['Kufe DW, Pollock RE, Weichselbaum RR, et al., editors.', 'Adam MP, Bick S, Mirzaa GM, et al., editors.'],
+          ['Treasure Island (FL): StatPearls Publishing; 2026 Jan-.', 'York (UK): Centre for Reviews and Dissemination (UK); 1995-.'],
+          ['Top results in this book', 'Top results in this book'],
+          ['Table of Contents', 'Table of Contents']
+        ],
+        scheme: [
+          { Name: '标题', RelativeXPath: '/descendant-or-self::P[contains(@class,"title")]//A[1]', Attribute: 'text' },
+          { Name: '标题链接', RelativeXPath: '/descendant-or-self::P[contains(@class,"title")]//A[1]', Attribute: 'href' },
+          { Name: '图片', RelativeXPath: '/descendant-or-self::DIV[contains(@class,"rsltimg")]//IMG[1]', Attribute: 'src' },
+          { Name: '编号', RelativeXPath: '/descendant-or-self::DIV[contains(@class,"rprtnum")]//SPAN[1]', Attribute: 'text' },
+          { Name: 'highlight', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"highlight")]', Attribute: 'text' },
+          { Name: 'desc', RelativeXPath: '/descendant-or-self::P[contains(@class,"desc")]', Attribute: 'text' },
+          { Name: 'details', RelativeXPath: '/descendant-or-self::P[contains(@class,"details")]', Attribute: 'text' },
+          { Name: 'uincbitogglermastertext', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"ui-ncbitoggler-master-text h2rep")]', Attribute: 'text' },
+          { Name: 'book_toc', RelativeXPath: '/descendant-or-self::A[contains(@class,"book_toc")]', Attribute: 'text' }
+        ]
+      }
+    }]
+  }, 1);
+
+  assert.deepEqual(candidate.fields.map((field) => field.name), [
+    '标题',
+    '标题链接',
+    '图片',
+    '编号',
+    '作者',
+    '引用'
+  ]);
+  assert.deepEqual(candidate.sampleRows[0], {
+    '标题': 'StatPearls [Internet].',
+    '标题链接': 'https://www.ncbi.nlm.nih.gov/books/NBK430685/?term=cancer',
+    '图片': 'https://www.ncbi.nlm.nih.gov/corehtml/pmc/pmcgifs/bookshelf/thumbs/th-statpearls.png',
+    '编号': '1.',
+    '作者': 'Kufe DW, Pollock RE, Weichselbaum RR, et al., editors.',
+    '引用': 'Treasure Island (FL): StatPearls Publishing; 2026 Jan-.'
+  });
+});
+
+test('protected Smart field cleanup removes arxiv action/search-hit fragments', () => {
+  const [candidate] = protectedSmartResultToCandidatesForTesting({
+    List: [{
+      type: 3,
+      sort: 1,
+      element: {
+        xpath: '/html/body/main/ol/li',
+        fullColRate: 1,
+        data: [
+          ['EEVEE: Towards Test-time Prompt Learning in the Real World for Self-Improving Agents', 'Data Journalist Agent: Transforming Data into Verifiable Multimodal Stories', 'Unidirectional Entropic Solutions of the Pressureless Euler Alignment System'],
+          ['https://arxiv.org/abs/2606.11182', 'https://arxiv.org/abs/2606.11176', 'https://arxiv.org/abs/2606.11159'],
+          ['arXiv:2606.11182', 'arXiv:2606.11176', 'arXiv:2606.11159'],
+          [' [pdf, ps, other] ', ' [pdf, ps, other] ', ' [pdf, ps, other] '],
+          ['cs.LG cs.AI', 'cs.CV cs.CL cs.CY cs.HC', 'math.AP'],
+          ['Agents', 'Agent', 'Agentic'],
+          ['https://arxiv.org/search/?searchtype=author&query=Xu%2C+W', 'https://arxiv.org/search/?searchtype=author&query=Lin%2C+K+Q', 'https://arxiv.org/search/?searchtype=author&query=Adeleke%2C+J+O'],
+          ['Weixian Xu', 'Kevin Qinghong Lin', 'Joshua O. Adeleke'],
+          ['In this paper, we propose EEVEE, the first multi-dataset test-time prompt learning framework for LLM agents.', 'Recent agents handle individual steps well in data-science workflows.', 'This paper studies communication protocols in pressureless Euler alignment systems.'],
+          ['agents', 'agents', 'agents'],
+          ['▽ More', '▽ More', '▽ More']
+        ],
+        scheme: [
+          { Name: '标题', RelativeXPath: '/descendant-or-self::P[contains(@class,"title is-5 mathjax")]', Attribute: 'text' },
+          { Name: '标题_链接', RelativeXPath: '/descendant-or-self::P[contains(@class,"list-title is-inline-block")]/A[1]', Attribute: 'href' },
+          { Name: '标题1', RelativeXPath: '/descendant-or-self::P[contains(@class,"list-title is-inline-block")]/A[1]', Attribute: 'text' },
+          { Name: '标题2', RelativeXPath: '/descendant-or-self::P[contains(@class,"list-title is-inline-block")]//SPAN[1]', Attribute: 'text' },
+          { Name: '关键词', RelativeXPath: '/descendant-or-self::DIV[contains(@class,"tags is-inline-block")]', Attribute: 'text' },
+          { Name: '标题6', RelativeXPath: '/descendant-or-self::p[@class="title is-5 mathjax"]/SPAN[contains(@class,"search-hit mathjax")]', Attribute: 'text' },
+          { Name: '作者_链接', RelativeXPath: '/descendant-or-self::P[contains(@class,"authors")]//A[1]', Attribute: 'href' },
+          { Name: '作者', RelativeXPath: '/descendant-or-self::P[contains(@class,"authors")]//A[1]', Attribute: 'text' },
+          { Name: '摘要', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"abstract-short has-text-grey-dark mathjax")]', Attribute: 'text' },
+          { Name: '摘要18', RelativeXPath: '/descendant-or-self::span[@class="abstract-short has-text-grey-dark mathjax"]/SPAN[contains(@class,"search-hit mathjax")]', Attribute: 'text' },
+          { Name: '摘要19', RelativeXPath: '/descendant-or-self::span[@class="abstract-short has-text-grey-dark mathjax"]/A[contains(@class,"is-size-7")]', Attribute: 'text' }
+        ]
+      }
+    }]
+  }, 1);
+
+  assert.deepEqual(candidate.fields.map((field) => field.name), [
+    '标题',
+    '标题链接',
+    '编号',
+    '关键词',
+    '作者链接',
+    '作者',
+    '摘要'
+  ]);
+  assert.deepEqual(candidate.sampleRows[0], {
+    '标题': 'EEVEE: Towards Test-time Prompt Learning in the Real World for Self-Improving Agents',
+    '标题链接': 'https://arxiv.org/abs/2606.11182',
+    '编号': 'arXiv:2606.11182',
+    '关键词': 'cs.LG cs.AI',
+    '作者链接': 'https://arxiv.org/search/?searchtype=author&query=Xu%2C+W',
+    '作者': 'Weixian Xu',
+    '摘要': 'In this paper, we propose EEVEE, the first multi-dataset test-time prompt learning framework for LLM agents.'
+  });
+});
+
+test('protected Smart field cleanup names package publisher and bullet metadata', () => {
+  const [candidate] = protectedSmartResultToCandidatesForTesting({
+    List: [{
+      type: 3,
+      sort: 1,
+      element: {
+        xpath: '/html/body/main/section',
+        fullColRate: 1,
+        data: [
+          ['react', 'react-is'],
+          ['https://www.npmjs.com/package/react', 'https://www.npmjs.com/package/react-is'],
+          ['React is a JavaScript library for building user interfaces.', 'Brand checking of React Elements.'],
+          ['https://gh.io/npm-docs-trusted-publishers', 'https://www.npmjs.com/~ckifer'],
+          ['GitHub Actions', 'ckifer'],
+          ['• 19.2.7 • 9 days ago • 211991 dependents • MIT', '• 19.2.7 • 9 days ago • 4053 dependents • MIT'],
+          ['570,288,918', '1,307,471,149']
+        ],
+        scheme: [
+          { Name: '字段', RelativeXPath: '/H3[1]', Attribute: 'text' },
+          { Name: '标题链接', RelativeXPath: '/H3[1]/A[1]', Attribute: 'href' },
+          { Name: '8fbbd57d', RelativeXPath: '/P[1]', Attribute: 'text' },
+          { Name: 'link_链接', RelativeXPath: '/DIV[1]/A[1]', Attribute: 'href' },
+          { Name: 'e98ba1cc', RelativeXPath: '/DIV[1]/A[1]', Attribute: 'text' },
+          { Name: 'updatedat', RelativeXPath: '/SPAN[1]', Attribute: 'text' },
+          { Name: 'counter', RelativeXPath: '/DIV[1]', Attribute: 'text' }
+        ]
+      }
+    }]
+  }, 1);
+
+  assert.deepEqual(candidate.fields.map((field) => field.name), [
+    '标题',
+    '标题链接',
+    '描述',
+    '发布者链接',
+    '发布者',
+    '元信息',
+    '数量'
+  ]);
+});
+
+test('protected Smart field cleanup names repository language and extra contributor links', () => {
+  const [candidate] = protectedSmartResultToCandidatesForTesting({
+    List: [{
+      type: 3,
+      sort: 1,
+      element: {
+        xpath: '/html/body/main/article',
+        fullColRate: 1,
+        data: [
+          ['refactoringhq / tolaria', 'yikart / AiToEarn'],
+          ['https://github.com/refactoringhq/tolaria', 'https://github.com/yikart/AiToEarn'],
+          ['Desktop app to manage markdown knowledge bases', 'Let us use AI to Earn!'],
+          ['TypeScript', 'TypeScript'],
+          ['https://github.com/refactoringhq/tolaria/stargazers', 'https://github.com/yikart/AiToEarn/stargazers'],
+          ['14,548', '20,245'],
+          ['https://github.com/apps/github-actions', 'https://github.com/gaozhenqiang'],
+          ['829 stars today', '402 stars today']
+        ],
+        scheme: [
+          { Name: '字段', RelativeXPath: '/A[1]', Attribute: 'text' },
+          { Name: '字段1', RelativeXPath: '/A[1]', Attribute: 'href' },
+          { Name: 'colorfgmuted', RelativeXPath: '/P[1]', Attribute: 'text' },
+          { Name: 'tmpmr', RelativeXPath: '/SPAN[1]/SPAN[2]', Attribute: 'text' },
+          { Name: 'stargazers_链接', RelativeXPath: '/A[2]', Attribute: 'href' },
+          { Name: 'stars', RelativeXPath: '/A[2]', Attribute: 'text' },
+          { Name: 'link_链接', RelativeXPath: '/A[3]', Attribute: 'href' },
+          { Name: 'stars_today', RelativeXPath: '/SPAN[2]', Attribute: 'text' }
+        ]
+      }
+    }]
+  }, 1);
+
+  assert.deepEqual(candidate.fields.map((field) => field.name), [
+    '标题',
+    '标题链接',
+    '描述',
+    '语言',
+    '星标链接',
+    '星标数',
+    '作者链接',
+    '今日星标'
+  ]);
+});
+
+test('protected Smart field cleanup names Stack Overflow stats and user fields', () => {
+  const [candidate] = protectedSmartResultToCandidatesForTesting({
+    List: [{
+      type: 3,
+      sort: 1,
+      element: {
+        xpath: '/html/body/main/div/div',
+        fullColRate: 1,
+        data: [
+          ['Python Geolocation Testing for Local Search Result Verification', 'Python multiprocessing works in but hangs in Windows Server', 'Fixing this error I am fine tuning a model using Unsloth'],
+          ['https://stackoverflow.com/questions/79955924/python-geolocation-testing-for-local-search-result-verification', 'https://stackoverflow.com/questions/79954844/python-multiprocessing-works-in-but-hangs-in-windows-server', 'https://stackoverflow.com/questions/79954820/fixing-this-error-i-am-fine-tuning-a-model-using-unsloth'],
+          ['0', '0', '-3'],
+          ['0', '0', '0'],
+          ['votes', 'votes', 'votes'],
+          ['answers', 'answers', 'answers'],
+          ['19', '71', '47'],
+          ['views', 'views', 'views'],
+          ['Local SEO has become increasingly complex as search engines personalize results based on geography.', 'I am running a Python script that uses multiprocessing.', 'I am training an Unsloth model in a Google Colab notebook.'],
+          ['pythonproxygeolocationhttp-headersranking', 'python', 'pythonperformancemodelartificial-intelligence'],
+          ['https://stackoverflow.com/users/32796360/usama-ansari', 'https://stackoverflow.com/users/32524965/husky', 'https://stackoverflow.com/users/3855935/cirsam'],
+          ['USAMA Ansari', 'Husky', 'cirsam'],
+          ['1', '9', '1'],
+          ['asked 39 mins ago', 'asked 7 hours ago', 'asked 9 hours ago']
+        ],
+        scheme: [
+          { Name: '字段', RelativeXPath: '/descendant-or-self::A[contains(@class,"s-link")]//SPAN[1]', Attribute: 'text' },
+          { Name: '字段1', RelativeXPath: '/descendant-or-self::A[contains(@class,"s-link")]', Attribute: 'href' },
+          { Name: '摘要', RelativeXPath: '/descendant-or-self::div[@class="s-post-summary--stats-item s-post-summary--stats-item__emphasized"]/SPAN[contains(@class,"s-post-summary--stats-item-number")]', Attribute: 'text' },
+          { Name: '编号', RelativeXPath: '/descendant-or-self::div[@class="s-post-summary--stats-item  "]/SPAN[contains(@class,"s-post-summary--stats-item-number")]', Attribute: 'text' },
+          { Name: '摘要2', RelativeXPath: '/descendant-or-self::div[@class="s-post-summary--stats-item s-post-summary--stats-item__emphasized"]/SPAN[contains(@class,"s-post-summary--stats-item-unit")]', Attribute: 'text' },
+          { Name: '摘要3', RelativeXPath: '/descendant-or-self::div[@class="s-post-summary--stats-item  "]/SPAN[contains(@class,"s-post-summary--stats-item-unit")]', Attribute: 'text' },
+          { Name: '编号2', RelativeXPath: '/descendant-or-self::div[@class="s-post-summary--stats-item "]/SPAN[contains(@class,"s-post-summary--stats-item-number")]', Attribute: 'text' },
+          { Name: '摘要5', RelativeXPath: '/descendant-or-self::div[@class="s-post-summary--stats-item "]/SPAN[contains(@class,"s-post-summary--stats-item-unit")]', Attribute: 'text' },
+          { Name: '摘要6', RelativeXPath: '/descendant-or-self::DIV[contains(@class,"s-post-summary--content-excerpt")]', Attribute: 'text' },
+          { Name: '关键词', RelativeXPath: '/descendant-or-self::UL[contains(@class,"js-post-tag-list-wrapper")]', Attribute: 'text' },
+          { Name: '字段2', RelativeXPath: '/descendant-or-self::DIV[contains(@class,"s-user-card s-user-card__minimal")]/A[1]', Attribute: 'href' },
+          { Name: 'flexitem', RelativeXPath: '/descendant-or-self::A[@class="flex--item"]//SPAN[1]', Attribute: 'text' },
+          { Name: '编号3', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"todo-no-class-here")]', Attribute: 'text' },
+          { Name: '时间', RelativeXPath: '/descendant-or-self::TIME[contains(@class,"s-user-card--time")]', Attribute: 'text' }
+        ]
+      }
+    }]
+  }, 1);
+
+  assert.deepEqual(candidate.fields.map((field) => field.name), [
+    '标题',
+    '标题链接',
+    '票数',
+    '回答数',
+    '浏览数',
+    '摘要',
+    '关键词',
+    '作者链接',
+    '作者',
+    '声望',
+    '时间'
+  ]);
+  assert.deepEqual(candidate.sampleRows[0], {
+    '标题': 'Python Geolocation Testing for Local Search Result Verification',
+    '标题链接': 'https://stackoverflow.com/questions/79955924/python-geolocation-testing-for-local-search-result-verification',
+    '票数': '0',
+    '回答数': '0',
+    '浏览数': '19',
+    '摘要': 'Local SEO has become increasingly complex as search engines personalize results based on geography.',
+    '关键词': 'pythonproxygeolocationhttp-headersranking',
+    '作者链接': 'https://stackoverflow.com/users/32796360/usama-ansari',
+    '作者': 'USAMA Ansari',
+    '声望': '1',
+    '时间': 'asked 39 mins ago'
+  });
+});
+
+test('protected Smart field cleanup names OpenLibrary metadata and drops availability actions', () => {
+  const [candidate] = protectedSmartResultToCandidatesForTesting({
+    List: [{
+      type: 3,
+      sort: 1,
+      element: {
+        xpath: '/html/body/main/ul/li',
+        fullColRate: 1,
+        data: [
+          ['Hands-On Machine Learning with Scikit-Learn, Keras, and TensorFlow', 'Machine learning: a probabilistic perspective', 'Machine learning: the new AI'],
+          ['https://openlibrary.org/works/OL20709638W/Hands-On_Machine_Learning_with_Scikit-Learn_Keras_and_TensorFlow?edition=key%3A/books/OL40322335M', 'https://openlibrary.org/works/OL16571885W/Machine_learning?edition=key%3A/books/OL25259559M', 'https://openlibrary.org/works/OL19723604W/Machine_learning?edition=key%3A/books/OL26936724M'],
+          ['https://covers.openlibrary.org/b/id/13141163-M.jpg', 'https://covers.openlibrary.org/b/id/14330525-M.jpg', 'https://covers.openlibrary.org/b/id/12660847-M.jpg'],
+          ['来自Aurélien Géron', '来自Kevin P. Murphy和Kevin P. Murphy', '来自Ethem Alpaydin'],
+          ['https://openlibrary.org/authors/OL3897679A/Aur%C3%A9lien_G%C3%A9ron', 'https://openlibrary.org/authors/OL7102592A/Kevin_P._Murphy', 'https://openlibrary.org/authors/OL1396574A/Ethem_Alpaydin'],
+          ['3.6 (9 ratings)', '4.0 (2 ratings)', '3.7 (3 ratings)'],
+          ['477 Want to read', '63 Want to read', '45 Want to read'],
+          ['首次出版于2019', '首次出版于2012', '首次出版于2016'],
+          ['4 个版本', '4 个版本', '4 个版本'],
+          ['1 本电子书', '1 本电子书', '2 本电子书'],
+          ['查找图书馆', '仅供预览', '仅供预览']
+        ],
+        scheme: [
+          { Name: '标题', RelativeXPath: '/descendant-or-self::A[contains(@class,"results")]', Attribute: 'text' },
+          { Name: '标题链接', RelativeXPath: '/descendant-or-self::A[contains(@class,"results")]', Attribute: 'href' },
+          { Name: '图片', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"bookcover")]//IMG[1]', Attribute: 'src' },
+          { Name: '作者', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"bookauthor")]', Attribute: 'text' },
+          { Name: '作者链接', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"bookauthor")]//A[1]', Attribute: 'href' },
+          { Name: '评分数', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"ratingsByline")]//SPAN[5]', Attribute: 'text' },
+          { Name: '评分', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"ratingsByline")][2]', Attribute: 'text' },
+          { Name: '引用', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"resultDetails")]//SPAN[1]', Attribute: 'text' },
+          { Name: '引用2', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"resultDetails")]/SPAN[2]/A[1]', Attribute: 'text' },
+          { Name: '引用3', RelativeXPath: '/descendant-or-self::SPAN[contains(@class,"resultDetails")]/SPAN[3]/A[1]', Attribute: 'text' },
+          { Name: '顶', RelativeXPath: '/descendant-or-self::div[@class="searchResultItemCTA-lending"]/DIV[contains(@class,"cta-button-group")]//A[1]', Attribute: 'text' }
+        ]
+      }
+    }]
+  }, 1);
+
+  assert.deepEqual(candidate.fields.map((field) => field.name), [
+    '标题',
+    '标题链接',
+    '图片',
+    '作者',
+    '作者链接',
+    '评分数',
+    '想读',
+    '出版信息',
+    '版本',
+    '电子书'
+  ]);
+  assert.deepEqual(candidate.sampleRows[0], {
+    '标题': 'Hands-On Machine Learning with Scikit-Learn, Keras, and TensorFlow',
+    '标题链接': 'https://openlibrary.org/works/OL20709638W/Hands-On_Machine_Learning_with_Scikit-Learn_Keras_and_TensorFlow?edition=key%3A/books/OL40322335M',
+    '图片': 'https://covers.openlibrary.org/b/id/13141163-M.jpg',
+    '作者': 'Aurélien Géron',
+    '作者链接': 'https://openlibrary.org/authors/OL3897679A/Aur%C3%A9lien_G%C3%A9ron',
+    '评分数': '3.6 (9 ratings)',
+    '想读': '477 Want to read',
+    '出版信息': '首次出版于2019',
+    '版本': '4 个版本',
+    '电子书': '1 本电子书'
+  });
+});
+
+test('protected Smart field cleanup keeps linked story text as title even when it contains prices', () => {
+  const [candidate] = protectedSmartResultToCandidatesForTesting({
+    List: [{
+      type: 3,
+      sort: 1,
+      element: {
+        xpath: '/html/body/center/table/tr[@class="athing"]',
+        fullColRate: 1,
+        data: [
+          ['1.', '2.', '3.'],
+          ['https://github.com/apple/container/blob/main/docs/container-machine.md', 'https://www.anthropic.com/news/claude-fable-5-mythos-5', 'https://arstechnica.com/cars/2026/05/how-do-you-design-a-30000-electric-pickup-inside-fords-skunkworks/'],
+          ['macOS Container Machines', 'Claude Fable 5', "How do you design a $30k electric pickup? Inside Ford's skunkworks"],
+          ['https://news.ycombinator.com/from?site=github.com/apple', 'https://news.ycombinator.com/from?site=anthropic.com', 'https://news.ycombinator.com/from?site=arstechnica.com'],
+          ['github.com/apple', 'anthropic.com', 'arstechnica.com']
+        ],
+        scheme: [
+          { Name: 'rank', RelativeXPath: '/TD[1]/SPAN[1]', Attribute: 'text' },
+          { Name: 'titlelink', RelativeXPath: '/TD[3]/SPAN[1]/A[1]', Attribute: 'href' },
+          { Name: 'title', RelativeXPath: '/TD[3]/SPAN[1]/A[1]', Attribute: 'text' },
+          { Name: 'sitebit comhead_链接', RelativeXPath: '/TD[3]/SPAN[1]/SPAN[1]/A[1]', Attribute: 'href' },
+          { Name: 'sitestr', RelativeXPath: '/TD[3]/SPAN[1]/SPAN[1]/A[1]/SPAN[1]', Attribute: 'text' }
+        ]
+      }
+    }]
+  }, 1);
+
+  assert.deepEqual(candidate.fields.map((field) => field.name), [
+    '编号',
+    '标题链接',
+    '标题',
+    '来源链接',
+    '来源'
+  ]);
+  assert.equal(candidate.sampleRows[0]['标题'], 'macOS Container Machines');
+});
+
+test('protected Smart field cleanup skips sparse ad rows and names job/package/product metadata', () => {
+  const [jobs] = protectedSmartResultToCandidatesForTesting({
+    List: [{
+      type: 3,
+      sort: 1,
+      element: {
+        xpath: '/html/body/table/tbody/tr',
+        fullColRate: 0.7,
+        data: [
+          ['https://remoteok.com/nomad-health-individual', 'https://remoteok.com/remote-jobs/remote-data-scientist-example-1133043', 'https://remoteok.com/remote-jobs/remote-data-analyst-example-1133044'],
+          ['https://remoteok.com/assets/safetywing.png', 'https://cdn.example.com/company-a.png', 'https://cdn.example.com/company-b.png'],
+          ['', 'Data Scientist', 'Data Analyst'],
+          ['', 'Acme Data', 'Little Caesars Pizza'],
+          ['', '🌏 Worldwide', '🌏 Probably worldwide'],
+          ['', '💰 Upgrade to Premium to see salary', '💰 Upgrade to Premium to see salary'],
+          ['', 'https://remoteok.com/remote-analyst+python-jobs', 'https://remoteok.com/remote-full-stack+python-jobs'],
+          ['', 'Analyst', 'Full Stack'],
+          ['', '1d', '2d'],
+          ['', '🇨🇦 Canada', '🇺🇸 United States']
+        ],
+        scheme: [
+          { Name: '💵_Salary_🎪_Benefits🦴_Sort_by🆕_Latest_jobs💵_Highest_paid👀_Most_viewed✅_Most_applied🔥_Hottest🎪_Most_benefits🐍_Python_❌_Clear_202_results_链接', RelativeXPath: '/TD[1]/A[1]', Attribute: 'href' },
+          { Name: '💵_Salary_🎪_Benefits🦴_Sort_by🆕_Latest_jobs💵_Highest_paid👀_Most_viewed✅_Most_applied🔥_Hottest🎪_Most_benefits🐍_Python_❌_Clear_202_results', RelativeXPath: '/TD[1]/A[1]/IMG[1]', Attribute: 'src' },
+          { Name: '标题', RelativeXPath: '/TD[2]/A[1]/H2[1]', Attribute: 'text' },
+          { Name: '字段', RelativeXPath: '/TD[2]/SPAN[1]', Attribute: 'text' },
+          { Name: '字段3', RelativeXPath: '/TD[2]/DIV[1]', Attribute: 'text' },
+          { Name: '字段4', RelativeXPath: '/TD[2]/DIV[2]', Attribute: 'text' },
+          { Name: '标题链接', RelativeXPath: '/TD[3]/A[1]', Attribute: 'href' },
+          { Name: '字段5', RelativeXPath: '/TD[3]/A[1]/DIV[1]/H3[1]', Attribute: 'text' },
+          { Name: '时间', RelativeXPath: '/TD[4]/TIME[1]', Attribute: 'text' },
+          { Name: '标题2', RelativeXPath: '/TD[2]/DIV[1]/A[1]', Attribute: 'text' }
+        ]
+      }
+    }]
+  }, 1);
+
+  assert.deepEqual(jobs.fields.map((field) => field.name), [
+    '标题链接',
+    '图片',
+    '标题',
+    '公司',
+    '位置',
+    '薪资',
+    '标签链接',
+    '标签',
+    '时间',
+    '国家'
+  ]);
+  assert.equal(jobs.sampleRows[0]['标题'], 'Data Scientist');
+  assert.equal(jobs.sampleRows[0]['标题链接'], 'https://remoteok.com/remote-jobs/remote-data-scientist-example-1133043');
+
+  const [packages] = protectedSmartResultToCandidatesForTesting({
+    List: [{
+      type: 3,
+      sort: 1,
+      element: {
+        xpath: '/html/body/main/ul/li',
+        fullColRate: 1,
+        data: [
+          ['serde', 'serde-saphyr'],
+          ['https://crates.io/crates/serde', 'https://crates.io/crates/serde-saphyr'],
+          ['v1.0.228', 'v0.0.27'],
+          ['A generic serialization/deserialization framework', 'YAML serializer for Serde'],
+          ['All-Time Downloads : 1,066,651,755', 'All-Time Downloads : 1,394,154'],
+          ['Recent Downloads : 203,004,432', 'Recent Downloads : 1,199,675'],
+          ['https://serde.rs/', 'https://docs.rs/serde-saphyr/latest/serde_saphyr/'],
+          ['https://docs.rs/serde', 'https://github.com/example/serde-saphyr']
+        ],
+        scheme: [
+          { Name: '标题', RelativeXPath: '/A[1]', Attribute: 'text' },
+          { Name: '标题链接', RelativeXPath: '/A[1]', Attribute: 'href' },
+          { Name: 'version', RelativeXPath: '/SPAN[1]', Attribute: 'text' },
+          { Name: '描述', RelativeXPath: '/P[1]', Attribute: 'text' },
+          { Name: '下载', RelativeXPath: '/SPAN[2]', Attribute: 'text' },
+          { Name: '下载1', RelativeXPath: '/SPAN[3]', Attribute: 'text' },
+          { Name: 'quicklinks_链接', RelativeXPath: '/A[2]', Attribute: 'href' },
+          { Name: 'quicklinks_链接2', RelativeXPath: '/A[3]', Attribute: 'href' }
+        ]
+      }
+    }]
+  }, 1);
+
+  assert.deepEqual(packages.fields.map((field) => field.name), [
+    '标题',
+    '标题链接',
+    '版本',
+    '描述',
+    '总下载',
+    '近期下载',
+    '主页链接',
+    '文档链接'
+  ]);
+
+  const [books] = protectedSmartResultToCandidatesForTesting({
+    List: [{
+      type: 3,
+      sort: 1,
+      element: {
+        xpath: '/html/body/main/ol/li',
+        fullColRate: 1,
+        data: [
+          ["It's Only the Himalayas", 'Full Moon over Noahs Ark'],
+          ['https://books.toscrape.com/catalogue/its-only-the-himalayas_981/index.html', 'https://books.toscrape.com/catalogue/full-moon_811/index.html'],
+          ['£45.17', '£49.43'],
+          ['In stock', 'In stock']
+        ],
+        scheme: [
+          { Name: '标题', RelativeXPath: '/H3[1]/A[1]', Attribute: 'text' },
+          { Name: '标题链接', RelativeXPath: '/H3[1]/A[1]', Attribute: 'href' },
+          { Name: 'price', RelativeXPath: '/P[1]', Attribute: 'text' },
+          { Name: 'instock', RelativeXPath: '/P[2]', Attribute: 'text' }
+        ]
+      }
+    }]
+  }, 1);
+
+  assert.deepEqual(books.fields.map((field) => field.name), ['标题', '标题链接', '价格', '库存状态']);
+});
+
+test('goal ranking keeps rich result candidates above label-only blocks', () => {
+  const ranked = applyGoalScoresForTesting([
+    {
+      id: 'protected_smart_2',
+      type: 'repeated_card',
+      title: 'Protected Smart label block',
+      confidence: 0.99,
+      selector: '',
+      xpath: '/html/body/main/section/div',
+      itemSelector: '',
+      itemXPath: '/html/body/main/section/div',
+      itemCount: 183,
+      fields: [
+        { name: '标题', kind: 'text', selector: '', xpath: '/html/body/main/section/div/p', relativeXPath: './p', samples: ['18 pages. To be published in ICML 2026'] },
+        { name: 'hastextblackbis', kind: 'text', selector: '', xpath: '/html/body/main/section/div/b', relativeXPath: './b', samples: ['Authors:', 'Submitted', 'Comments:'] }
+      ],
+      sampleRows: [
+        { '标题': '', hastextblackbis: 'Authors:' },
+        { '标题': '18 pages. To be published in ICML 2026', hastextblackbis: '' },
+        { '标题': '', hastextblackbis: 'Submitted' }
+      ],
+      reasons: ['test']
+    },
+    {
+      id: 'protected_smart_1',
+      type: 'search_results',
+      title: 'Protected Smart paper results',
+      confidence: 0.99,
+      selector: '',
+      xpath: '/html/body/main/ol/li',
+      itemSelector: '',
+      itemXPath: '/html/body/main/ol/li',
+      itemCount: 50,
+      fields: [
+        { name: '标题', kind: 'text', selector: '', xpath: '/html/body/main/ol/li/a', relativeXPath: './a', samples: ['ABC-Bench: An Agentic Bio-Capabilities Benchmark for Biosecurity'] },
+        { name: '标题链接', kind: 'href', selector: '', xpath: '/html/body/main/ol/li/a', relativeXPath: './a', samples: ['https://arxiv.org/abs/2606.11150'] },
+        { name: '摘要', kind: 'text', selector: '', xpath: '/html/body/main/ol/li/p', relativeXPath: './p', samples: ['A benchmark paper with enough abstract text to identify this as a real result row.'] }
+      ],
+      sampleRows: [
+        {
+          '标题': 'ABC-Bench: An Agentic Bio-Capabilities Benchmark for Biosecurity',
+          '标题链接': 'https://arxiv.org/abs/2606.11150',
+          '摘要': 'A benchmark paper with enough abstract text to identify this as a real result row.'
+        }
+      ],
+      reasons: ['test']
+    }
+  ], '采集页面主要列表数据');
+
+  assert.equal(ranked[0].id, 'protected_smart_1');
+});
+
+test('goal ranking keeps rich records above taxonomy filter links', () => {
+  const ranked = applyGoalScoresForTesting([
+    {
+      id: 'protected_smart_5',
+      type: 'search_results',
+      title: 'Protected Smart taxonomy filters',
+      confidence: 0.99,
+      selector: '',
+      xpath: '/html/body/main/aside',
+      itemSelector: '',
+      itemXPath: '/html/body/main/aside/a',
+      itemCount: 68,
+      fields: [
+        { name: '标题链接', kind: 'href', selector: '', xpath: '/html/body/main/aside/a', relativeXPath: './a', samples: ['https://www.python.org/jobs/type/back-end/', 'https://www.python.org/jobs/type/big-data/'] },
+        { name: '标题', kind: 'text', selector: '', xpath: '/html/body/main/aside/a', relativeXPath: './a', samples: ['Back end', 'Big Data'] }
+      ],
+      sampleRows: [
+        { '标题链接': 'https://www.python.org/jobs/type/back-end/', '标题': 'Back end' },
+        { '标题链接': 'https://www.python.org/jobs/type/big-data/', '标题': 'Big Data' }
+      ],
+      reasons: ['Detected by protected SmartProxy resource', 'fullColRate=1.00'],
+      layout: {
+        role: 'main',
+        score: 0.84,
+        mainScore: 0.84,
+        sidebarPenalty: 0,
+        boilerplatePenalty: 0,
+        visualCoverage: 0.88,
+        textDensity: 0.01,
+        linkDensity: 0,
+        centerDistance: 0.27,
+        reasons: []
+      }
+    },
+    {
+      id: 'protected_smart_1',
+      type: 'search_results',
+      title: 'Protected Smart job records',
+      confidence: 0.99,
+      selector: '',
+      xpath: '/html/body/main/ol/li',
+      itemSelector: '',
+      itemXPath: '/html/body/main/ol/li',
+      itemCount: 25,
+      fields: [
+        { name: '标题链接', kind: 'href', selector: '', xpath: '/html/body/main/ol/li/a', relativeXPath: './a', samples: ['https://www.python.org/jobs/8090/', 'https://www.python.org/jobs/8089/'] },
+        { name: '标题', kind: 'text', selector: '', xpath: '/html/body/main/ol/li/a', relativeXPath: './a', samples: ['Senior Python AI/ML Engineer', 'Founding ML/Data Scientist'] },
+        { name: '位置', kind: 'text', selector: '', xpath: '/html/body/main/ol/li/span', relativeXPath: './span', samples: ['Bangalore, Pune, India', 'Remote - London UK, United Kingdom'] },
+        { name: '类型', kind: 'text', selector: '', xpath: '/html/body/main/ol/li/em', relativeXPath: './em', samples: ['AI/ML', 'Back end'] },
+        { name: '时间', kind: 'text', selector: '', xpath: '/html/body/main/ol/li/time', relativeXPath: './time', samples: ['08 June 2026', '03 June 2026'] }
+      ],
+      sampleRows: [
+        {
+          '标题链接': 'https://www.python.org/jobs/8090/',
+          '标题': 'Senior Python AI/ML Engineer',
+          '位置': 'Bangalore, Pune, India',
+          '类型': 'AI/ML',
+          '时间': '08 June 2026'
+        }
+      ],
+      reasons: ['Detected by protected SmartProxy resource', 'fullColRate=0.65'],
+      layout: {
+        role: 'main',
+        score: 0.84,
+        mainScore: 0.91,
+        sidebarPenalty: 0,
+        boilerplatePenalty: 0.12,
+        visualCoverage: 0.91,
+        textDensity: 0.1,
+        linkDensity: 0.68,
+        centerDistance: 0.2,
+        reasons: []
+      }
+    }
+  ], '采集页面主要列表数据');
+
+  assert.equal(ranked[0].id, 'protected_smart_1');
+});
+
+test('goal ranking keeps real search results above footer/header navigation', () => {
+  const ranked = applyGoalScoresForTesting([
+    {
+      id: 'protected_smart_footer',
+      type: 'search_results',
+      title: 'Protected Smart footer links',
+      confidence: 0.99,
+      selector: '',
+      xpath: '/html/body/footer',
+      itemSelector: '',
+      itemXPath: '/html/body/footer/a',
+      itemCount: 17,
+      fields: [
+        { name: '标题', kind: 'text', selector: '', xpath: '/html/body/footer/a', relativeXPath: './a', samples: ['About', 'Blog', 'Careers'] },
+        { name: '标题链接', kind: 'href', selector: '', xpath: '/html/body/footer/a', relativeXPath: './a', samples: ['https://developer.mozilla.org/en-US/about', 'https://developer.mozilla.org/en-US/blog/'] }
+      ],
+      sampleRows: [
+        { '标题': 'About', '标题链接': 'https://developer.mozilla.org/en-US/about' },
+        { '标题': 'Blog', '标题链接': 'https://developer.mozilla.org/en-US/blog/' }
+      ],
+      reasons: ['Detected by protected SmartProxy resource'],
+      layout: {
+        role: 'footer',
+        score: 0.2,
+        mainScore: 0.32,
+        sidebarPenalty: 0,
+        boilerplatePenalty: 0.7,
+        visualCoverage: 0.18,
+        textDensity: 0.1,
+        linkDensity: 0.9,
+        centerDistance: 0.2,
+        reasons: []
+      }
+    },
+    {
+      id: 'fallback_search_results_1',
+      type: 'search_results',
+      title: 'Search/list results',
+      confidence: 0.87,
+      selector: '',
+      xpath: '/html/body/main/ol',
+      itemSelector: '',
+      itemXPath: '/html/body/main/ol/li',
+      itemCount: 10,
+      fields: [
+        { name: '标题', kind: 'text', selector: '', xpath: '/html/body/main/ol/li/a', relativeXPath: './a', samples: ['Fetch API', 'BackgroundFetchManager: fetch() method'] },
+        { name: '标题链接', kind: 'href', selector: '', xpath: '/html/body/main/ol/li/a', relativeXPath: './a', samples: ['https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API', 'https://developer.mozilla.org/en-US/docs/Web/API/BackgroundFetchManager/fetch'] },
+        { name: '描述', kind: 'text', selector: '', xpath: '/html/body/main/ol/li/p', relativeXPath: './p', samples: ['Find out more about using the Fetch API features in Using Fetch and deferred fetch.'] }
+      ],
+      sampleRows: [
+        {
+          '标题': 'Fetch API',
+          '标题链接': 'https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API',
+          '描述': 'Find out more about using the Fetch API features in Using Fetch and deferred fetch.'
+        }
+      ],
+      reasons: ['Fallback detector candidate'],
+      layout: {
+        role: 'main',
+        score: 0.8,
+        mainScore: 0.9,
+        sidebarPenalty: 0,
+        boilerplatePenalty: 0.05,
+        visualCoverage: 0.72,
+        textDensity: 0.24,
+        linkDensity: 0.22,
+        centerDistance: 0.12,
+        reasons: []
+      }
+    }
+  ], '采集 MDN 搜索结果列表');
+
+  assert.equal(ranked[0].id, 'fallback_search_results_1');
+});
+
+test('detectSearchResultBlocks finds MDN-style result cards with title links and summaries', async () => {
+  const page = fakeSearchResultBlockPage({
+    elements: [
+      {
+        tag: 'header',
+        text: 'References Learn Plus Curriculum Blog',
+        attrs: { className: 'top-navigation' },
+        rect: { left: 0, top: 0, right: 1200, bottom: 72 },
+        children: [
+          { tag: 'a', text: 'References', attrs: { href: 'https://developer.mozilla.org/en-US/docs/Web' }, rect: { left: 20, top: 18, right: 110, bottom: 42 } },
+          { tag: 'a', text: 'Learn', attrs: { href: 'https://developer.mozilla.org/en-US/learn' }, rect: { left: 120, top: 18, right: 180, bottom: 42 } }
+        ]
+      },
+      {
+        tag: 'main',
+        attrs: { className: 'search-page' },
+        rect: { left: 0, top: 80, right: 1200, bottom: 1100 },
+        children: [
+          {
+            tag: 'section',
+            attrs: { className: 'search-results-list' },
+            rect: { left: 160, top: 120, right: 980, bottom: 840 },
+            children: [
+              mdnResultRow(1, 'Fetch API', 'https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API', 'Web APIs', 'Find out more about using the Fetch API features in Using Fetch and deferred fetch.'),
+              mdnResultRow(2, 'BackgroundFetchManager: fetch() method', 'https://developer.mozilla.org/en-US/docs/Web/API/BackgroundFetchManager/fetch', 'Web APIs', 'The fetch() method starts a background fetch operation and returns a promise for the registration.'),
+              mdnResultRow(3, 'Request: cache property', 'https://developer.mozilla.org/en-US/docs/Web/API/Request/cache', 'HTTP', 'The cache read-only property of the Request interface contains the cache mode of the request.')
+            ]
+          }
+        ]
+      }
+    ]
+  });
+
+  const candidates = await detectSearchResultBlocksForTesting(page);
+
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].type, 'search_results');
+  assert.equal(candidates[0].itemCount, 3);
+  assert.deepEqual(candidates[0].fields.map((field) => field.name), ['title', 'url', 'summary', 'category']);
+  assert.equal(candidates[0].sampleRows[0].title, 'Fetch API');
+  assert.match(candidates[0].sampleRows[0].summary, /Using Fetch/);
+  assert.match(candidates[0].fields.find((field) => field.name === 'url')?.samples[0], /Fetch_API/);
+});
+
+test('detectSearchResultBlocks scans open shadow roots for SPA search results', async () => {
+  const page = fakeSearchResultBlockPage({
+    elements: [
+      {
+        tag: 'div',
+        attrs: { id: 'content', className: 'site-search' },
+        rect: { left: 0, top: 80, right: 1200, bottom: 980 },
+        children: [
+          {
+            tag: 'mdn-site-search',
+            attrs: { className: 'mdn-site-search' },
+            rect: { left: 120, top: 120, right: 980, bottom: 900 },
+            shadow: [
+              {
+                tag: 'div',
+                attrs: { className: 'search-results-list' },
+                rect: { left: 160, top: 140, right: 960, bottom: 860 },
+                children: [
+                  mdnResultRow(1, 'Fetch API', 'https://developer.mozilla.org/en-US/docs/Web/API/Fetch_API', 'Web APIs', 'Find out more about using the Fetch API features in Using Fetch and deferred fetch.'),
+                  mdnResultRow(2, 'Window: fetch() method', 'https://developer.mozilla.org/en-US/docs/Web/API/Window/fetch', 'Web APIs', 'The fetch() method starts the process of fetching a resource from the network.'),
+                  mdnResultRow(3, 'Request: cache property', 'https://developer.mozilla.org/en-US/docs/Web/API/Request/cache', 'HTTP', 'The cache read-only property of the Request interface contains the cache mode of the request.')
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+
+  const candidates = await detectSearchResultBlocksForTesting(page);
+
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].itemCount, 3);
+  assert.match(candidates[0].itemXPath, /mdn-site-search/);
+  assert.match(candidates[0].reasons.join(' '), /Shadow DOM/);
+  assert.equal(candidates[0].sampleRows[0].title, 'Fetch API');
+  assert.match(candidates[0].sampleRows[0].url, /Fetch_API/);
 });
 
 test('filterRecognizedBoilerplateCandidates removes legal footer records but keeps ordinary link collections', () => {
@@ -392,6 +1474,53 @@ test('detectPaginationForCandidates uses scroll only when the scroll probe sees 
   assert.equal(withPagination.pagination.type, 'scroll');
   assert.equal(withPagination.pagination.xpath, '');
   assert.match(withPagination.pagination.reasons.join(' '), /list-like item count grew/);
+});
+
+test('detectPaginationForCandidates does not infer scroll for already-complete large static lists', async () => {
+  const candidate = {
+    id: 'search_results_1',
+    type: 'search_results',
+    title: 'Top ranked movies',
+    confidence: 0.9,
+    selector: '#results',
+    xpath: '/html/body/main/section',
+    itemSelector: 'article.result',
+    itemXPath: '/html/body/main/section/article',
+    itemCount: 250,
+    fields: [
+      { name: 'title', kind: 'text', selector: 'h3', xpath: '/html/body/main/section/article/h3', relativeXPath: './h3', samples: ['Alpha'] },
+      { name: 'url', kind: 'href', selector: 'a', xpath: '/html/body/main/section/article/a', relativeXPath: './a', samples: ['https://example.com/a'] }
+    ],
+    sampleRows: [{ title: 'Alpha', url: 'https://example.com/a' }],
+    reasons: ['test']
+  };
+  const page = fakePaginationPage({
+    bodyHeight: 32000,
+    viewportHeight: 900,
+    itemXPath: candidate.itemXPath,
+    rows: Array.from({ length: candidate.itemCount }, (_, index) => ({
+      text: `Movie ${index + 1}`,
+      rect: { left: 80, top: 100 + index * 120, right: 720, bottom: 190 + index * 120 },
+      children: []
+    }))
+  });
+
+  const [withPagination] = await detectPaginationForCandidatesForTesting(page, [candidate], {
+    snapshots: [],
+    sawActiveLoadMore: true,
+    sawGrowth: true,
+    maxArticleLikeCount: 977,
+    maxContentHeight: 9000,
+    maxPageHeight: 32000,
+    grewArticleLikeCount: 727,
+    grewContentHeight: 6316,
+    grewPageHeight: 3051,
+    reachedBottom: false,
+    bestActiveLoadMoreText: 'See more information about The Godfather',
+    bestActiveLoadMoreXPath: '/html/body/main/section/article[2]/button[1]'
+  });
+
+  assert.equal(withPagination.pagination, undefined);
 });
 
 test('detectPaginationForCandidates does not infer scroll from Baidu-like static hot list height changes', async () => {
@@ -762,6 +1891,72 @@ test('detectPaginationForCandidates keeps existing load-more over scroll fallbac
   assert.equal(withPagination.pagination.text, '查看更多');
 });
 
+test('pagination filter rejects per-record see-more expanders', () => {
+  assert.equal(isPlausiblePaginationOptionForTesting({
+    type: 'load_more',
+    xpath: '/html/body/main/ul/li[2]/button[1]',
+    text: 'See more information about The Godfather',
+    confidence: 0.94,
+    isAjax: true,
+    scope: 'near_list',
+    reasons: ['Detected by protected SmartProxy pagination']
+  }), false);
+
+  assert.equal(isPlausiblePaginationOptionForTesting({
+    type: 'load_more',
+    xpath: '//button[contains(normalize-space(.), "Show more results")]',
+    text: 'Show more results',
+    confidence: 0.7,
+    isAjax: true,
+    scope: 'global',
+    reasons: ['load-more text or attributes']
+  }), true);
+});
+
+test('detectPaginationForCandidates drops protected per-record see-more pagination', async () => {
+  const candidate = {
+    id: 'search_results_1',
+    type: 'search_results',
+    title: 'Movie rows',
+    confidence: 0.9,
+    selector: '#results',
+    xpath: '/html/body/main/section',
+    itemSelector: 'article.result',
+    itemXPath: '/html/body/main/section/article',
+    itemCount: 25,
+    fields: [
+      { name: 'title', kind: 'text', selector: 'h3', xpath: '/html/body/main/section/article/h3', relativeXPath: './h3', samples: ['The Godfather'] },
+      { name: 'url', kind: 'href', selector: 'a', xpath: '/html/body/main/section/article/a', relativeXPath: './a', samples: ['https://example.com/title/tt0068646'] }
+    ],
+    sampleRows: [{ title: 'The Godfather', url: 'https://example.com/title/tt0068646' }],
+    reasons: ['test'],
+    pagination: {
+      type: 'load_more',
+      xpath: '/html/body/main/section/article[2]/button[1]',
+      text: 'See more information about The Godfather',
+      confidence: 0.94,
+      isAjax: true,
+      scope: 'near_list',
+      reasons: ['Detected by protected SmartProxy pagination']
+    }
+  };
+  const rows = Array.from({ length: candidate.itemCount }, (_, index) => ({
+    text: `Movie ${index + 1}`,
+    rect: { left: 80, top: 100 + index * 80, right: 720, bottom: 160 + index * 80 },
+    children: []
+  }));
+  const page = fakePaginationPage({
+    bodyHeight: 2600,
+    viewportHeight: 900,
+    itemXPath: candidate.itemXPath,
+    rows
+  });
+
+  const [withPagination] = await detectPaginationForCandidatesForTesting(page, [candidate]);
+
+  assert.equal(withPagination.pagination, undefined);
+});
+
 test('detectPaginationForCandidates prefers global load-more over weak next-page', async () => {
   const candidate = {
     id: 'search_results_1',
@@ -894,6 +2089,52 @@ test('detectPaginationForCandidates carries load-more seen during pre-scroll pro
   assert.equal(withPagination.pagination.revealByScroll, true);
   assert.match(withPagination.pagination.xpath, /加载更多/);
   assert.match(withPagination.pagination.reasons.join(' '), /scroll probe/);
+});
+
+test('detectPaginationForCandidates ignores menu-like see-more text from scroll probe', async () => {
+  const candidate = {
+    id: 'search_results_1',
+    type: 'search_results',
+    title: 'Reference rows',
+    confidence: 0.9,
+    selector: '#results',
+    xpath: '/html/body/main/section',
+    itemSelector: 'article.result',
+    itemXPath: '/html/body/main/section/article',
+    itemCount: 10,
+    fields: [
+      { name: 'title', kind: 'text', selector: 'h3', xpath: '/html/body/main/section/article/h3', relativeXPath: './h3', samples: ['Alpha'] }
+    ],
+    sampleRows: [{ title: 'Alpha' }],
+    reasons: ['test']
+  };
+  const rows = Array.from({ length: candidate.itemCount }, (_, index) => ({
+    text: `Result ${index + 1}`,
+    rect: { left: 80, top: 100 + index * 70, right: 720, bottom: 150 + index * 70 },
+    children: []
+  }));
+  const page = fakePaginationPage({
+    bodyHeight: 2200,
+    viewportHeight: 900,
+    itemXPath: candidate.itemXPath,
+    rows
+  });
+
+  const [withPagination] = await detectPaginationForCandidatesForTesting(page, [candidate], {
+    snapshots: [],
+    sawActiveLoadMore: true,
+    sawGrowth: true,
+    maxArticleLikeCount: 10,
+    maxContentHeight: 9000,
+    maxPageHeight: 2800,
+    grewArticleLikeCount: 0,
+    grewContentHeight: 3000,
+    grewPageHeight: 600,
+    bestActiveLoadMoreText: 'Tutorials References Exercises Certificates Menu Search field See More Sign In Upgrade Spaces Practice',
+    bestActiveLoadMoreXPath: '/html/body/header/div[1]'
+  });
+
+  assert.notEqual(withPagination.pagination?.type, 'load_more');
 });
 
 test('detectPaginationForCandidates keeps scroll over horizontal filter carousel arrows', async () => {
@@ -1483,6 +2724,50 @@ test('detectPageObstructionsForTesting keeps real fixed login modals', async () 
   assert.equal(detected.length, 1);
   assert.equal(detected[0].type, 'login');
   assert.match(detected[0].closeText, /关闭/);
+});
+
+test('dismissPageObstructionsForTesting closes dismissible premium overlays', async () => {
+  const page = fakeObstructionPage({
+    bodyHeight: 2200,
+    viewportHeight: 900,
+    topElementId: 'premium-modal',
+    elements: [
+      {
+        tag: 'main',
+        text: 'Remote developer jobs Senior Engineer Backend Developer',
+        attrs: { id: 'jobs' },
+        rect: { left: 0, top: 0, right: 1200, bottom: 1600 },
+        style: { position: 'static', zIndex: 'auto' },
+        children: []
+      },
+      {
+        tag: 'div',
+        text: 'Unlock your remote career potential with Remote OK Premium Get instant access',
+        attrs: { id: 'premium-modal', className: 'modal premium overlay', role: 'dialog' },
+        rect: { left: 320, top: 140, right: 980, bottom: 760 },
+        style: { position: 'fixed', zIndex: '1000' },
+        children: [
+          {
+            tag: 'button',
+            text: '×',
+            attrs: { className: 'close' },
+            rect: { left: 940, top: 150, right: 970, bottom: 180 },
+            style: { position: 'static', zIndex: 'auto' }
+          }
+        ]
+      }
+    ]
+  });
+
+  const detected = await detectPageObstructionsForTesting(page);
+  assert.equal(detected[0]?.type, 'paywall');
+  assert.equal(detected[0]?.canHide, true);
+
+  const results = await dismissPageObstructionsForTesting(page);
+
+  assert.equal(results.length, 1, results);
+  assert.equal(results[0].type, 'paywall');
+  assert.equal(results[0].action, 'click');
 });
 
 test('detectPageObstructionsForTesting ignores ordinary Baidu search home content', async () => {
@@ -2821,6 +4106,7 @@ function fakePaginationPage({ bodyHeight, viewportHeight, itemXPath, rows, exter
           this.style = {};
           this.id = attrs.id || '';
           this.className = attrs.className || '';
+          this.classList = String(this.className || '').split(/\s+/).filter(Boolean);
           this.attrs = attrs;
           this.rect = rect;
           for (const child of children) this.append(new FakeElement({ ...child, parent: this }));
@@ -3179,9 +4465,10 @@ function matchesSelectorList(element, selector) {
 
 function matchesSimpleSelector(element, selector) {
   if (!selector || selector === '*') return true;
-  if (selector.includes(' ')) return matchesSimpleSelector(element, selector.split(/\s+/).at(-1));
   const scopeMatch = selector.replace(/^:scope\s*>\s*/, '').replace(/^:scope\s*/, '');
   if (scopeMatch.includes('>')) return matchesSimpleSelector(element, scopeMatch.split('>').at(-1).trim());
+  const withoutAttributeSelectors = scopeMatch.replace(/\[[^\]]+\]/g, '');
+  if (withoutAttributeSelectors.trim().includes(' ')) return matchesSimpleSelector(element, scopeMatch.split(/\s+/).at(-1));
   const tagMatch = scopeMatch.match(/^[a-zA-Z][\w-]*/)?.[0];
   if (tagMatch && element.localName !== tagMatch.toLowerCase()) return false;
   for (const match of scopeMatch.matchAll(/\[class\*="([^"]+)" i\]/g)) {
@@ -3427,6 +4714,192 @@ function searchResultLikeElements({ className, itemTextPrefix }) {
       }))
     }
   ];
+}
+
+function mdnResultRow(index, title, href, category, summary) {
+  const top = 150 + index * 170;
+  return {
+    tag: 'div',
+    attrs: { className: 'document-search-result search-result' },
+    rect: { left: 180, top, right: 940, bottom: top + 130 },
+    children: [
+      {
+        tag: 'a',
+        attrs: { href, className: 'result-title' },
+        rect: { left: 190, top: top + 8, right: 780, bottom: top + 36 },
+        children: [
+          { tag: 'h2', text: title, rect: { left: 190, top: top + 8, right: 780, bottom: top + 36 } }
+        ]
+      },
+      {
+        tag: 'span',
+        text: category,
+        attrs: { className: 'result-category' },
+        rect: { left: 190, top: top + 44, right: 340, bottom: top + 66 }
+      },
+      {
+        tag: 'p',
+        text: summary,
+        attrs: { className: 'result-summary' },
+        rect: { left: 190, top: top + 72, right: 900, bottom: top + 122 }
+      }
+    ]
+  };
+}
+
+function fakeSearchResultBlockPage({ elements }) {
+  return {
+    async evaluate(fn, input) {
+      const previousWindow = globalThis.window;
+      const previousDocument = globalThis.document;
+      const previousNode = globalThis.Node;
+      const previousElement = globalThis.Element;
+      const previousHTMLElement = globalThis.HTMLElement;
+      const previousHTMLAnchorElement = globalThis.HTMLAnchorElement;
+      const previousShadowRoot = globalThis.ShadowRoot;
+      const previousXPathResult = globalThis.XPathResult;
+      const previousCSS = globalThis.CSS;
+      class FakeShadowRoot {
+        constructor({ children = [], host }) {
+          this.host = host;
+          this.children = [];
+          this.childNodes = [];
+          this.parentElement = null;
+          for (const child of children) this.append(new FakeElement({ ...child, parent: null, rootNode: this }));
+        }
+        append(child) {
+          child.parentElement = null;
+          child.rootNode = this;
+          this.children.push(child);
+          this.childNodes.push(child);
+          return child;
+        }
+        querySelectorAll(selector) {
+          return flattenElements(this.children).filter((item) => matchesSelectorList(item, selector));
+        }
+      }
+      class FakeElement {
+        constructor({ tag = 'div', text = '', attrs = {}, rect = { left: 0, top: 0, right: 10, bottom: 10 }, children = [], shadow = [], parent = null, rootNode = null }) {
+          this.localName = tag;
+          this.tagName = tag.toUpperCase();
+          this.nodeName = this.tagName;
+          this.nodeType = 1;
+          this.ownText = text;
+          this.children = [];
+          this.childNodes = [];
+          this.parentElement = parent;
+          this.rootNode = rootNode;
+          this.id = attrs.id || '';
+          this.className = attrs.className || '';
+          this.classList = String(this.className || '').split(/\s+/).filter(Boolean);
+          this.attrs = attrs;
+          this.rect = rect;
+          this.href = attrs.href || '';
+          this.textContent = text;
+          this.innerText = text;
+          if (text) this.childNodes.push({ nodeType: 3, textContent: text });
+          for (const child of children) this.append(new FakeElement({ ...child, parent: this }));
+          this.shadowRoot = shadow.length ? new FakeShadowRoot({ children: shadow, host: this }) : null;
+          this.refreshText();
+        }
+        append(child) {
+          child.parentElement = this;
+          child.rootNode = this.rootNode;
+          this.children.push(child);
+          this.childNodes.push(child);
+          this.refreshText();
+          return child;
+        }
+        refreshText() {
+          const childText = this.children.map((child) => child.textContent || '').join(' ');
+          this.textContent = [this.ownText, childText].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+          this.innerText = this.textContent;
+        }
+        getAttribute(name) {
+          if (name === 'class') return this.className;
+          if (name === 'href') return this.href || this.attrs.href || '';
+          if (name === 'role') return this.attrs.role || '';
+          if (name === 'aria-label') return this.attrs.ariaLabel || '';
+          return this.attrs[name] || '';
+        }
+        getBoundingClientRect() {
+          const { left, top, right, bottom } = this.rect;
+          return { left, top, right, bottom, width: right - left, height: bottom - top };
+        }
+        contains(element) {
+          return this === element || this.children.some((child) => child.contains(element));
+        }
+        getRootNode() {
+          if (this.rootNode) return this.rootNode;
+          let current = this;
+          while (current.parentElement) current = current.parentElement;
+          return document;
+        }
+        closest(selector) {
+          let current = this;
+          while (current) {
+            if (matchesSelectorList(current, selector)) return current;
+            current = current.parentElement;
+          }
+          return null;
+        }
+        querySelector(selector) {
+          return this.querySelectorAll(selector)[0] || null;
+        }
+        querySelectorAll(selector) {
+          return flattenElements(this.children).filter((item) => matchesSelectorList(item, selector));
+        }
+      }
+      const body = new FakeElement({
+        tag: 'body',
+        rect: { left: 0, top: 0, right: 1200, bottom: 1400 },
+        children: elements
+      });
+      const html = new FakeElement({
+        tag: 'html',
+        rect: { left: 0, top: 0, right: 1200, bottom: 1400 },
+        children: []
+      });
+      html.append(body);
+      const all = () => flattenElements([html]);
+      const document = {
+        body,
+        documentElement: html,
+        querySelectorAll(selector) {
+          return all().filter((item) => item !== html && item !== body && matchesSelectorList(item, selector));
+        }
+      };
+      const window = {
+        innerWidth: 1200,
+        innerHeight: 900,
+        getComputedStyle() {
+          return { display: 'block', visibility: 'visible', opacity: '1' };
+        }
+      };
+      globalThis.window = window;
+      globalThis.document = document;
+      globalThis.Node = { ELEMENT_NODE: 1, TEXT_NODE: 3 };
+      globalThis.Element = FakeElement;
+      globalThis.HTMLElement = FakeElement;
+      globalThis.HTMLAnchorElement = FakeElement;
+      globalThis.ShadowRoot = FakeShadowRoot;
+      globalThis.XPathResult = { ORDERED_NODE_SNAPSHOT_TYPE: 7, FIRST_ORDERED_NODE_TYPE: 9 };
+      globalThis.CSS = { escape: (value) => String(value).replace(/"/g, '\\"') };
+      try {
+        return fn(input);
+      } finally {
+        globalThis.window = previousWindow;
+        globalThis.document = previousDocument;
+        globalThis.Node = previousNode;
+        globalThis.Element = previousElement;
+        globalThis.HTMLElement = previousHTMLElement;
+        globalThis.HTMLAnchorElement = previousHTMLAnchorElement;
+        globalThis.ShadowRoot = previousShadowRoot;
+        globalThis.XPathResult = previousXPathResult;
+        globalThis.CSS = previousCSS;
+      }
+    }
+  };
 }
 
 function fakeSearchPage({ url, title, bodyText, elements }) {

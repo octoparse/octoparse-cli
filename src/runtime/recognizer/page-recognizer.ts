@@ -1042,6 +1042,35 @@ function hostFromUrl(url: string): string | undefined {
 async function waitForPageSettled(page: Page, waitMs: number): Promise<void> {
   await page.waitForFunction(() => document.readyState === 'interactive' || document.readyState === 'complete', { timeout: waitMs }).catch(() => undefined);
   if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs));
+  await waitForLoadingPlaceholders(page, Math.max(1200, Math.min(5000, waitMs * 3))).catch(() => undefined);
+}
+
+async function waitForLoadingPlaceholders(page: Page, timeoutMs: number): Promise<void> {
+  if (timeoutMs <= 0) return;
+  const hasLoading = await page.evaluate(() => {
+    const text = ((document.body as HTMLElement | null)?.innerText || document.body?.textContent || '').replace(/\s+/g, ' ').trim();
+    return /\bloading\b|loading search results|加载中|正在加载|请稍候|please wait/i.test(text);
+  }).catch(() => false);
+  if (!hasLoading) return;
+  await page.waitForFunction(() => {
+    function text(element: Element | null | undefined): string {
+      return ((element as HTMLElement | null)?.innerText || element?.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+    function visible(element: Element): boolean {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element as HTMLElement);
+      return rect.width > 8 && rect.height > 8 && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+    }
+    const bodyText = text(document.body);
+    const stillLoading = /\bloading\b|loading search results|加载中|正在加载|请稍候|please wait/i.test(bodyText);
+    const likelyRows = Array.from(document.querySelectorAll('main article,main li,main [class*="result" i],main [class*="crate" i],main [class*="package" i],[role="main"] article,[role="main"] li,[role="main"] [class*="result" i]'))
+      .filter(visible)
+      .filter((element) => {
+        const value = text(element);
+        return value.length >= 24 && Boolean(element.querySelector('a'));
+      });
+    return !stillLoading || likelyRows.length >= 2;
+  }, { timeout: timeoutMs, polling: 250 }).catch(() => undefined);
 }
 
 async function handleLoginInterventionIfNeeded(host: ExtensionRecognizerHost, options: RecognizeOptions, runtimeConsole: SuppressedRuntimeConsole, reason: string): Promise<LoginInterventionResult> {
@@ -1049,6 +1078,9 @@ async function handleLoginInterventionIfNeeded(host: ExtensionRecognizerHost, op
   const obstruction = (await detectPageObstructions(page).catch(() => []))
     .find((item) => item.type === 'login' || item.type === 'captcha' || item.type === 'paywall');
   const hasSubstantialContent = await pageHasSubstantialSearchOrContent(page).catch(() => false);
+  if (obstruction?.type === 'paywall' && obstruction.closeXPath && obstruction.canHide) {
+    return { handled: false, allowSessionSave: true };
+  }
   const obstructionText = `${obstruction?.popupText || ''} ${obstruction?.closeText || ''} ${obstruction?.reasons.join(' ') || ''}`;
   const blocksWithVerification = Boolean(obstruction && /(验证|验证码|手机号|手机号码|获取验证码|人机|captcha|verification|verify|phone|mobile)/i.test(obstructionText));
   if (!obstruction && hasSubstantialContent) {
@@ -1587,7 +1619,7 @@ async function dismissPageObstructions(page: Page, options: { includeLogin?: boo
     const detected = await detectPageObstructions(page);
     const item = detected[0];
     if (!item) break;
-    if ((item.type === 'login' && !options.includeLogin) || item.type === 'captcha' || item.type === 'paywall') break;
+    if ((item.type === 'login' && !options.includeLogin) || item.type === 'captcha' || item.type === 'paywall' && !item.closeXPath) break;
     if (item.closeXPath) {
       const clicked = await clickXPath(page, item.closeXPath).catch(() => false);
       if (clicked) {
@@ -1606,7 +1638,7 @@ async function dismissPageObstructions(page: Page, options: { includeLogin?: boo
         }
       }
     }
-    if (item.type === 'login') break;
+    if (item.type === 'login' || item.type === 'paywall') break;
     await page.keyboard.press('Escape').catch(() => undefined);
     await delay(200);
     const escaped = await page.evaluate((popupXPath) => {
@@ -1636,7 +1668,7 @@ async function dismissPageObstructions(page: Page, options: { includeLogin?: boo
       if (!element) return false;
       element.dataset.octoparsePopupHidden = 'true';
       element.style.setProperty('display', 'none', 'important');
-      document.body.style.overflow = '';
+      if (document.body) document.body.style.overflow = '';
       document.documentElement.style.overflow = '';
       return true;
     }, item.popupXPath).catch(() => false);
@@ -1702,7 +1734,7 @@ async function detectPageObstructions(page: Page): Promise<Array<{
     const viewportWidth = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
     const viewportHeight = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
     const viewportArea = viewportWidth * viewportHeight;
-    const closeTextPattern = /^(×|x|X|关闭|关 闭|取消|cancel|跳过|暂不|稍后|以后再说|我知道了|知道了|不登录|先逛逛|close|skip|not now|later|maybe later)$/i;
+    const closeTextPattern = /^(×|x|X|关闭|关 闭|取消|跳过|暂不|稍后|以后再说|我知道了|知道了|不登录|先逛逛|close|skip|not now|later|maybe later)$/i;
     const unsafeTextPattern = /(登录|登陆|注册|手机号|验证码|获取验证码|同意|授权|支付|购买|开通|login|sign in|sign up|register|verify|submit|continue|agree)/i;
     const loginPattern = /(登录|登陆|注册|手机号|验证码|扫码|二维码|微信|账号|密码|login|sign in|sign up|register|phone|verification|qr|account|password|auth)/i;
     const cookiePattern = /(cookie|cookies|隐私|privacy|同意使用|接受全部|accept all)/i;
@@ -1793,7 +1825,7 @@ async function detectPageObstructions(page: Page): Promise<Array<{
       if (rect.width <= 72 && rect.height <= 72) score += 0.1;
       if (topRightCompact) score += 0.22;
       if (iconOnlyClose) score += 0.16;
-      if (unsafeTextPattern.test(value) && !/(关闭|取消|cancel|跳过|不登录|稍后|not now|close|skip|later)/i.test(value)) score -= 0.7;
+      if (unsafeTextPattern.test(value) && !/(关闭|取消|跳过|不登录|稍后|not now|close|skip|later)/i.test(value)) score -= 0.7;
       if (rect.width < 8 || rect.height < 8) score -= 0.2;
       return score;
     }
@@ -1839,7 +1871,9 @@ async function detectPageObstructions(page: Page): Promise<Array<{
         .sort((a, b) => b.score - a.score)[0];
     }
 
-    const raw = Array.from(document.body.querySelectorAll('*'))
+    const root = document.body || document.documentElement;
+    if (!root) return [];
+    const raw = Array.from(root.querySelectorAll('*'))
       .filter((element): element is HTMLElement => element instanceof HTMLElement)
       .filter(visible)
       .map((element) => {
@@ -1856,7 +1890,7 @@ async function detectPageObstructions(page: Page): Promise<Array<{
         const contentSemantic = loginPattern.test(bodyText) || cookiePattern.test(bodyText) || adPattern.test(bodyText) || captchaPattern.test(bodyText) || paywallPattern.test(bodyText);
         const semantic = modalAttrSemantic || contentSemantic;
         const hitRate = fixedLike || semantic || zIndex >= 10 ? topHitRate(element) : 0;
-        const scrollLocked = document.body.style.overflow === 'hidden' || document.documentElement.style.overflow === 'hidden';
+        const scrollLocked = document.body?.style.overflow === 'hidden' || document.documentElement.style.overflow === 'hidden';
         const hasLoginInput = typeof element.querySelector === 'function'
           ? Boolean(element.querySelector('input[type="password"],input[type="tel"],input[name*="phone" i],input[name*="mobile" i],input[name*="code" i],input[placeholder*="验证码"],input[placeholder*="手机"],input[placeholder*="密码"]'))
           : false;
@@ -1926,7 +1960,7 @@ async function detectPageObstructions(page: Page): Promise<Array<{
         confidence: Number(Math.min(0.98, item.confidence).toFixed(2)),
         ...(close ? { closeXPath: xpath(close.element), closeText: close.text.slice(0, 60) } : {}),
         reasons: item.reasons,
-        canHide: item.type !== 'captcha' && item.type !== 'paywall' && item.type !== 'unknown'
+        canHide: item.type !== 'captcha' && item.type !== 'unknown' && (item.type !== 'paywall' || Boolean(close))
       });
       used.add(item.element);
       if (output.length >= 3) break;
@@ -2182,22 +2216,17 @@ async function detectCandidates(page: Page, options: RecognizeOptions, scrollPro
       throw new Error('Protected Smart returned no list candidates. Use --legacy-recognizer only for debugging the old detector.');
     }
     const outputLimit = options.interactive ? Math.max(options.maxCandidates, 24) : options.maxCandidates;
-    const withPagination = await detectPaginationForCandidates(page, protectedSmart, scrollProbe);
+    const fallback = await detectFallbackListCandidates(page, Math.max(outputLimit, 12), options.interactive);
+    const merged = dedupeEquivalentCandidates([...protectedSmart, ...fallback]);
+    const withPagination = await detectPaginationForCandidates(page, merged, scrollProbe);
     const withDiagnostics = await attachAgentDiagnostics(page, withPagination).catch(() => withPagination);
-    const ranked = options.goal ? applyGoalScores(withDiagnostics, options.goal) : rankCandidates(withDiagnostics);
+    const withLayoutScores = await applyLayoutScores(page, withDiagnostics);
+    const filtered = filterRecognizedBoilerplateCandidates(withLayoutScores);
+    const ranked = options.goal ? applyGoalScores(filtered, options.goal) : rankCandidates(filtered);
     return options.llmRank ? applyLlmRankPreparation(ranked.slice(0, outputLimit), options.goal) : ranked.slice(0, outputLimit);
   }
 
-  const candidates: RawCandidate[] = [];
-  candidates.push(...await detectTables(page));
-  candidates.push(...await detectRepeatedCards(page));
-  candidates.push(...await detectDeptaCandidates(page));
-  if (options.interactive) {
-    candidates.push(...await detectInteractiveElementGroups(page));
-  }
-  candidates.push(...await detectDetails(page));
-  candidates.push(...await detectForms(page));
-  candidates.push(...await detectLinkCollections(page));
+  const candidates = await detectRawCandidates(page, options.interactive);
 
   const seen = new Set<string>();
   const outputLimit = options.interactive ? Math.max(options.maxCandidates, 24) : options.maxCandidates;
@@ -2227,6 +2256,45 @@ async function detectCandidates(page: Page, options: RecognizeOptions, scrollPro
   return options.llmRank ? applyLlmRankPreparation(limited, options.goal) : limited;
 }
 
+async function detectRawCandidates(page: Page, interactive = false): Promise<RawCandidate[]> {
+  const candidates: RawCandidate[] = [];
+  candidates.push(...await detectTables(page));
+  candidates.push(...await detectRepeatedCards(page));
+  candidates.push(...await detectSearchResultBlocks(page));
+  candidates.push(...await detectDeptaCandidates(page));
+  if (interactive) {
+    candidates.push(...await detectInteractiveElementGroups(page));
+  }
+  candidates.push(...await detectDetails(page));
+  candidates.push(...await detectForms(page));
+  candidates.push(...await detectLinkCollections(page));
+  return candidates;
+}
+
+async function detectFallbackListCandidates(page: Page, limit: number, interactive = false): Promise<RecognizedCandidate[]> {
+  const raw = await detectRawCandidates(page, interactive);
+  const seen = new Set<string>();
+  const sorted = raw
+    .filter((candidate) => candidate.type === 'table' || candidate.type === 'repeated_card' || candidate.type === 'search_results' || candidate.type === 'link_collection')
+    .filter((candidate) => {
+      const key = `${candidate.type}:${candidate.selector}:${candidate.itemSelector ?? ''}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return candidate.itemCount > 0 && candidate.fields.length > 0;
+    })
+    .sort((a, b) => b.confidence - a.confidence)
+    .slice(0, Math.max(limit, 12));
+  if (!sorted.length) return [];
+  const recognized = sorted.map((candidate, index) => ({
+    id: `fallback_${candidate.type}_${index + 1}`,
+    title: `${candidateTitle(candidate)} (fallback)`,
+    ...candidate,
+    confidence: Number(Math.max(0.1, candidate.confidence - 0.06).toFixed(2)),
+    reasons: [...candidate.reasons, 'Fallback detector candidate']
+  }));
+  return refineCandidateFields(page, recognized);
+}
+
 async function chooseCandidateInteractively(page: Page, candidates: RecognizedCandidate[], runtimeConsole: SuppressedRuntimeConsole): Promise<string[]> {
   const selectable = candidates.filter((candidate) => candidate.type === 'table' || candidate.type === 'repeated_card' || candidate.type === 'search_results' || candidate.type === 'link_collection');
   if (!selectable.length) return [];
@@ -2239,8 +2307,8 @@ async function chooseCandidateInteractively(page: Page, candidates: RecognizedCa
     .catch(() => false);
   try {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
-      runtimeConsole.writeStderr(`\nHighlighted the recommended recognition result in the browser 1/${selectable.length}: ${formatCandidateSummary(currentCandidate)}.\n`);
-      runtimeConsole.writeStderr('Return to the terminal to continue; the current recommendation will be used.\n');
+      runtimeConsole.writeStderr(`\nHighlighted recommended recognition result 1/${selectable.length} in the browser: ${formatCandidateSummary(currentCandidate)}.\n`);
+      runtimeConsole.writeStderr('Return to the terminal to continue with the current recommended result.\n');
       await runtimeConsole.question('');
       return [currentCandidate.id];
     }
@@ -2254,13 +2322,13 @@ async function chooseCandidateInteractively(page: Page, candidates: RecognizedCa
           title: () => [
             `Current recognition result: ${currentIndex + 1}/${selectable.length}`,
             formatCandidateSummary(currentCandidate),
-            'Only the current result is highlighted in the browser; switch results if needed, then confirm before setting pagination.'
+            'Only the current result is highlighted in the browser; switch results as needed, then confirm before configuring pagination.'
           ].filter(Boolean).join('\n'),
           readState: async () => {
             lastCandidateSelection = await readOverlaySelection(page);
           },
           choices: () => [
-            { title: 'Confirm current recognition result and continue to pagination', value: 'confirm' },
+            { title: 'Confirm this recognition result and continue to pagination', value: 'confirm' },
             { title: `Switch to next recognition result (${((currentIndex + 1) % selectable.length) + 1}/${selectable.length})`, value: 'next' },
             { title: `Switch to previous recognition result (${((currentIndex - 1 + selectable.length) % selectable.length) + 1}/${selectable.length})`, value: 'prev' },
             { title: 'Cancel manual recognition', value: 'cancel' }
@@ -2282,7 +2350,7 @@ async function chooseCandidateInteractively(page: Page, candidates: RecognizedCa
         const latest = await readOverlaySelection(page);
         if (browserOverlayReady) {
           await showManualProgressOverlay(page, {
-            title: 'Analyzing pagination settings',
+            title: 'Analyzing pagination',
             message: 'Recognition result confirmed; detecting next-page, load-more, or scroll pagination.',
             status: 'Processing, please wait.'
           }).then(() => {
@@ -2310,12 +2378,12 @@ async function showCandidateChoiceInBrowser(
   writeManualOverlayHintOnce(runtimeConsole, page, 'candidate', '\nUse the browser overlay to confirm the recognition result.\n');
   const selected = await readOverlaySelection(page).catch(() => []);
   await showManualOverlay(page, {
-    title: `Recognition result ${currentIndex + 1}/${selectable.length}`,
+    title: `Recognition Result ${currentIndex + 1}/${selectable.length}`,
     message: [
       formatCandidateSummary(currentCandidate),
-      'Only the current result is highlighted in the browser; switch results if needed, then confirm to continue to pagination.'
+      'Only the current result is highlighted in the browser; switch results as needed, then confirm to configure pagination.'
     ].join('\n'),
-    status: selected.length ? `Current selection: ${selected.join(', ')}` : `Current selection: ${currentCandidate.id}`,
+    status: selected.length ? `Selected: ${selected.join(', ')}` : `Selected: ${currentCandidate.id}`,
     choices: [
       { title: 'Confirm current recognition result', value: 'confirm', primary: true },
       { title: `Next (${((currentIndex + 1) % selectable.length) + 1}/${selectable.length})`, value: 'next' },
@@ -2389,7 +2457,7 @@ async function choosePaginationInteractively(page: Page, candidates: RecognizedC
       .then(() => true)
       .catch(() => false);
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
-      runtimeConsole.writeStderr(`\nPossible pagination controls are highlighted in the browser; if no interaction is provided, the recommended pagination will be used: ${formatSelectedPagination(paginationKey(recommended), options)}.\n`);
+      runtimeConsole.writeStderr(`\nHighlighted possible pagination controls in the browser; without interaction, the recommended pagination will be used: ${formatSelectedPagination(paginationKey(recommended), options)}.\n`);
       await runtimeConsole.question('');
       const selected = await readPaginationOverlaySelection(page);
       return selected ? options.find((option) => paginationKey(option) === selected) : recommended;
@@ -2401,7 +2469,7 @@ async function choosePaginationInteractively(page: Page, candidates: RecognizedC
         : await runLiveSelectMenu({
           write: (value) => runtimeConsole.writeStderr(value),
           title: () => [
-            'Click the orange PAGE/MORE marker in the browser to switch pagination controls.',
+            'Click an orange PAGE/MORE marker in the browser to switch pagination controls.',
             `Current pagination: ${formatSelectedPagination(lastPaginationSelection, options)}`
           ].join('\n'),
           readState: async () => {
@@ -2409,7 +2477,7 @@ async function choosePaginationInteractively(page: Page, candidates: RecognizedC
           },
           choices: () => [
             { title: lastPaginationSelection ? 'Confirm recommended pagination' : 'Waiting for browser selection', value: lastPaginationSelection ? 'confirm' : 'wait' },
-            { title: 'Extract single page only, no pagination', value: 'single-page' },
+            { title: 'Extract single page without pagination', value: 'single-page' },
             { title: 'Cancel manual recognition', value: 'cancel' }
           ]
         });
@@ -2436,7 +2504,7 @@ async function choosePaginationInteractively(page: Page, candidates: RecognizedC
         if (browserOverlayReady) {
           await showManualProgressOverlay(page, {
             title: 'Continuing task generation',
-            message: 'Pagination settings confirmed; preparing detail extraction or task generation.',
+            message: 'Pagination confirmed; preparing detail extraction or task generation.',
             status: 'Processing, please wait.'
           }).then(() => {
             keepManualOverlayForNextStep = true;
@@ -2461,12 +2529,12 @@ async function showPaginationChoiceInBrowser(
 ): Promise<void> {
   writeManualOverlayHintOnce(runtimeConsole, page, 'pagination', '\nUse the browser overlay to confirm pagination settings.\n');
   await showManualOverlay(page, {
-    title: 'Confirm pagination settings',
-    message: 'Click the orange PAGE/MORE/SCROLL marker on the page to switch pagination controls.',
+    title: 'Confirm Pagination',
+    message: 'Click an orange PAGE/MORE/SCROLL marker on the page to switch pagination controls.',
     status: `Current pagination: ${formatSelectedPagination(selectedKey, options)}`,
     choices: [
       { title: selectedKey ? 'Confirm current pagination' : 'Waiting for browser selection', value: selectedKey ? 'confirm' : 'wait', primary: Boolean(selectedKey) },
-      { title: 'Extract single page only', value: 'single-page' },
+      { title: 'Extract single page', value: 'single-page' },
       { title: 'Cancel manual recognition', value: 'cancel' }
     ]
   });
@@ -2526,7 +2594,7 @@ async function chooseDetailPlanInteractively(page: Page, candidates: RecognizedC
     const detail = await inspectDetailSampleManually(page, sampleUrls[0], runtimeConsole, timeoutMs).catch((error) => ({
       fields: [],
       sampleRows: [],
-      reasons: [`Detail-page sample recognition failed: ${error instanceof Error ? error.message : String(error)}`]
+      reasons: [`Detail page sample recognition failed: ${error instanceof Error ? error.message : String(error)}`]
     }));
     output.set(candidate.id, {
       mode,
@@ -2537,7 +2605,7 @@ async function chooseDetailPlanInteractively(page: Page, candidates: RecognizedC
       templateCount: detail.fields.length ? 1 : 0,
       status: 'planned',
       reasons: [
-        'Detail-page fields were selected manually; generated tasks will open each detail page in a new tab to extract details',
+        'Detail page fields were selected manually; generated tasks will open a new tab per row to extract details',
         ...detail.reasons
       ]
     });
@@ -2551,15 +2619,15 @@ async function chooseDetailModeInteractively(page: Page, candidate: RecognizedCa
     return await chooseDetailModeInBrowser(page, candidate, sampleUrls, runtimeConsole).catch(() => runLiveSelectMenu({
       write: (value) => runtimeConsole.writeStderr(value),
       title: () => [
-        `Candidate ${candidate.id} contains detail URL links.`,
+        `Candidate ${candidate.id} contains detail URL field "url".`,
         `Sample: ${truncateText(sampleUrls[0] || '', 90)}`,
         'Choose extraction mode:'
       ].join('\n'),
       readState: async () => undefined,
       choices: () => [
-        { title: 'List fields only', value: 'list_only' },
-        { title: 'List + detail page content', value: 'list_with_detail' },
-        { title: 'Use list URLs to extract detail pages only', value: 'detail_only' }
+        { title: 'Extract list fields only', value: 'list_only' },
+        { title: 'Extract list plus detail page content', value: 'list_with_detail' },
+        { title: 'Extract detail pages from list URLs only', value: 'detail_only' }
       ]
     }));
   } finally {
@@ -2574,17 +2642,17 @@ async function chooseDetailModeInBrowser(
   sampleUrls: string[],
   runtimeConsole: SuppressedRuntimeConsole
 ): Promise<RecognizedDetailMode> {
-  writeManualOverlayHintOnce(runtimeConsole, page, `detail-mode:${candidate.id}`, '\nUse the browser overlay to confirm detail-page extraction mode.\n');
+  writeManualOverlayHintOnce(runtimeConsole, page, `detail-mode:${candidate.id}`, '\nUse the browser overlay to confirm detail page extraction mode.\n');
   await showManualOverlay(page, {
-    title: 'Detail-page extraction mode',
+    title: 'Detail Page Extraction Mode',
     message: [
-      `Candidate ${candidate.id} contains detail URL links.`,
+      `Candidate ${candidate.id} contains detail URL field "url".`,
       `Sample: ${truncateText(sampleUrls[0] || '', 90)}`
     ].join('\n'),
     choices: [
-      { title: 'List fields only', value: 'list_only', primary: true },
-      { title: 'List + detail page content', value: 'list_with_detail' },
-      { title: 'Use list URLs to extract detail pages only', value: 'detail_only' }
+      { title: 'Extract list fields only', value: 'list_only', primary: true },
+      { title: 'Extract list plus detail page content', value: 'list_with_detail' },
+      { title: 'Extract detail pages from list URLs only', value: 'detail_only' }
     ]
   });
   const selection = await waitForManualOverlayAction(page);
@@ -2609,7 +2677,7 @@ async function inspectDetailSamples(page: Page, urls: string[], timeoutMs: numbe
       const candidates = await detectDetails(detailPage);
       const detail = candidates[0];
       if (!detail) {
-        reasons.push(`No detail fields detected: ${url}`);
+        reasons.push(`No detail fields recognized: ${url}`);
         continue;
       }
       if (!templateFields.length) {
@@ -2627,7 +2695,7 @@ async function inspectDetailSamples(page: Page, urls: string[], timeoutMs: numbe
   if (page.url() !== currentUrl) {
     await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs }).catch(() => undefined);
   }
-  if (templateFields.length) reasons.push(`Detected fields from ${rows.length} detail-page sample(s): ${templateFields.map((field) => field.name).join(', ')}`);
+  if (templateFields.length) reasons.push(`Recognized fields from ${rows.length} detail page sample(s): ${templateFields.map((field) => field.name).join(', ')}`);
   return { fields: templateFields, sampleRows: rows, reasons };
 }
 
@@ -2642,7 +2710,7 @@ async function inspectDetailSampleManually(page: Page, url: string, runtimeConso
     await installDetailFieldOverlay(detailPage);
     try {
       if (!process.stdin.isTTY || !process.stdout.isTTY) {
-        runtimeConsole.writeStderr('\nOpened one detail-page sample. Click the detail fields or regions to extract in the browser, then return to the terminal to continue.\n');
+        runtimeConsole.writeStderr('\nOpened one detail page sample. Click the detail fields or regions to extract in the browser, then return to the terminal to continue.\n');
         await runtimeConsole.question('');
       } else {
         lastDetailFieldSelection = await readDetailFieldSelection(detailPage).catch(() => []);
@@ -2655,9 +2723,9 @@ async function inspectDetailSampleManually(page: Page, url: string, runtimeConso
             : await runLiveSelectMenu({
               write: (value) => runtimeConsole.writeStderr(value),
               title: () => [
-                'Opened one detail-page sample.',
-                'Click the detail fields or regions to extract in the browser; for body text, click the body container; for images, click the image directly.',
-                `Current selection: ${formatSelectedDetailFields(lastDetailFieldSelection)}`
+                'Opened one detail page sample.',
+                'Click the detail fields or regions to extract in the browser; for article body, click the content container, and for images, click the image directly.',
+                `Selected: ${formatSelectedDetailFields(lastDetailFieldSelection)}`
               ].join('\n'),
               readState: async () => {
                 lastDetailFieldSelection = await readDetailFieldSelection(detailPage);
@@ -2683,13 +2751,13 @@ async function inspectDetailSampleManually(page: Page, url: string, runtimeConso
       }
 
       const selected = await readDetailFieldObjects(detailPage);
-      if (!selected.length) return { fields: [], sampleRows: [], reasons: ['User did not select detail-page fields'] };
+      if (!selected.length) return { fields: [], sampleRows: [], reasons: ['No detail page fields selected by the user'] };
       const fields = selectedDetailFields(selected);
       const row = Object.fromEntries(fields.map((field) => [field.name, field.samples[0] || '']));
       return {
         fields,
         sampleRows: [row],
-        reasons: [`Manually selected fields from one detail-page sample: ${fields.map((field) => field.name).join(', ')}`]
+        reasons: [`Manually selected fields from one detail page sample: ${fields.map((field) => field.name).join(', ')}`]
       };
     } finally {
       await removeManualOverlay(detailPage).catch(() => undefined);
@@ -2704,9 +2772,9 @@ async function inspectDetailSampleManually(page: Page, url: string, runtimeConso
 async function showDetailFieldChoiceInBrowser(page: Page, selectedFields: string[], runtimeConsole: SuppressedRuntimeConsole): Promise<void> {
   writeManualOverlayHintOnce(runtimeConsole, page, 'detail-fields', '\nUse the browser overlay to confirm detail fields.\n');
   await showManualOverlay(page, {
-    title: 'Confirm detail fields',
-    message: 'Click the detail fields or regions to extract on the page; for body text, click the body container; for images, click the image directly.',
-    status: `Current selection: ${formatSelectedDetailFields(selectedFields)}`,
+    title: 'Confirm Detail Fields',
+    message: 'Click the detail fields or regions to extract on the page; for article body, click the content container, and for images, click the image directly.',
+    status: `Selected: ${formatSelectedDetailFields(selectedFields)}`,
     choices: [
       { title: selectedFields.length ? 'Confirm current detail fields' : 'Waiting for browser selection', value: selectedFields.length ? 'confirm' : 'wait', primary: Boolean(selectedFields.length) },
       { title: 'Clear detail fields', value: 'clear' },
@@ -3259,7 +3327,7 @@ async function showManualOverlay(page: Page, options: {
     panel.className = 'panel';
     const header = document.createElement('div');
     header.className = 'header';
-    header.title = 'Drag to move this panel';
+    header.title = 'Drag to move overlay';
     const title = document.createElement('div');
     title.className = 'title';
     title.textContent = payload.title;
@@ -3317,7 +3385,7 @@ async function showManualOverlay(page: Page, options: {
         button.textContent = choice.value === 'cancel' ? 'Canceling...' : 'Processing...';
         if (!status.isConnected) panel.insertBefore(status, actions);
         status.className = 'status processing';
-        status.textContent = choice.value === 'cancel' ? 'Canceling recognition, please wait.' : 'Action received. Processing, please wait.';
+        status.textContent = choice.value === 'cancel' ? 'Canceling recognition, please wait.' : 'Action received, processing, please wait.';
         w.__octopusManualOverlayState = {
           ...(w.__octopusManualOverlayState || {}),
           action: choice.value
@@ -3872,7 +3940,7 @@ async function preparePaginationDetectionViewport(page: Page, candidates: Recogn
     });
     const pageBottom = Math.max(
       document.documentElement.scrollHeight || 0,
-      document.body.scrollHeight || 0
+      document.body?.scrollHeight || 0
     ) - window.innerHeight;
     const targets: number[] = [];
     const bottom = Math.max(...elements.slice(0, 120).map((element) => element.getBoundingClientRect().bottom + window.scrollY));
@@ -3971,8 +4039,8 @@ async function detectInteractivePaginationOptions(page: Page, candidates: Recogn
 
     function documentRect(element: Element): DOMRect {
       const rect = element.getBoundingClientRect();
-      const scrollX = window.scrollX || document.documentElement.scrollLeft || document.body.scrollLeft || 0;
-      const scrollY = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
+      const scrollX = window.scrollX || document.documentElement.scrollLeft || document.body?.scrollLeft || 0;
+      const scrollY = window.scrollY || document.documentElement.scrollTop || document.body?.scrollTop || 0;
       return new DOMRect(rect.left + scrollX, rect.top + scrollY, rect.width, rect.height);
     }
 
@@ -4021,7 +4089,7 @@ async function detectInteractivePaginationOptions(page: Page, candidates: Recogn
 
     function activeLoadMoreTextPredicate(): string {
       const textExpr = lowerXPath('normalize-space(.)');
-      return [
+      const positive = [
         `contains(${textExpr}, "加载更多")`,
         `contains(${textExpr}, "查看更多")`,
         `contains(${textExpr}, "显示更多")`,
@@ -4030,16 +4098,40 @@ async function detectInteractivePaginationOptions(page: Page, candidates: Recogn
         `contains(${textExpr}, "show more")`,
         `contains(${textExpr}, "see more")`
       ].join(' or ');
+      const negative = [
+        `not(contains(${textExpr}, "see more information"))`,
+        `not(contains(${textExpr}, "more information about"))`,
+        `not(contains(${textExpr}, "details about"))`,
+        `not(contains(${textExpr}, "view details"))`,
+        `not(contains(${textExpr}, "查看详情"))`,
+        `not(contains(${textExpr}, "详细信息"))`
+      ].join(' and ');
+      return `(${positive}) and ${negative}`;
+    }
+
+    function loadMoreRecordExpanderText(value: string): boolean {
+      const normalized = value.replace(/\s+/g, ' ').trim().toLowerCase();
+      if (!normalized) return false;
+      return /^(?:see|show|view)\s+more\s+(?:information|info|details?)\s+(?:about|for|on)\b/i.test(normalized)
+        || /^(?:more\s+information|details?)\s+(?:about|for|on)\b/i.test(normalized)
+        || /^(?:view|show)\s+details?\b/i.test(normalized)
+        || /^(?:查看|显示|展开|查看更多).{0,8}(?:详情|详细信息)(?:\s|$)/i.test(normalized);
+    }
+
+    function reliableLoadMoreText(value: string): boolean {
+      const normalized = value.replace(/\s+/g, ' ').trim();
+      if (!normalized || normalized.length > 72 || loadMoreRecordExpanderText(normalized)) return false;
+      return /^(加载更多|查看更多(?:内容|结果|数据|文章|商品|评论|列表|记录|帖子|问题|回答|图片|视频|新闻|项目|仓库|包)?|显示更多(?:内容|结果|数据|文章|商品|评论|列表|记录|帖子|问题|回答|图片|视频|新闻|项目|仓库|包)?|点击加载(?:更多)?|load more(?:\s+(?:results?|items?|posts?|articles?|stories?|products?|comments?|reviews?|questions?|answers?|rows?|data|content|listings?|jobs?|books?|movies?|news|repositories|packages|issues|photos|videos))?|show more(?:\s+(?:results?|items?|posts?|articles?|stories?|products?|comments?|reviews?|questions?|answers?|rows?|data|content|listings?|jobs?|books?|movies?|news|repositories|packages|issues|photos|videos))?|see more(?:\s+(?:results?|items?|posts?|articles?|stories?|products?|comments?|reviews?|questions?|answers?|rows?|data|content|listings?|jobs?|books?|movies?|news|repositories|packages|issues|photos|videos))?)$/i.test(normalized);
     }
 
     function loadMoreState(element: Element): { active: boolean; hasText: boolean; end: boolean } {
       const value = text(element);
       const attrs = attrText(element);
       const combined = `${value} ${attrs}`;
-      const hasText = loadMorePattern.test(value);
+      const hasText = reliableLoadMoreText(value);
       const hasAttr = /loadmore|load-more/i.test(attrs);
       const end = loadMoreEndPattern.test(combined);
-      return { active: !end && (hasText || hasAttr), hasText, end };
+      return { active: !end && !loadMoreRecordExpanderText(value) && (hasText || hasAttr), hasText, end };
     }
 
     function stablePaginationXPath(element: Element, type: 'next_page' | 'load_more', fallback: string): string {
@@ -4052,7 +4144,7 @@ async function detectInteractivePaginationOptions(page: Page, candidates: Recogn
         ? (raw: string) => /loadmore|load-more|more/i.test(raw)
         : (raw: string) => nextAttrPattern.test(raw) && !prevAttrPattern.test(raw);
       const textMatches = type === 'load_more'
-        ? (raw: string) => loadMorePattern.test(raw)
+        ? (raw: string) => reliableLoadMoreText(raw)
         : (raw: string) => nextTextPattern.test(raw) && !prevTextPattern.test(raw);
       const push = (predicate: string) => {
         const full = type === 'load_more'
@@ -4073,7 +4165,7 @@ async function detectInteractivePaginationOptions(page: Page, candidates: Recogn
         const attr = element.getAttribute(name) || '';
         if (attr && (attrMatches(attr) || textMatches(attr))) push(`@${name}=${xpathLiteral(attr)}`);
       }
-      if (type === 'load_more' && loadMorePattern.test(value)) {
+      if (type === 'load_more' && reliableLoadMoreText(value)) {
         const textExpr = lowerXPath('normalize-space(.)');
         const positiveTexts = ['加载更多', '查看更多', '显示更多', '点击加载', 'load more', 'show more', 'see more'];
         push(`(${positiveTexts.map((item) => `contains(${textExpr}, ${xpathLiteral(item.toLowerCase())})`).join(' or ')})`);
@@ -4209,12 +4301,12 @@ async function detectInteractivePaginationOptions(page: Page, candidates: Recogn
 
     function scrollRevealNeeded(item: ItemInfo | undefined, rect: DOMRect | undefined): boolean {
       if (!item || !rect) return false;
-      const pageHeight = Math.max(document.documentElement.scrollHeight || 0, document.body.scrollHeight || 0);
+      const pageHeight = Math.max(document.documentElement.scrollHeight || 0, document.body?.scrollHeight || 0);
       const viewportHeight = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
       const longPage = pageHeight > viewportHeight * 1.8;
       const listLike = item.type === 'repeated_card' || item.type === 'search_results';
       const enoughItems = item.itemCount >= 12;
-      const currentY = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
+      const currentY = window.scrollY || document.documentElement.scrollTop || document.body?.scrollTop || 0;
       const reachesViewportBottom = rect.bottom > currentY + viewportHeight * 0.55;
       return longPage && listLike && enoughItems && reachesViewportBottom;
     }
@@ -4478,6 +4570,7 @@ async function detectInteractivePaginationOptions(page: Page, candidates: Recogn
 }
 
 function isPlausiblePaginationOption(pagination: RecognizedPagination): boolean {
+  if (pagination.type === 'load_more') return reliableLoadMorePagination(pagination);
   if (pagination.type !== 'next_page') return true;
   const text = (pagination.text || '').trim();
   const xpath = pagination.xpath || '';
@@ -4491,6 +4584,25 @@ function isPlausiblePaginationOption(pagination: RecognizedPagination): boolean 
   if (/(^|[^a-z])next([^a-z]|$)/i.test(xpath) && !/(arrow-right|right)/i.test(xpath)) return true;
   if (/numeric pager|pager sequence|pager section/i.test(reasons) && /^\d{1,5}$/.test(text)) return true;
   return false;
+}
+
+function reliableLoadMorePagination(pagination: RecognizedPagination): boolean {
+  if (pagination.type !== 'load_more') return false;
+  const text = (pagination.text || '').replace(/\s+/g, ' ').trim();
+  const evidence = `${pagination.xpath || ''} ${pagination.reasons.join(' ')}`;
+  if (loadMoreRecordExpanderText(text)) return false;
+  if (/(?:loadmore|load-more|load_more)/i.test(evidence)) return true;
+  if (!text || text.length > 72) return false;
+  return /^(加载更多|查看更多(?:内容|结果|数据|文章|商品|评论|列表|记录|帖子|问题|回答|图片|视频|新闻|项目|仓库|包)?|显示更多(?:内容|结果|数据|文章|商品|评论|列表|记录|帖子|问题|回答|图片|视频|新闻|项目|仓库|包)?|点击加载(?:更多)?|load more(?:\s+(?:results?|items?|posts?|articles?|stories?|products?|comments?|reviews?|questions?|answers?|rows?|data|content|listings?|jobs?|books?|movies?|news|repositories|packages|issues|photos|videos))?|show more(?:\s+(?:results?|items?|posts?|articles?|stories?|products?|comments?|reviews?|questions?|answers?|rows?|data|content|listings?|jobs?|books?|movies?|news|repositories|packages|issues|photos|videos))?|see more(?:\s+(?:results?|items?|posts?|articles?|stories?|products?|comments?|reviews?|questions?|answers?|rows?|data|content|listings?|jobs?|books?|movies?|news|repositories|packages|issues|photos|videos))?)$/i.test(text);
+}
+
+function loadMoreRecordExpanderText(value: string): boolean {
+  const normalized = value.replace(/\s+/g, ' ').trim().toLowerCase();
+  if (!normalized) return false;
+  return /^(?:see|show|view)\s+more\s+(?:information|info|details?)\s+(?:about|for|on)\b/i.test(normalized)
+    || /^(?:more\s+information|details?)\s+(?:about|for|on)\b/i.test(normalized)
+    || /^(?:view|show)\s+details?\b/i.test(normalized)
+    || /^(?:查看|显示|展开|查看更多).{0,8}(?:详情|详细信息)(?:\s|$)/i.test(normalized);
 }
 
 function comparePaginationOptions(a: RecognizedPagination, b: RecognizedPagination): number {
@@ -4603,11 +4715,11 @@ async function installCandidateOverlay(page: Page, candidates: RecognizedCandida
       const originalOutline = html.style.outline;
       const originalOutlineOffset = html.style.outlineOffset;
       const originalBackground = html.style.backgroundColor;
-      html.dataset.octoparseRecognitionOutline = originalOutline;
-      html.dataset.octoparseRecognitionOutlineOffset = originalOutlineOffset;
-      html.dataset.octoparseRecognitionBackground = originalBackground;
-      html.dataset.octoparseRecognitionColor = color;
-      html.dataset.octoparseRecognitionEmphasis = emphasis;
+      html.dataset.octopusRecognitionOutline = originalOutline;
+      html.dataset.octopusRecognitionOutlineOffset = originalOutlineOffset;
+      html.dataset.octopusRecognitionBackground = originalBackground;
+      html.dataset.octopusRecognitionColor = color;
+      html.dataset.octopusRecognitionEmphasis = emphasis;
       html.style.outline = `${emphasis === 'primary' ? 3 : 2}px ${emphasis === 'primary' ? 'solid' : 'dashed'} ${color}`;
       html.style.outlineOffset = '-2px';
       html.style.backgroundColor = emphasis === 'primary' ? `${color}16` : `${color}08`;
@@ -4927,10 +5039,10 @@ async function installCandidateOverlay(page: Page, candidates: RecognizedCandida
 
     function drawFieldBox(element: Element, labelText: string, color: string): void {
       const html = element as HTMLElement;
-      if (!html.dataset.octoparseRecognitionFieldOutline) {
-        html.dataset.octoparseRecognitionFieldOutline = html.style.outline;
-        html.dataset.octoparseRecognitionFieldOutlineOffset = html.style.outlineOffset;
-        html.dataset.octoparseRecognitionFieldBackground = html.style.backgroundColor;
+      if (!html.dataset.octopusRecognitionFieldOutline) {
+        html.dataset.octopusRecognitionFieldOutline = html.style.outline;
+        html.dataset.octopusRecognitionFieldOutlineOffset = html.style.outlineOffset;
+        html.dataset.octopusRecognitionFieldBackground = html.style.backgroundColor;
       }
       html.style.outline = `2px solid ${color}`;
       html.style.outlineOffset = '-1px';
@@ -4961,10 +5073,10 @@ async function installCandidateOverlay(page: Page, candidates: RecognizedCandida
       const originalOutlineOffset = html.style.outlineOffset;
       const originalBackground = html.style.backgroundColor;
       const originalBoxShadow = html.style.boxShadow;
-      html.dataset.octoparseRecognitionOutline = originalOutline;
-      html.dataset.octoparseRecognitionOutlineOffset = originalOutlineOffset;
-      html.dataset.octoparseRecognitionBackground = originalBackground;
-      html.dataset.octoparseRecognitionBoxShadow = originalBoxShadow;
+      html.dataset.octopusRecognitionOutline = originalOutline;
+      html.dataset.octopusRecognitionOutlineOffset = originalOutlineOffset;
+      html.dataset.octopusRecognitionBackground = originalBackground;
+      html.dataset.octopusRecognitionBoxShadow = originalBoxShadow;
       html.style.outline = '3px solid #f97316';
       html.style.outlineOffset = '-2px';
       html.style.backgroundColor = 'rgba(249,115,22,.14)';
@@ -5006,8 +5118,8 @@ async function installCandidateOverlay(page: Page, candidates: RecognizedCandida
       highlighted.forEach((element) => {
         const candidateId = byElement.get(element);
         const selected = candidateId ? selectedIds.has(candidateId) : false;
-        const color = element.dataset.octoparseRecognitionColor || '#2563eb';
-        const emphasis = element.dataset.octoparseRecognitionEmphasis === 'secondary' ? 'secondary' : 'primary';
+        const color = element.dataset.octopusRecognitionColor || '#2563eb';
+        const emphasis = element.dataset.octopusRecognitionEmphasis === 'secondary' ? 'secondary' : 'primary';
         element.style.outline = `${selected ? 5 : emphasis === 'primary' ? 3 : 2}px ${selected || emphasis === 'primary' ? 'solid' : 'dashed'} ${color}`;
         element.style.outlineOffset = '-2px';
         element.style.backgroundColor = selected ? `${color}33` : emphasis === 'primary' ? `${color}16` : `${color}08`;
@@ -5126,26 +5238,26 @@ async function installCandidateOverlay(page: Page, candidates: RecognizedCandida
       window.removeEventListener('scroll', handleViewportChange, true);
       window.removeEventListener('resize', handleViewportChange, true);
       highlighted.forEach((element) => {
-        element.style.outline = element.dataset.octoparseRecognitionOutline || '';
-        element.style.outlineOffset = element.dataset.octoparseRecognitionOutlineOffset || '';
-        element.style.backgroundColor = element.dataset.octoparseRecognitionBackground || '';
-        element.style.boxShadow = element.dataset.octoparseRecognitionBoxShadow || '';
+        element.style.outline = element.dataset.octopusRecognitionOutline || '';
+        element.style.outlineOffset = element.dataset.octopusRecognitionOutlineOffset || '';
+        element.style.backgroundColor = element.dataset.octopusRecognitionBackground || '';
+        element.style.boxShadow = element.dataset.octopusRecognitionBoxShadow || '';
         element.style.cursor = '';
         element.style.opacity = '';
-        delete element.dataset.octoparseRecognitionOutline;
-        delete element.dataset.octoparseRecognitionOutlineOffset;
-        delete element.dataset.octoparseRecognitionBackground;
-        delete element.dataset.octoparseRecognitionBoxShadow;
-        delete element.dataset.octoparseRecognitionColor;
-        delete element.dataset.octoparseRecognitionEmphasis;
+        delete element.dataset.octopusRecognitionOutline;
+        delete element.dataset.octopusRecognitionOutlineOffset;
+        delete element.dataset.octopusRecognitionBackground;
+        delete element.dataset.octopusRecognitionBoxShadow;
+        delete element.dataset.octopusRecognitionColor;
+        delete element.dataset.octopusRecognitionEmphasis;
       });
       fieldHighlighted.forEach((element) => {
-        element.style.outline = element.dataset.octoparseRecognitionFieldOutline || '';
-        element.style.outlineOffset = element.dataset.octoparseRecognitionFieldOutlineOffset || '';
-        element.style.backgroundColor = element.dataset.octoparseRecognitionFieldBackground || '';
-        delete element.dataset.octoparseRecognitionFieldOutline;
-        delete element.dataset.octoparseRecognitionFieldOutlineOffset;
-        delete element.dataset.octoparseRecognitionFieldBackground;
+        element.style.outline = element.dataset.octopusRecognitionFieldOutline || '';
+        element.style.outlineOffset = element.dataset.octopusRecognitionFieldOutlineOffset || '';
+        element.style.backgroundColor = element.dataset.octopusRecognitionFieldBackground || '';
+        delete element.dataset.octopusRecognitionFieldOutline;
+        delete element.dataset.octopusRecognitionFieldOutlineOffset;
+        delete element.dataset.octopusRecognitionFieldBackground;
       });
       root.remove();
       delete w.__octopusRecognitionClearSelection;
@@ -5247,10 +5359,10 @@ async function installPaginationOverlay(page: Page, paginations: RecognizedPagin
 
     function drawBox(element: Element, key: string, labelText: string): void {
       const html = element as HTMLElement;
-      html.dataset.octoparsePaginationOutline = html.style.outline;
-      html.dataset.octoparsePaginationOutlineOffset = html.style.outlineOffset;
-      html.dataset.octoparsePaginationBackground = html.style.backgroundColor;
-      html.dataset.octoparsePaginationBoxShadow = html.style.boxShadow;
+      html.dataset.octopusPaginationOutline = html.style.outline;
+      html.dataset.octopusPaginationOutlineOffset = html.style.outlineOffset;
+      html.dataset.octopusPaginationBackground = html.style.backgroundColor;
+      html.dataset.octopusPaginationBoxShadow = html.style.boxShadow;
       html.style.cursor = 'crosshair';
       highlighted.push(html);
       byElement.set(element, key);
@@ -5312,15 +5424,15 @@ async function installPaginationOverlay(page: Page, paginations: RecognizedPagin
       window.removeEventListener('scroll', handleViewportChange, true);
       window.removeEventListener('resize', handleViewportChange, true);
       highlighted.forEach((element) => {
-        element.style.outline = element.dataset.octoparsePaginationOutline || '';
-        element.style.outlineOffset = element.dataset.octoparsePaginationOutlineOffset || '';
-        element.style.backgroundColor = element.dataset.octoparsePaginationBackground || '';
-        element.style.boxShadow = element.dataset.octoparsePaginationBoxShadow || '';
+        element.style.outline = element.dataset.octopusPaginationOutline || '';
+        element.style.outlineOffset = element.dataset.octopusPaginationOutlineOffset || '';
+        element.style.backgroundColor = element.dataset.octopusPaginationBackground || '';
+        element.style.boxShadow = element.dataset.octopusPaginationBoxShadow || '';
         element.style.cursor = '';
-        delete element.dataset.octoparsePaginationOutline;
-        delete element.dataset.octoparsePaginationOutlineOffset;
-        delete element.dataset.octoparsePaginationBackground;
-        delete element.dataset.octoparsePaginationBoxShadow;
+        delete element.dataset.octopusPaginationOutline;
+        delete element.dataset.octopusPaginationOutlineOffset;
+        delete element.dataset.octopusPaginationBackground;
+        delete element.dataset.octopusPaginationBoxShadow;
       });
       root.remove();
       delete w.__octopusPaginationSelection;
@@ -5629,7 +5741,7 @@ async function installDetailFieldOverlay(page: Page): Promise<void> {
       const linkText = Array.from(element.querySelectorAll('a')).map((item) => text(item)).join(' ');
       const linkDensity = linkText.length / Math.max(1, value.length);
       if (linkDensity > 0.35) return -Infinity;
-      const sentenceMarks = (value.match(/[。！？!?；;, ,]/g) ?? []).length;
+      const sentenceMarks = (value.match(/[。！？!?；;，,]/g) ?? []).length;
       const centerPenalty = Math.abs((rect.left + rect.width / 2) - window.innerWidth / 2) / Math.max(1, window.innerWidth);
       let score = 0;
       score += Math.min(4, value.length / 350);
@@ -5765,12 +5877,12 @@ async function installDetailFieldOverlay(page: Page): Promise<void> {
       const html = element as HTMLElement;
       if (byElement.has(element)) return;
       byElement.set(element, field);
-      html.dataset.octoparseDetailOutline = html.style.outline;
-      html.dataset.octoparseDetailOutlineOffset = html.style.outlineOffset;
-      html.dataset.octoparseDetailBackground = html.style.backgroundColor;
-      html.dataset.octoparseDetailBoxShadow = html.style.boxShadow;
+      html.dataset.octopusDetailOutline = html.style.outline;
+      html.dataset.octopusDetailOutlineOffset = html.style.outlineOffset;
+      html.dataset.octopusDetailBackground = html.style.backgroundColor;
+      html.dataset.octopusDetailBoxShadow = html.style.boxShadow;
       const color = palette[field.suggestedName] || palette.field;
-      html.dataset.octoparseDetailColor = color;
+      html.dataset.octopusDetailColor = color;
       html.style.outline = `2px solid ${color}`;
       html.style.outlineOffset = '-2px';
       html.style.backgroundColor = `${color}12`;
@@ -5809,7 +5921,7 @@ async function installDetailFieldOverlay(page: Page): Promise<void> {
       highlighted.forEach((element) => {
         const field = byElement.get(element);
         const isSelected = field ? selected.has(field.id) : false;
-        const color = element.dataset.octoparseDetailColor || palette.field;
+        const color = element.dataset.octopusDetailColor || palette.field;
         element.style.outline = `${isSelected ? 5 : 2}px solid ${color}`;
         element.style.backgroundColor = isSelected ? `${color}33` : `${color}12`;
         element.style.boxShadow = isSelected ? `0 0 0 2px ${color}55` : '';
@@ -5849,16 +5961,16 @@ async function installDetailFieldOverlay(page: Page): Promise<void> {
       window.removeEventListener('scroll', handleViewportChange, true);
       window.removeEventListener('resize', handleViewportChange, true);
       highlighted.forEach((element) => {
-        element.style.outline = element.dataset.octoparseDetailOutline || '';
-        element.style.outlineOffset = element.dataset.octoparseDetailOutlineOffset || '';
-        element.style.backgroundColor = element.dataset.octoparseDetailBackground || '';
-        element.style.boxShadow = element.dataset.octoparseDetailBoxShadow || '';
+        element.style.outline = element.dataset.octopusDetailOutline || '';
+        element.style.outlineOffset = element.dataset.octopusDetailOutlineOffset || '';
+        element.style.backgroundColor = element.dataset.octopusDetailBackground || '';
+        element.style.boxShadow = element.dataset.octopusDetailBoxShadow || '';
         element.style.cursor = '';
-        delete element.dataset.octoparseDetailOutline;
-        delete element.dataset.octoparseDetailOutlineOffset;
-        delete element.dataset.octoparseDetailBackground;
-        delete element.dataset.octoparseDetailBoxShadow;
-        delete element.dataset.octoparseDetailColor;
+        delete element.dataset.octopusDetailOutline;
+        delete element.dataset.octopusDetailOutlineOffset;
+        delete element.dataset.octopusDetailBackground;
+        delete element.dataset.octopusDetailBoxShadow;
+        delete element.dataset.octopusDetailColor;
       });
       labels.forEach((label) => label.remove());
       root.remove();
@@ -6146,7 +6258,7 @@ async function refineCandidateFields(page: Page, candidates: RecognizedCandidate
     }
 
     function isButtonText(value: string): boolean {
-      return /^(查看|更多|点击|回复|提交|确定|取消|cancel|登录|注册|搜索|分享|收藏|加入|上一页|下一页|next|prev|more|view|read more)$/i.test(value.trim());
+      return /^(查看|更多|点击|回复|提交|确定|取消|登录|注册|搜索|分享|收藏|加入|上一页|下一页|next|prev|more|view|read more)$/i.test(value.trim());
     }
 
     function isNumericLike(value: string): boolean {
@@ -6168,7 +6280,7 @@ async function refineCandidateFields(page: Page, candidates: RecognizedCandidate
     function stripDateFromAuthor(value: string): string {
       const date = dateMatch(value);
       if (!date) return value.replace(/\s+/g, ' ').trim();
-      return value.replace(date, '').replace(/[|｜·•,, :：-]+$/g, '').replace(/\s+/g, ' ').trim();
+      return value.replace(date, '').replace(/[|｜·•,，:：-]+$/g, '').replace(/\s+/g, ' ').trim();
     }
 
     function isAuthorText(value: string): boolean {
@@ -6274,7 +6386,7 @@ async function refineCandidateFields(page: Page, candidates: RecognizedCandidate
     }
 
     function normalizedComparableText(value: string): string {
-      return value.replace(/\s+/g, '').replace(/[|｜·•,, .。:：;；!?！？'"“”‘’()[\]（）【】]/g, '').toLowerCase();
+      return value.replace(/\s+/g, '').replace(/[|｜·•,，.。:：;；!?！？'"“”‘’()[\]（）【】]/g, '').toLowerCase();
     }
 
     function samplesDuplicate(left: string[], right: string[]): boolean {
@@ -7041,7 +7153,7 @@ async function detectDetails(page: Page): Promise<RawCandidate[]> {
       const linkText = Array.from(element.querySelectorAll('a')).map((item) => text(item)).join(' ');
       const linkDensity = linkText.length / Math.max(1, value.length);
       if (linkDensity > 0.35) return -Infinity;
-      const sentenceMarks = (value.match(/[。！？!?；;, ,]/g) ?? []).length;
+      const sentenceMarks = (value.match(/[。！？!?；;，,]/g) ?? []).length;
       const centerPenalty = Math.abs((rect.left + rect.width / 2) - window.innerWidth / 2) / Math.max(1, window.innerWidth);
       let score = 0;
       score += Math.min(5, value.length / 500);
@@ -7392,9 +7504,9 @@ async function chooseSearchInputRetryInBrowser(
   writeManualOverlayHintOnce(runtimeConsole, page, `search-input-retry:${name}`, `\nUse the browser overlay to continue: no search input was detected for ${name} = ${value}\n`);
   await showManualOverlay(page, {
     title: 'No search input detected',
-    message: `Open or focus the search field on the page, then retry detection.\nKeyword: ${name} = ${value}`,
+    message: `Open or focus the search box on the page, then detect again.\nKeyword: ${name} = ${value}`,
     choices: [
-      { title: 'Retry detection', value: 'retry', primary: true },
+      { title: 'Detect again', value: 'retry', primary: true },
       { title: 'Cancel search recognition', value: 'cancel' }
     ]
   });
@@ -7409,7 +7521,7 @@ async function chooseSearchInputRetryInCli(name: string, value: string): Promise
     name: 'action',
     message: `No usable search input was detected: ${name} = ${value}`,
     choices: [
-      { title: 'I opened/focused the search field in the browser; retry detection', description: 'Use this when the site hides the search field behind a popup, button, or login state.', value: 'retry' },
+      { title: 'I opened/focused the search box in the browser; detect again', description: 'Use this when the site hides search behind a popup, button, or login state.', value: 'retry' },
       { title: 'Cancel search recognition', description: 'Stop this recognize run to avoid choosing the wrong input.', value: 'cancel' }
     ],
     initial: 0
@@ -8162,7 +8274,7 @@ async function resolveSearchSubmitButtonByGeometry(page: Page, inputXPath: strin
     }
     function searchScope(inputElement: Element): Element {
       let current: Element | null = inputElement.parentElement;
-      let fallback: Element = inputElement.parentElement || document.body;
+      let fallback: Element = inputElement.parentElement || document.body || document.documentElement;
       for (let depth = 0; current && depth < 6; depth += 1, current = current.parentElement) {
         const attrs = attrsOf(current);
         if (/search|query|keyword|搜索|查询|toolbar|header|nav|form|input|textarea/i.test(attrs)) return current;
@@ -8751,6 +8863,357 @@ async function detectRepeatedCards(page: Page): Promise<RawCandidate[]> {
     .filter((candidate): candidate is RawCandidate => Boolean(candidate));
 }
 
+async function detectSearchResultBlocks(page: Page): Promise<RawCandidate[]> {
+  const groups = await page.evaluate(() => {
+    type ResultRow = {
+      element: Element;
+      title: string;
+      href: string;
+      summary: string;
+      category: string;
+      text: string;
+      titlePath: string;
+      summaryPath: string;
+      categoryPath: string;
+    };
+    type ResultGroup = {
+      parentSelector: string;
+      parentXPath: string;
+      itemSelector: string;
+      itemXPath: string;
+      itemCount: number;
+      titlePath: string;
+      summaryPath: string;
+      categoryPath: string;
+      rows: Array<{
+        title: string;
+        href: string;
+        summary: string;
+        category: string;
+        text: string;
+      }>;
+      boilerplateLike: boolean;
+      shadowHost: boolean;
+      reasons: string[];
+    };
+    type SearchRoot = { root: Element | ShadowRoot; host: Element | null };
+
+    const ignored = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG', 'CANVAS', 'TEMPLATE']);
+    const mainRoots = Array.from(document.querySelectorAll('main,[role="main"],#main,#content,[class*="content" i],[class*="results" i],[class*="search" i]'));
+    const rootElements = mainRoots.length ? mainRoots : Array.from(document.querySelectorAll('body'));
+    const roots: SearchRoot[] = rootElements.map((root) => ({ root, host: null }));
+    const seenShadowRoots = new Set<ShadowRoot>();
+    function addShadowRoots(root: Element | ShadowRoot): void {
+      const elements = [
+        ...(root instanceof Element ? [root] : []),
+        ...Array.from(root.querySelectorAll('*'))
+      ];
+      for (const element of elements) {
+        const shadow = (element as HTMLElement).shadowRoot;
+        if (!shadow || seenShadowRoots.has(shadow)) continue;
+        seenShadowRoots.add(shadow);
+        roots.push({ root: shadow, host: element });
+        addShadowRoots(shadow);
+      }
+    }
+    for (const root of rootElements) addShadowRoots(root);
+
+    function text(element: Element): string {
+      return ((element as HTMLElement).innerText || element.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+    function directText(element: Element): string {
+      return Array.from(element.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent || '')
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+    function visible(element: Element): boolean {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element as HTMLElement);
+      return rect.width > 24 && rect.height > 12 && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+    }
+    function shadowHostFor(element: Element): Element | null {
+      const root = element.getRootNode();
+      return root instanceof ShadowRoot ? root.host : null;
+    }
+    function xpath(element: Element): string {
+      const parts: string[] = [];
+      let current: Element | null = element;
+      while (current && current.nodeType === Node.ELEMENT_NODE) {
+        const parentElement: Element | null = current.parentElement;
+        const same = parentElement ? Array.from(parentElement.children).filter((item: Element) => item.tagName === current!.tagName) : [];
+        parts.unshift(`${current.tagName.toLowerCase()}[${same.indexOf(current) + 1 || 1}]`);
+        current = parentElement;
+      }
+      return `/${parts.join('/')}`;
+    }
+    function selector(element: Element): string {
+      const parts: string[] = [];
+      let current: Element | null = element;
+      while (current && current !== document.body && parts.length < 5) {
+        const html = current as HTMLElement;
+        if (html.id && !/[^\w-]/.test(html.id)) {
+          parts.unshift(`#${CSS.escape(html.id)}`);
+          break;
+        }
+        const classes = Array.from(html.classList).filter((item) => !/^\d/.test(item)).slice(0, 2).map((item) => `.${CSS.escape(item)}`).join('');
+        const parentElement: Element | null = current.parentElement;
+        const same = parentElement ? Array.from(parentElement.children).filter((item: Element) => item.tagName === current!.tagName) : [];
+        const nth = same.length > 1 ? `:nth-of-type(${same.indexOf(current) + 1})` : '';
+        parts.unshift(`${current.tagName.toLowerCase()}${classes}${nth}`);
+        current = parentElement;
+      }
+      return parts.join(' > ') || element.tagName.toLowerCase();
+    }
+    function attrs(element: Element): string {
+      const html = element as HTMLElement;
+      return [
+        element.localName,
+        html.id,
+        typeof html.className === 'string' ? html.className : '',
+        html.getAttribute('role') || '',
+        html.getAttribute('aria-label') || ''
+      ].join(' ');
+    }
+    function candidateAttrs(element: Element): string {
+      const values: string[] = [];
+      let current: Element | null = element;
+      for (let depth = 0; current && depth < 3; depth += 1) {
+        values.push(attrs(current));
+        current = current.parentElement;
+      }
+      const shadowHost = shadowHostFor(element);
+      if (shadowHost) {
+        values.push(attrs(shadowHost));
+        if (shadowHost.parentElement) values.push(attrs(shadowHost.parentElement));
+      }
+      return values.join(' ');
+    }
+    function boilerplateLike(element: Element): boolean {
+      const value = `${candidateAttrs(element)} ${text(element).slice(0, 500)}`;
+      return Boolean(element.closest('header,footer,nav,aside,[role="banner"],[role="contentinfo"],[role="navigation"],[role="complementary"]'))
+        || Boolean(shadowHostFor(element)?.closest('header,footer,nav,aside,[role="banner"],[role="contentinfo"],[role="navigation"],[role="complementary"]'))
+        || /(header|footer|contentinfo|copyright|privacy|terms|login|signin|signup|nav|menu|sidebar|aside|advert|banner|sponsor|cookie|newsletter|备案|隐私|条款|登录|注册)/i.test(value);
+    }
+    function similarKey(element: Element): string {
+      const html = element as HTMLElement;
+      const classes = Array.from(html.classList)
+        .filter((item) => !/\d{2,}/.test(item))
+        .slice(0, 3)
+        .sort()
+        .join('.');
+      const role = html.getAttribute('role') || '';
+      const marked = /(result|search|item|entry|card|list|document|record|hit|article)/i.test(`${element.localName} ${classes} ${role}`) ? 'marked' : '';
+      return [element.tagName.toLowerCase(), classes, role, marked].join('|');
+    }
+    function relativePath(from: Element, to: Element): string {
+      if (from === to) return '.';
+      const parts: string[] = [];
+      let current: Element | null = to;
+      while (current && current !== from) {
+        const parentElement: Element | null = current.parentElement;
+        if (!parentElement) return '.';
+        const same = Array.from(parentElement.children).filter((item: Element) => item.tagName === current!.tagName);
+        parts.unshift(`${current.tagName.toLowerCase()}[${same.indexOf(current) + 1 || 1}]`);
+        current = parentElement;
+      }
+      return current === from ? `./${parts.join('/')}` : '.';
+    }
+    function firstTextElement(row: Element, selectors: string[]): Element | null {
+      for (const selectorValue of selectors) {
+        const match = Array.from(row.querySelectorAll(selectorValue))
+          .filter((element) => visible(element))
+          .find((element) => {
+            const value = text(element);
+            return value.length >= 24 && value.length <= 500;
+          });
+        if (match) return match;
+      }
+      return null;
+    }
+    function summaryFor(row: Element, title: string): { value: string; path: string } {
+      const summaryElement = firstTextElement(row, [
+        '[class*="description" i]',
+        '[class*="summary" i]',
+        '[class*="snippet" i]',
+        '[class*="excerpt" i]',
+        '[class*="intro" i]',
+        'p',
+        'dd'
+      ]);
+      if (summaryElement) {
+        const value = text(summaryElement);
+        if (value && value !== title) return { value: value.slice(0, 500), path: relativePath(row, summaryElement) };
+      }
+      const chunks = Array.from(row.querySelectorAll('p,dd,span,div'))
+        .filter((element) => visible(element))
+        .map((element) => ({ element, value: text(element) }))
+        .filter((item, index, arr) => item.value.length >= 24 && item.value !== title && arr.findIndex((other) => other.value === item.value) === index)
+        .sort((a, b) => Math.abs(a.value.length - 160) - Math.abs(b.value.length - 160));
+      if (chunks[0]) return { value: chunks[0].value.slice(0, 500), path: relativePath(row, chunks[0].element) };
+      const value = text(row).replace(title, '').trim();
+      return { value: value.slice(0, 500), path: '.' };
+    }
+    function categoryFor(row: Element, title: string, summary: string): { value: string; path: string } {
+      const categoryElement = Array.from(row.querySelectorAll('[class*="breadcrumb" i],[class*="category" i],[class*="type" i],[class*="section" i],small'))
+        .filter((element) => visible(element))
+        .find((element) => {
+          const value = text(element);
+          return value.length >= 2 && value.length <= 120 && value !== title && value !== summary;
+        });
+      if (categoryElement) return { value: text(categoryElement).slice(0, 160), path: relativePath(row, categoryElement) };
+      const shortChunk = Array.from(row.querySelectorAll('span,small,div'))
+        .filter((element) => visible(element))
+        .map((element) => ({ element, value: directText(element) || text(element) }))
+        .find((item) => item.value.length >= 2 && item.value.length <= 80 && item.value !== title && item.value !== summary && /[>/|·•-]/.test(item.value));
+      return shortChunk ? { value: shortChunk.value.slice(0, 160), path: relativePath(row, shortChunk.element) } : { value: '', path: '' };
+    }
+    function titleLinkFor(row: Element): HTMLAnchorElement | null {
+      const links = Array.from(row.querySelectorAll('a')).filter(visible) as HTMLAnchorElement[];
+      const scored = links
+        .map((link, index) => {
+          const value = text(link);
+          const href = link.href || link.getAttribute('href') || '';
+          if (!href || value.length < 3 || value.length > 220) return null;
+          const html = link as HTMLElement;
+          const attrValue = attrs(link);
+          let score = 0;
+          if (/^(?:H1|H2|H3|H4)$/i.test(link.parentElement?.tagName || '')) score += 0.35;
+          if (link.querySelector('h1,h2,h3,h4')) score += 0.35;
+          if (/(title|heading|result|entry|document|article|name)/i.test(attrValue)) score += 0.28;
+          if (value.length >= 8 && value.length <= 120) score += 0.22;
+          if (/\/(docs?|articles?|posts?|questions?|crates?|packages?|plugins?|title|jobs?|wiki|api)\b/i.test(href)) score += 0.18;
+          if (html.closest('nav,header,footer')) score -= 0.55;
+          score -= index * 0.03;
+          return { link, score };
+        })
+        .filter((item): item is { link: HTMLAnchorElement; score: number } => Boolean(item))
+        .sort((a, b) => b.score - a.score);
+      return scored[0]?.link ?? null;
+    }
+    function asRow(element: Element): ResultRow | null {
+      if (ignored.has(element.tagName) || !visible(element) || boilerplateLike(element)) return null;
+      const value = text(element);
+      if (value.length < 36 || value.length > 1800) return null;
+      const directResultChildren = Array.from(element.children)
+        .filter((child) => !ignored.has(child.tagName) && visible(child) && Boolean(child.querySelector('a')) && text(child).length >= 36)
+        .length;
+      if (directResultChildren >= 2) return null;
+      const titleLink = titleLinkFor(element);
+      if (!titleLink) return null;
+      const title = text(titleLink).slice(0, 220);
+      const href = titleLink.href || titleLink.getAttribute('href') || '';
+      if (!title || !href) return null;
+      const summary = summaryFor(element, title);
+      if (summary.value.length < 24 && value.replace(title, '').trim().length < 24) return null;
+      const category = categoryFor(element, title, summary.value);
+      return {
+        element,
+        title,
+        href,
+        summary: summary.value,
+        category: category.value,
+        text: value.slice(0, 800),
+        titlePath: relativePath(element, titleLink),
+        summaryPath: summary.path,
+        categoryPath: category.path
+      };
+    }
+    function commonItemXPath(rows: ResultRow[]): string {
+      if (!rows.length) return '';
+      const shadowHost = shadowHostFor(rows[0].element);
+      if (shadowHost && rows.every((row) => shadowHostFor(row.element) === shadowHost)) return xpath(shadowHost);
+      const parent = rows[0].element.parentElement;
+      if (!parent || !rows.every((row) => row.element.parentElement === parent)) return xpath(rows[0].element);
+      const tag = rows[0].element.tagName.toLowerCase();
+      if (rows.every((row) => row.element.tagName.toLowerCase() === tag)) return `${xpath(parent)}/${tag}`;
+      return xpath(rows[0].element).replace(/\[\d+\]$/, '');
+    }
+    function buildGroup(parent: Element, rows: ResultRow[], reasons: string[]): ResultGroup | null {
+      const uniqueTitles = new Set(rows.map((row) => row.title.toLowerCase()));
+      const uniqueHrefs = new Set(rows.map((row) => row.href.replace(/[?#].*$/g, '').toLowerCase()));
+      if (rows.length < 2 || uniqueTitles.size < Math.min(2, rows.length) || uniqueHrefs.size < Math.min(2, rows.length)) return null;
+      const withSummary = rows.filter((row) => row.summary.length >= 24).length;
+      if (withSummary < Math.min(2, rows.length)) return null;
+      const sample = rows.slice(0, 5);
+      const first = sample[0];
+      const shadowHost = shadowHostFor(first.element);
+      const allSameShadowHost = shadowHost && rows.every((row) => shadowHostFor(row.element) === shadowHost);
+      const anchor = allSameShadowHost ? shadowHost : parent;
+      return {
+        parentSelector: selector(anchor),
+        parentXPath: xpath(anchor),
+        itemSelector: allSameShadowHost ? selector(shadowHost) : selector(first.element),
+        itemXPath: commonItemXPath(rows),
+        itemCount: rows.length,
+        titlePath: allSameShadowHost ? '.' : first.titlePath || './/a[1]',
+        summaryPath: allSameShadowHost ? '.' : first.summaryPath || '.',
+        categoryPath: allSameShadowHost ? '' : first.categoryPath || '',
+        rows: sample.map((row) => ({
+          title: row.title,
+          href: row.href,
+          summary: row.summary,
+          category: row.category,
+          text: row.text
+        })),
+        boilerplateLike: boilerplateLike(parent) || (allSameShadowHost ? boilerplateLike(shadowHost) : false) || rows.some((row) => boilerplateLike(row.element)),
+        shadowHost: Boolean(allSameShadowHost),
+        reasons: [...reasons, ...(allSameShadowHost ? ['Open Shadow DOM search-result blocks'] : [])]
+      };
+    }
+
+    const rowCandidates = new Map<Element, ResultRow>();
+    for (const scope of roots) {
+      if (scope.host && !visible(scope.host)) continue;
+      if (!scope.host && scope.root instanceof Element && !visible(scope.root)) continue;
+      const descendants = Array.from(scope.root.querySelectorAll('article,li,dd,[role="article"],[role="listitem"],[class*="result" i],[class*="search-result" i],[class*="document" i],[class*="entry" i],[class*="item" i]'));
+      for (const element of descendants) {
+        const row = asRow(element);
+        if (!row) continue;
+        const nested = Array.from(rowCandidates.values()).some((existing) => row.element.contains(existing.element));
+        if (nested) {
+          for (const [key, existing] of Array.from(rowCandidates.entries())) {
+            if (row.element.contains(existing.element) && text(row.element).length <= text(existing.element).length + 80) {
+              rowCandidates.delete(key);
+            }
+          }
+        }
+        if (!Array.from(rowCandidates.values()).some((existing) => existing.element.contains(row.element))) {
+          rowCandidates.set(element, row);
+        }
+      }
+    }
+
+    const byParent = new Map<Element, ResultRow[]>();
+    for (const row of rowCandidates.values()) {
+      const parent = row.element.parentElement || shadowHostFor(row.element);
+      if (!parent) continue;
+      byParent.set(parent, [...(byParent.get(parent) ?? []), row]);
+    }
+
+    const output: ResultGroup[] = [];
+    for (const [parent, rows] of byParent.entries()) {
+      const buckets = new Map<string, ResultRow[]>();
+      for (const row of rows) {
+        const key = similarKey(row.element);
+        buckets.set(key, [...(buckets.get(key) ?? []), row]);
+      }
+      for (const bucketRows of buckets.values()) {
+        const group = buildGroup(parent, bucketRows, ['Repeated search-result blocks with title links and summaries']);
+        if (group) output.push(group);
+      }
+    }
+
+    return output
+      .sort((a, b) => b.itemCount - a.itemCount)
+      .slice(0, 12);
+  });
+
+  return groups.map((group) => searchResultBlockCandidate(group));
+}
+
 async function detectInteractiveElementGroups(page: Page): Promise<RawCandidate[]> {
   const groups = await page.evaluate(() => {
     const ignored = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG', 'CANVAS', 'PATH']);
@@ -8909,6 +9372,10 @@ export async function detectInteractivePaginationOptionsForTesting(page: Page, c
   return detectInteractivePaginationOptions(page, candidates, scrollProbe);
 }
 
+export async function detectSearchResultBlocksForTesting(page: Page): Promise<RawCandidate[]> {
+  return detectSearchResultBlocks(page);
+}
+
 export async function detectPageObstructionsForTesting(page: Page): Promise<Array<{
   popupXPath: string;
   popupText: string;
@@ -9051,8 +9518,8 @@ async function detectPaginationForCandidates(page: Page, candidates: RecognizedC
 
     function documentRect(element: Element): DOMRect {
       const rect = element.getBoundingClientRect();
-      const scrollX = window.scrollX || document.documentElement.scrollLeft || document.body.scrollLeft || 0;
-      const scrollY = window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
+      const scrollX = window.scrollX || document.documentElement.scrollLeft || document.body?.scrollLeft || 0;
+      const scrollY = window.scrollY || document.documentElement.scrollTop || document.body?.scrollTop || 0;
       return new DOMRect(rect.left + scrollX, rect.top + scrollY, rect.width, rect.height);
     }
 
@@ -9176,7 +9643,7 @@ async function detectPaginationForCandidates(page: Page, candidates: RecognizedC
 
     function activeLoadMoreTextPredicate(): string {
       const textExpr = lowerXPath('normalize-space(.)');
-      return [
+      const positive = [
         `contains(${textExpr}, "加载更多")`,
         `contains(${textExpr}, "查看更多")`,
         `contains(${textExpr}, "显示更多")`,
@@ -9185,16 +9652,40 @@ async function detectPaginationForCandidates(page: Page, candidates: RecognizedC
         `contains(${textExpr}, "show more")`,
         `contains(${textExpr}, "see more")`
       ].join(' or ');
+      const negative = [
+        `not(contains(${textExpr}, "see more information"))`,
+        `not(contains(${textExpr}, "more information about"))`,
+        `not(contains(${textExpr}, "details about"))`,
+        `not(contains(${textExpr}, "view details"))`,
+        `not(contains(${textExpr}, "查看详情"))`,
+        `not(contains(${textExpr}, "详细信息"))`
+      ].join(' and ');
+      return `(${positive}) and ${negative}`;
+    }
+
+    function loadMoreRecordExpanderText(value: string): boolean {
+      const normalized = value.replace(/\s+/g, ' ').trim().toLowerCase();
+      if (!normalized) return false;
+      return /^(?:see|show|view)\s+more\s+(?:information|info|details?)\s+(?:about|for|on)\b/i.test(normalized)
+        || /^(?:more\s+information|details?)\s+(?:about|for|on)\b/i.test(normalized)
+        || /^(?:view|show)\s+details?\b/i.test(normalized)
+        || /^(?:查看|显示|展开|查看更多).{0,8}(?:详情|详细信息)(?:\s|$)/i.test(normalized);
+    }
+
+    function reliableLoadMoreText(value: string): boolean {
+      const normalized = value.replace(/\s+/g, ' ').trim();
+      if (!normalized || normalized.length > 72 || loadMoreRecordExpanderText(normalized)) return false;
+      return /^(加载更多|查看更多(?:内容|结果|数据|文章|商品|评论|列表|记录|帖子|问题|回答|图片|视频|新闻|项目|仓库|包)?|显示更多(?:内容|结果|数据|文章|商品|评论|列表|记录|帖子|问题|回答|图片|视频|新闻|项目|仓库|包)?|点击加载(?:更多)?|load more(?:\s+(?:results?|items?|posts?|articles?|stories?|products?|comments?|reviews?|questions?|answers?|rows?|data|content|listings?|jobs?|books?|movies?|news|repositories|packages|issues|photos|videos))?|show more(?:\s+(?:results?|items?|posts?|articles?|stories?|products?|comments?|reviews?|questions?|answers?|rows?|data|content|listings?|jobs?|books?|movies?|news|repositories|packages|issues|photos|videos))?|see more(?:\s+(?:results?|items?|posts?|articles?|stories?|products?|comments?|reviews?|questions?|answers?|rows?|data|content|listings?|jobs?|books?|movies?|news|repositories|packages|issues|photos|videos))?)$/i.test(normalized);
     }
 
     function loadMoreState(element: Element): { active: boolean; hasText: boolean; end: boolean } {
       const value = text(element);
       const attrs = attrText(element);
       const combined = `${value} ${attrs}`;
-      const hasText = loadMoreTexts.some((item) => value.includes(item));
+      const hasText = reliableLoadMoreText(value);
       const hasAttr = /loadmore|load-more/i.test(attrs);
       const end = loadMoreEndPattern.test(combined);
-      return { active: !end && (hasText || hasAttr), hasText, end };
+      return { active: !end && !loadMoreRecordExpanderText(value) && (hasText || hasAttr), hasText, end };
     }
 
     function pagerGroupForStableXPath(element: Element): Element | undefined {
@@ -9223,7 +9714,7 @@ async function detectPaginationForCandidates(page: Page, candidates: RecognizedC
         ? (raw: string) => /loadmore|load-more|more/i.test(raw)
         : (raw: string) => nextClassPattern.test(raw) && !excludedClassPattern.test(raw);
       const textMatches = type === 'load_more'
-        ? (raw: string) => loadMoreTexts.some((item) => raw.includes(item)) || /loadmore|load-more/i.test(raw)
+        ? (raw: string) => reliableLoadMoreText(raw) || /loadmore|load-more/i.test(raw)
         : (raw: string) => nextTexts.some((item) => raw === item || raw.toLowerCase() === item.toLowerCase()) && !prevTextPattern.test(raw);
       const push = (predicate: string) => {
         const full = type === 'load_more'
@@ -9244,7 +9735,7 @@ async function detectPaginationForCandidates(page: Page, candidates: RecognizedC
         const attr = element.getAttribute(name) || '';
         if (attr && (attrMatches(attr) || textMatches(attr))) push(`@${name}=${xpathLiteral(attr)}`);
       }
-      if (type === 'load_more' && loadMoreTexts.some((item) => value.includes(item))) {
+      if (type === 'load_more' && reliableLoadMoreText(value)) {
         const textExpr = lowerXPath('normalize-space(.)');
         const positiveTexts = ['加载更多', '查看更多', '显示更多', '点击加载', 'load more', 'show more', 'see more'];
         push(`(${positiveTexts.map((item) => `contains(${textExpr}, ${xpathLiteral(item.toLowerCase())})`).join(' or ')})`);
@@ -9457,7 +9948,9 @@ async function detectPaginationForCandidates(page: Page, candidates: RecognizedC
     const existingPagination = candidate.pagination && !scrollProbeRulesOutScroll(candidate, scrollProbe)
       ? candidate.pagination
       : undefined;
-    const pagination = [existingPagination, paginationById[candidate.id], probePaginationById[candidate.id]]
+    const paginationSources: Array<RecognizedPagination | undefined> = [existingPagination, paginationById[candidate.id], probePaginationById[candidate.id]];
+    const pagination = paginationSources
+      .filter((item): item is RecognizedPagination => item ? isPlausiblePaginationOption(item) : false)
       .reduce<RecognizedPagination | undefined>((selected, item) => preferredPagination(selected, item), undefined);
     const { pagination: _discardedPagination, ...candidateWithoutPagination } = candidate;
     return {
@@ -9469,7 +9962,8 @@ async function detectPaginationForCandidates(page: Page, candidates: RecognizedC
 
 function scrollProbeRulesOutScroll(candidate: Pick<RecognizedCandidate, 'itemCount' | 'pagination'>, scrollProbe?: ScrollProbeSummary): boolean {
   if (candidate.pagination?.type !== 'scroll' || !scrollProbe) return false;
-  if (scrollProbe.sawActiveLoadMore) return false;
+  if (scrollProbeHasReliableActiveLoadMore(scrollProbe)) return false;
+  if (scrollProbeLooksLikeStaticLargeList(candidate, scrollProbe)) return true;
   const grewArticleLikeCount = scrollProbe.grewArticleLikeCount ?? 0;
   if (grewArticleLikeCount >= 2) return false;
   if (!scrollProbe.reachedBottom) return false;
@@ -9488,7 +9982,7 @@ function scrollProbePaginationForCandidates(candidates: RecognizedCandidate[], s
     const listLike = candidate.type === 'repeated_card' || candidate.type === 'search_results' || candidate.type === 'link_collection';
     const enoughItems = candidate.itemCount >= 8 || scrollProbe.maxArticleLikeCount >= 8;
     if (!listLike || !enoughItems) continue;
-    if (scrollProbe.sawActiveLoadMore) {
+    if (scrollProbeHasReliableActiveLoadMore(scrollProbe)) {
       const text = scrollProbe.bestActiveLoadMoreText || 'Load more';
       const confidence = Math.min(
         0.9,
@@ -9512,6 +10006,7 @@ function scrollProbePaginationForCandidates(candidates: RecognizedCandidate[], s
       };
       continue;
     }
+    if (scrollProbeLooksLikeStaticLargeList(candidate, scrollProbe)) continue;
     if (!sawListItemGrowth) continue;
     const confidence = Math.min(
       0.86,
@@ -9537,6 +10032,25 @@ function scrollProbePaginationForCandidates(candidates: RecognizedCandidate[], s
     };
   }
   return result;
+}
+
+function scrollProbeLooksLikeStaticLargeList(candidate: Pick<RecognizedCandidate, 'itemCount'>, scrollProbe: ScrollProbeSummary): boolean {
+  if (scrollProbeHasReliableActiveLoadMore(scrollProbe)) return false;
+  const grewArticleLikeCount = scrollProbe.grewArticleLikeCount ?? 0;
+  if (candidate.itemCount < 180 || grewArticleLikeCount < 2) return false;
+  if (grewArticleLikeCount > candidate.itemCount && scrollProbe.maxArticleLikeCount > candidate.itemCount * 2.5) return true;
+  const largestObservedCount = Math.max(candidate.itemCount, scrollProbe.maxArticleLikeCount || 0);
+  const growthRatio = grewArticleLikeCount / Math.max(1, largestObservedCount);
+  const likelyReachedCompleteList = scrollProbe.reachedBottom === true || candidate.itemCount >= 200;
+  return likelyReachedCompleteList && growthRatio < 0.5;
+}
+
+function scrollProbeHasReliableActiveLoadMore(scrollProbe: ScrollProbeSummary): boolean {
+  if (!scrollProbe.sawActiveLoadMore) return false;
+  const text = scrollProbe.bestActiveLoadMoreText?.replace(/\s+/g, ' ').trim() || '';
+  if (!text) return Boolean(scrollProbe.bestActiveLoadMoreXPath);
+  if (text.length > 48) return false;
+  return /^(加载更多|查看更多|查看更多内容|查看更多结果|显示更多|显示更多内容|显示更多结果|点击加载|点击加载更多|load more|load more results|show more|show more results|see more)$/i.test(text);
 }
 
 function scrollProbeLoadMoreXPath(scrollProbe: ScrollProbeSummary): string {
@@ -9582,7 +10096,13 @@ function loadMoreEndTextExclusionForRecognizerXPath(): string {
     `not(contains(${lowerText}, "加载完毕"))`,
     `not(contains(${lowerText}, "no more"))`,
     `not(contains(${lowerText}, "all loaded"))`,
-    `not(contains(${lowerText}, "end of"))`
+    `not(contains(${lowerText}, "end of"))`,
+    `not(contains(${lowerText}, "see more information"))`,
+    `not(contains(${lowerText}, "more information about"))`,
+    `not(contains(${lowerText}, "details about"))`,
+    `not(contains(${lowerText}, "view details"))`,
+    `not(contains(${lowerText}, "查看详情"))`,
+    `not(contains(${lowerText}, "详细信息"))`
   ].join(' and ');
 }
 
@@ -9822,6 +10342,98 @@ function repeatedCardCandidate(item: {
   };
 }
 
+function searchResultBlockCandidate(group: {
+  parentSelector: string;
+  parentXPath: string;
+  itemSelector: string;
+  itemXPath: string;
+  itemCount: number;
+  titlePath: string;
+  summaryPath: string;
+  categoryPath: string;
+  rows: Array<{ title: string; href: string; summary: string; category: string; text: string }>;
+  boilerplateLike: boolean;
+  shadowHost?: boolean;
+  reasons: string[];
+}): RawCandidate {
+  const titleRelativeXPath = group.shadowHost ? '.' : group.titlePath || './/a[1]';
+  const summaryRelativeXPath = group.shadowHost ? '.' : group.summaryPath || '.';
+  const titleXPath = appendRelativeXPath(group.itemXPath, titleRelativeXPath);
+  const summaryXPath = appendRelativeXPath(group.itemXPath, summaryRelativeXPath);
+  const categoryXPath = !group.shadowHost && group.categoryPath ? appendRelativeXPath(group.itemXPath, group.categoryPath) : '';
+  const fields: RecognizedField[] = [
+    {
+      name: 'title',
+      kind: 'text',
+      selector: `${group.itemSelector} a`,
+      xpath: titleXPath,
+      relativeSelector: 'a',
+      relativeXPath: titleRelativeXPath,
+      samples: group.rows.map((row) => row.title).filter(Boolean).slice(0, 3)
+    },
+    {
+      name: 'url',
+      kind: 'href',
+      selector: `${group.itemSelector} a`,
+      xpath: titleXPath,
+      relativeSelector: 'a',
+      relativeXPath: titleRelativeXPath,
+      samples: group.rows.map((row) => row.href).filter(Boolean).slice(0, 3)
+    },
+    {
+      name: 'summary',
+      kind: 'text',
+      selector: group.itemSelector,
+      xpath: summaryXPath,
+      relativeSelector: '',
+      relativeXPath: summaryRelativeXPath,
+      samples: group.rows.map((row) => row.summary).filter(Boolean).slice(0, 3)
+    }
+  ];
+  const categorySamples = group.rows.map((row) => row.category).filter(Boolean);
+  if (categoryXPath && categorySamples.length >= 2) {
+    fields.push({
+      name: 'category',
+      kind: 'text',
+      selector: group.itemSelector,
+      xpath: categoryXPath,
+      relativeSelector: '',
+      relativeXPath: group.categoryPath,
+      samples: categorySamples.slice(0, 3)
+    });
+  }
+  const semantic = 2.4 + (categorySamples.length >= 2 ? 0.3 : 0);
+  const penalty = group.boilerplateLike ? 0.5 : 0;
+  return {
+    type: 'search_results',
+    selector: group.parentSelector,
+    xpath: group.parentXPath,
+    itemSelector: group.itemSelector,
+    itemXPath: group.itemXPath,
+    itemCount: group.itemCount,
+    fields,
+    sampleRows: group.rows.slice(0, 3).map((row) => ({
+      title: row.title,
+      url: row.href,
+      summary: row.summary,
+      ...(row.category ? { category: row.category } : {})
+    })),
+    reasons: [
+      ...group.reasons,
+      `${group.itemCount} repeated search-result records found`,
+      ...(group.boilerplateLike ? ['Likely weak footer/navigation boilerplate group'] : [])
+    ],
+    confidence: scoreCandidate({ itemCount: group.itemCount, fieldCount: fields.length, semantic, penalty })
+  };
+}
+
+function appendRelativeXPath(itemXPath: string, relativeXPath: string): string {
+  if (!relativeXPath || relativeXPath === '.') return itemXPath;
+  if (relativeXPath.startsWith('.//')) return `${itemXPath}//${relativeXPath.slice(3)}`;
+  if (relativeXPath.startsWith('./')) return `${itemXPath}/${relativeXPath.slice(2)}`;
+  return `${itemXPath}/${relativeXPath.replace(/^\/+/, '')}`;
+}
+
 async function detectForms(page: Page): Promise<RawCandidate[]> {
   const forms = await findSearchInputCandidates(page, 'query');
   return forms
@@ -10003,13 +10615,22 @@ function applyGoalScores(candidates: RecognizedCandidate[], goal: string): Recog
       if (candidate.type === 'link_collection' && !/链接|url|导航|分类|link/i.test(goal)) {
         score -= 0.12;
       }
+      const rawGoalScore = score + layoutRankingBoost(candidate);
       return {
-        ...candidate,
-        goalScore: Number(Math.max(0, Math.min(0.99, score + layoutRankingBoost(candidate))).toFixed(2)),
-        goalReasons: reasons
+        candidate: {
+          ...candidate,
+          goalScore: Number(Math.max(0, Math.min(0.99, rawGoalScore)).toFixed(2)),
+          goalReasons: reasons
+        },
+        rankingScore: rawGoalScore + candidateDataQualityBoost(candidate)
       };
     })
-    .sort((a, b) => (b.goalScore ?? b.confidence) - (a.goalScore ?? a.confidence));
+    .sort((a, b) => b.rankingScore - a.rankingScore)
+    .map((item) => item.candidate);
+}
+
+export function applyGoalScoresForTesting(candidates: RecognizedCandidate[], goal: string): RecognizedCandidate[] {
+  return applyGoalScores(candidates, goal);
 }
 
 async function applyLayoutScores(page: Page, candidates: RecognizedCandidate[]): Promise<RecognizedCandidate[]> {
@@ -10030,7 +10651,7 @@ async function applyLayoutScores(page: Page, candidates: RecognizedCandidate[]):
     type LayoutInfo = RecognizedCandidateLayout;
     const viewportWidth = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
     const viewportHeight = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
-    const bodyHeight = Math.max(1, document.documentElement.scrollHeight || document.body.scrollHeight || viewportHeight);
+    const bodyHeight = Math.max(1, document.documentElement.scrollHeight || document.body?.scrollHeight || viewportHeight);
 
     function evaluateXPath(xpath: string): Element[] {
       if (!xpath) return [];
@@ -10135,7 +10756,8 @@ async function applyLayoutScores(page: Page, candidates: RecognizedCandidate[]):
         .map(text)
         .filter(Boolean)
         .filter((chunk) => chunk.length <= 12).length / Math.max(1, elements.slice(0, 20).filter((element) => text(element)).length);
-      const repeatedRichness = clamp(item.itemCount / 8) * 0.45 + clamp(item.fieldCount / 5) * 0.35 + (item.fieldNames.some((name) => /summary|image|date|title/i.test(name)) ? 0.2 : 0);
+      const hasSemanticLayoutField = item.fieldNames.some((name) => /summary|description|snippet|image|cover|date|time|title|url|href|link|摘要|描述|图片|封面|日期|时间|标题|链接/i.test(name));
+      const repeatedRichness = clamp(item.itemCount / 8) * 0.45 + clamp(item.fieldCount / 5) * 0.35 + (hasSemanticLayoutField ? 0.2 : 0);
       const visualCoverage = clamp(areaRatio * 0.65 + widthRatio * 0.2 + heightRatio * 0.15);
       let mainScore = 0.18;
       mainScore += (1 - centerDistance) * 0.24;
@@ -10166,7 +10788,12 @@ async function applyLayoutScores(page: Page, candidates: RecognizedCandidate[]):
       else if (sidebarPenalty >= 0.34) role = 'sidebar';
       else if (boilerplatePenalty >= 0.34) role = topRatio < 0.2 ? 'header' : 'footer';
 
-      const strongMainContent = repeatedRichness > 0.72 && visualCoverage > 0.45 && centerDistance < 0.32 && widthRatio > 0.45 && boilerplatePenalty < 0.28;
+      const strongMainContent = repeatedRichness > 0.72
+        && boilerplatePenalty < 0.28
+        && (
+          (visualCoverage > 0.45 && centerDistance < 0.32 && widthRatio > 0.45)
+          || (visualCoverage > 0.62 && centerDistance < 0.35 && sidebarPenalty < 0.12)
+        );
       if (strongMainContent) {
         role = 'main';
         mainScore = Math.max(mainScore, 0.72);
@@ -10277,8 +10904,9 @@ function candidatesLikelySameDataset(left: RecognizedCandidate, right: Recognize
 
 function candidateDedupScore(candidate: RecognizedCandidate): number {
   const fieldNames = new Set(candidate.fields.map((field) => field.name));
-  const semanticFields = ['title', 'url', 'image', 'date', 'author', 'likes', 'summary']
-    .filter((name) => fieldNames.has(name)).length;
+  const semanticFields = Array.from(fieldNames)
+    .filter((name) => /^(?:title|url|image|date|author|likes|summary|标题|标题链接|链接|图片|日期|时间|作者|摘要|描述|价格|评分|数量)$|href|link/i.test(name))
+    .length;
   const refinedBonus = candidate.reasons.some((reason) => /Fields refined/i.test(reason)) ? 0.18 : 0;
   const typeBonus = candidate.type === 'repeated_card' ? 0.08 : candidate.type === 'search_results' ? 0.04 : 0;
   const layout = candidate.layout;
@@ -10337,7 +10965,80 @@ function jaccard(left: string[], right: string[]): number {
 }
 
 function candidateRankingScore(candidate: RecognizedCandidate): number {
-  return candidate.goalScore ?? candidate.confidence + layoutRankingBoost(candidate);
+  return (candidate.goalScore ?? candidate.confidence + layoutRankingBoost(candidate)) + candidateDataQualityBoost(candidate);
+}
+
+function candidateDataQualityBoost(candidate: RecognizedCandidate): number {
+  const fields = candidate.fields;
+  const sampleValues = [
+    ...fields.flatMap((field) => field.samples),
+    ...candidate.sampleRows.flatMap((row) => Object.values(row))
+  ].map(normalizeSampleValue).filter(Boolean);
+  const hasUsableTitle = fields.some((field) => /^(标题|title)$/i.test(field.name) && field.samples.some((sample) => !isLabelOnlySample(sample) && normalizeSampleValue(sample).length >= 4));
+  const hasHref = fields.some((field) => field.kind === 'href' && field.samples.some(Boolean));
+  const hasSummary = fields.some((field) => /摘要|描述|summary|description|snippet/i.test(field.name) && field.samples.some((sample) => normalizeSampleValue(sample).length >= 30));
+  const nonEmptyCells = candidate.sampleRows.flatMap((row) => Object.values(row)).filter((value) => normalizeSampleValue(value)).length;
+  const totalCells = Math.max(1, candidate.sampleRows.length * Math.max(1, fields.length));
+  const fillRate = nonEmptyCells / totalCells;
+  const firstRowValues = Object.values(candidate.sampleRows[0] ?? {});
+  const firstRowFillRate = firstRowValues.filter((value) => normalizeSampleValue(value)).length / Math.max(1, fields.length);
+  const labelRatio = sampleValues.length
+    ? sampleValues.filter(isLabelOnlySample).length / sampleValues.length
+    : 1;
+  const smartFullColRate = protectedSmartFullColRate(candidate);
+  let boost = 0;
+  if (hasUsableTitle && hasHref) boost += 0.12;
+  if (hasSummary) boost += 0.06;
+  if (fields.length >= 3) boost += 0.04;
+  if (fillRate >= 0.7) boost += 0.03;
+  if (smartFullColRate !== undefined) boost += Math.max(-0.08, Math.min(0.08, (smartFullColRate - 0.55) * 0.2));
+  if (fields.some((field) => /reference|citation|referencetext|cs1format|脚注|引用/i.test(field.name))) boost -= 0.14;
+  if (candidateLooksLikeTaxonomyFilterList(candidate)) boost -= 0.18;
+  if (candidateLooksLikeFooterOrNavigation(candidate)) boost -= 0.2;
+  if (fields.some((field) => field.name.length > 80)) boost -= 0.08;
+  if (firstRowFillRate < 0.35 && fields.length >= 6) boost -= 0.08;
+  if (fields.length <= 2 && !hasHref) boost -= 0.18;
+  if (labelRatio >= 0.55 && !hasHref) boost -= 0.16;
+  if (candidate.type === 'repeated_card' && fields.length <= 2 && candidate.itemCount >= 40 && !hasHref) boost -= 0.08;
+  return Math.max(-0.35, Math.min(0.25, boost));
+}
+
+function candidateLooksLikeFooterOrNavigation(candidate: RecognizedCandidate): boolean {
+  if (candidate.layout && ['footer', 'header', 'nav', 'ad'].includes(candidate.layout.role)) return true;
+  const values = [
+    ...candidate.sampleRows.flatMap((row) => Object.values(row)),
+    ...candidate.fields.flatMap((field) => field.samples)
+  ].map(normalizeSampleValue).filter(Boolean);
+  if (!values.length) return false;
+  const navTerms = values.filter((value) => /^(about|blog|home|login|sign in|sign up|privacy|terms|contact|careers|community|guides|tutorials|glossary|learn|tools|web technologies|html|css|javascript|首页|登录|注册|关于|博客|隐私|条款|联系)$/.test(value)).length;
+  const shortRate = values.filter((value) => value.length <= 24).length / values.length;
+  return navTerms / values.length >= 0.45 && shortRate >= 0.75;
+}
+
+function candidateLooksLikeTaxonomyFilterList(candidate: RecognizedCandidate): boolean {
+  if (candidate.fields.length > 2 || candidate.itemCount < 8) return false;
+  const hrefs = candidate.fields
+    .filter((field) => field.kind === 'href')
+    .flatMap((field) => field.samples)
+    .map(normalizeSampleValue)
+    .filter(Boolean);
+  if (hrefs.length < 2) return false;
+  return hrefs.every((value) => /(?:[?&](?:type|category|tag|topic|filter|industry|batch)=|\/(?:type|category|categories|tag|tags|topics?|filters?|industries|batches)\b)/i.test(value));
+}
+
+function protectedSmartFullColRate(candidate: RecognizedCandidate): number | undefined {
+  const reason = candidate.reasons.find((item) => /fullColRate=/i.test(item));
+  const value = reason?.match(/fullColRate=([0-9.]+)/i)?.[1];
+  if (!value) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function isLabelOnlySample(value: string): boolean {
+  const normalized = normalizeSampleValue(value).replace(/[:：]+$/g, '');
+  if (!normalized) return true;
+  return /^(authors?|submitted|comments?|abstract|capital|votes?|answers?|views?|asked|modified|updated|tags?|关键词|作者|提交|评论|摘要|首都)$/i.test(normalized)
+    || (normalized.length <= 24 && /[:：]$/.test(String(value).trim()));
 }
 
 function layoutRankingBoost(candidate: Pick<RecognizedCandidate, 'layout' | 'type'>): number {
