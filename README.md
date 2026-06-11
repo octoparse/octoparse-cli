@@ -99,12 +99,12 @@ supported local platform or cloud extraction there.
 Create a local task from a URL:
 
 ```bash
-octoparse recognize 'https://example.com/list' --auto --output task.json
-octoparse recognize 'https://example.com/search' --manual --query keyword --save-session --output task.json
+octoparse detect 'https://example.com/list' --auto --output task.json
+octoparse detect 'https://example.com/search' --manual --query keyword --save-session --output task.json
 octoparse run-url 'https://example.com/list' --auto --max-rows 20 --jsonl
 ```
 
-`recognize` uses the protected SmartProxy recognizer by default and requires
+`detect` uses the protected SmartProxy detector by default and requires
 configured credentials. Manual mode can save a cookies-only browser session for
 later local runs. Agent mode is available through `--agent --agent-command`;
 that command executes a local shell command and should only point to a trusted
@@ -115,7 +115,7 @@ run `octoparse capabilities --json` first and follow
 `machineContract.recipes.createTaskFromUrlWithAgent`. That recipe tells the
 agent to prepare deterministic context, write a plan, preview it, apply it, and
 validate the generated task instead of asking the user to explain internal
-recognize flags or hand-write JSON. Agent workflows generate a full-page
+detect flags or hand-write JSON. Agent workflows generate a full-page
 screenshot by default and store it in `context.screenshot`; pass the user's
 natural-language request with `--goal` so the agent can judge candidates against
 both the visual page and the stated intent. The context also includes
@@ -168,8 +168,8 @@ octoparse task list --keyword news --page 2 --page-size 10
 octoparse task inspect <taskId>
 
 # Task creation
-octoparse recognize 'https://example.com/list' --auto --output task.json
-octoparse recognize 'https://example.com/search' --manual --query keyword --save-session --output task.json
+octoparse detect 'https://example.com/list' --auto --output task.json
+octoparse detect 'https://example.com/search' --manual --query keyword --save-session --output task.json
 octoparse run-url 'https://example.com/list' --auto --max-rows 20 --jsonl
 
 # Local extraction

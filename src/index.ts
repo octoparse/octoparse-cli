@@ -27,7 +27,7 @@ import { dataExport, dataHistory } from './commands/data.js';
 import { browserDoctorCommand, doctorCommand } from './commands/doctor.js';
 import { hiddenEnvCommand } from './commands/env.js';
 import { localCommand } from './commands/local.js';
-import { recognizeCommand, runUrlCommand } from './commands/recognize.js';
+import { detectCommand, detectUrlCommand } from './commands/detect.js';
 import { runTask } from './commands/run.js';
 import { runsCleanup, runsControl, runsData, runsList, runsLogs, runsStatus } from './commands/runs.js';
 import { taskInspect, taskList } from './commands/task.js';
@@ -146,11 +146,11 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (command === 'run-url') {
-    return runUrlCommand(subcommand, rest);
+    return detectUrlCommand(subcommand, rest);
   }
 
-  if (command === 'recognize') {
-    return recognizeCommand([subcommand ?? '', ...rest].filter(Boolean));
+  if (command === 'detect') {
+    return detectCommand([subcommand ?? '', ...rest].filter(Boolean));
   }
 
   if (command === 'runs' && subcommand === 'list') {
@@ -196,13 +196,13 @@ async function main(argv: string[]): Promise<number> {
 
 function requiresAuthentication(argv: string[]): boolean {
   const [command] = argv;
-  if (command === 'recognize' && (hasFlagWithValue(argv, '--preview-agent-plan') || hasFlagWithValue(argv, '--apply-agent-plan'))) {
+  if (command === 'detect' && (hasFlagWithValue(argv, '--preview-agent-plan') || hasFlagWithValue(argv, '--apply-agent-plan'))) {
     return false;
   }
   return command === 'task'
     || command === 'run'
     || command === 'run-url'
-    || command === 'recognize'
+    || command === 'detect'
     || command === 'cloud'
     || command === 'local'
     || command === 'data'

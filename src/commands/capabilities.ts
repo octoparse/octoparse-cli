@@ -45,7 +45,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
         supported: false,
         reason: localChromePlatformNote(),
         errorCode: LINUX_ARM64_UNSUPPORTED_CODE,
-        affectedCommands: ['doctor without --chrome-path', 'browser doctor without --chrome-path', 'recognize', 'run']
+        affectedCommands: ['doctor without --chrome-path', 'browser doctor without --chrome-path', 'detect', 'run']
       }
     },
     machineContract: {
@@ -60,7 +60,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
           preferredRecipe: 'machineContract.recipes.createTaskFromUrlWithAgent',
           doNotFallbackToHandwrittenTaskJson: true,
           doNotAskUserForInternalFlags: true,
-          routingRule: 'If the user asks an LLM/agent to create, build, generate, or validate a scraping/extraction task from a URL using octoparse, call capabilities --json, then run the preferred recipe. Use manual recognize only when the user explicitly asks to choose elements themselves or when login/verification requires user action.'
+          routingRule: 'If the user asks an LLM/agent to create, build, generate, or validate a scraping/extraction task from a URL using octoparse, call capabilities --json, then run the preferred recipe. Use manual detect only when the user explicitly asks to choose elements themselves or when login/verification requires user action.'
         },
         intentAliases: [
           'create scraping task from url',
@@ -115,11 +115,11 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
           'LOCAL_RUN_CONTROL_FAILED',
           'RUN_CONTROL_FAILED',
           'LOGIN_SESSION_REQUIRED',
-          'RECOGNIZE_FAILED',
-          'RECOGNIZE_SELECT_REQUIRED',
-          'RECOGNIZE_OUTPUT_REQUIRED',
-          'RECOGNIZE_CANDIDATE_NOT_FOUND',
-          'RECOGNIZE_CANDIDATE_UNSUPPORTED',
+          'DETECT_FAILED',
+          'DETECT_SELECT_REQUIRED',
+          'DETECT_OUTPUT_REQUIRED',
+          'DETECT_CANDIDATE_NOT_FOUND',
+          'DETECT_CANDIDATE_UNSUPPORTED',
           LINUX_ARM64_UNSUPPORTED_CODE,
           'CHROME_LAUNCH_FAILED',
           'RUN_NOT_FOUND',
@@ -157,24 +157,24 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
       recipes: {
         createTaskFromUrlWithAgent: {
           intent: 'When the user asks an LLM/agent to create a scraping or extraction task from a URL with octoparse, use this workflow unless the user explicitly asks for manual selection.',
-          summary: 'Use protected SmartProxy recognition to emit deterministic candidates, write an agent plan, preview it, apply it, then validate the task.',
+          summary: 'Use protected SmartProxy detection to emit deterministic candidates, write an agent plan, preview it, apply it, then validate the task.',
           agentShouldChooseThisRecipeWhen: [
             'The user asks the assistant/agent to create, build, generate, or validate a task from a URL.',
             'The user mentions octoparse, Octoparse CLI, scraping task, extraction task, or local task file.',
             'The user provides a URL plus a target goal such as search results, list data, detail pages, titles, prices, articles, or links.'
           ],
           searchWorkflow: {
-            trigger: 'If the user asks to search/query/find a keyword on an entry page, pass --query <keyword> or --input <name=value> to recognize before preparing/applying a task.',
+            trigger: 'If the user asks to search/query/find a keyword on an entry page, pass --query <keyword> or --input <name=value> to detect before preparing/applying a task.',
             examples: [
-              'octoparse recognize https://www.google.com/ --auto --query "Bruce Lee" --output task.json',
-              'octoparse recognize https://www.google.com/ --prepare-agent --query "Bruce Lee" --json --goal "Search Bruce Lee and extract result titles and links" --output context.json'
+              'octoparse detect https://www.google.com/ --auto --query "Bruce Lee" --output task.json',
+              'octoparse detect https://www.google.com/ --prepare-agent --query "Bruce Lee" --json --goal "Search Bruce Lee and extract result titles and links" --output context.json'
             ],
-            taskBehavior: 'Generated tasks preserve the recognized search input XPath and submit action before extracting the result page.'
+            taskBehavior: 'Generated tasks preserve the detected search input XPath and submit action before extracting the result page.'
           },
           loginWorkflow: {
-            trigger: 'If recognize returns LOGIN_SESSION_REQUIRED or detects a login/captcha/paywall page, ask the user to run manual recognize, complete login in the browser, and save a session.',
-            command: 'octoparse recognize <url> --manual --query <keyword> --save-session --session-name <name> --output <task.json>',
-            note: 'The generated task stores both recognition.session and recognition.search so local runs inject cookies before opening the search entry page.'
+            trigger: 'If detect returns LOGIN_SESSION_REQUIRED or detects a login/captcha/paywall page, ask the user to run manual detect, complete login in the browser, and save a session.',
+            command: 'octoparse detect <url> --manual --query <keyword> --save-session --session-name <name> --output <task.json>',
+            note: 'The generated task stores both detection.session and detection.search so local runs inject cookies before opening the search entry page.'
           },
           agentResponsibilities: [
             'Do not ask the user to explain --prepare-agent, --preview-agent-plan, or --apply-agent-plan.',
@@ -182,19 +182,19 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
             'Pass the user natural-language task description through --goal so context.goal captures the real intent.',
             'Use context.decisionPolicy and context.screenshot.path as mandatory judging inputs for candidates, layout, sidebars, ads, and pagination.',
             'Use context.resultValidationPolicy after running data: isolated missing fields in ads/topic cards/heterogeneous rows are normal partial data and must not trigger task recreation loops.',
-            'If the user intent includes search/query/keyword, extract the keyword and pass it through --query or --input instead of recognizing the blank search homepage.',
+            'If the user intent includes search/query/keyword, extract the keyword and pass it through --query or --input instead of detecting the blank search homepage.',
             'Use the URL and optional user goal as the task intent, then inspect candidates and sample rows before choosing fields.',
             'Show the user the generated task file path and validation result after applying the plan.'
           ],
           preferredWorkflow: [
             {
-              step: 'recognize',
-              command: 'octoparse recognize <url> --prepare-agent --json --goal <user task description> --output <context.json>',
+              step: 'detect',
+              command: 'octoparse detect <url> --prepare-agent --json --goal <user task description> --output <context.json>',
               output: 'agent context JSON containing recommendedCandidateId, decisionPolicy, resultValidationPolicy, candidates, fields, sampleRows, XPath, diagnostics, pagination, goal, and full-page screenshot metadata. A full-page screenshot is generated by default for agent workflows.'
             },
             {
               step: 'writePlan',
-              action: 'Read context.json, choose the primary candidate, select/rename fields, and write plan.json using schema octopus.recognize.agent-plan.v1.',
+              action: 'Read context.json, choose the primary candidate, select/rename fields, and write plan.json using schema octopus.detect.agent-plan.v1.',
               guidance: [
                 'Follow context.decisionPolicy: use context.goal and context.screenshot.path together with candidate bounding boxes, sampleRows, fields, pagination, and diagnostics; do not rely on text samples alone.',
                 'Prefer context.recommendedCandidateId unless diagnostics/sampleRows show it is sidebar, navigation, ads, or wrong for the user goal.',
@@ -203,7 +203,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
                 'Set selection.pagination to the candidate pagination, null/false to disable pagination, or omit to keep the candidate default.'
               ],
               minimalPlan: {
-                schemaVersion: 'octopus.recognize.agent-plan.v1',
+                schemaVersion: 'octopus.detect.agent-plan.v1',
                 contextFile: '<context.json>',
                 selection: {
                   candidateId: '<candidate id>',
@@ -214,12 +214,12 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
             },
             {
               step: 'preview',
-              command: 'octoparse recognize --preview-agent-plan <plan.json> --agent-context <context.json> --json',
+              command: 'octoparse detect --preview-agent-plan <plan.json> --agent-context <context.json> --json',
               requiredAction: 'If ok=false or data.pass=false, revise plan fields before applying unless the user explicitly accepts risk.'
             },
             {
               step: 'apply',
-              command: 'octoparse recognize --apply-agent-plan <plan.json> --agent-context <context.json> --output <task.json> --json',
+              command: 'octoparse detect --apply-agent-plan <plan.json> --agent-context <context.json> --output <task.json> --json',
               output: 'task JSON file'
             },
             {
@@ -234,13 +234,13 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
             }
           ],
           oneShotWrapper: {
-            command: 'octoparse recognize <url> --agent --agent-command <cmd> --output <task.json>',
+            command: 'octoparse detect <url> --agent --agent-command <cmd> --output <task.json>',
             note: 'Use this only when a trusted agent runner command is available. --agent-command executes a local shell command. The runner receives OCTOPARSE_AGENT_CONTEXT and must write OCTOPARSE_AGENT_PLAN.'
           },
           nonGoals: [
             'Do not ask the user to hand-write plan.json.',
             'Do not directly write full task JSON unless applying a previewed plan through the CLI.',
-            'Do not use --legacy-recognizer unless debugging the old heuristic detector.'
+            'Do not use --legacy-detector unless debugging the old heuristic detector.'
           ]
         }
       }
@@ -257,7 +257,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
       { command: 'env prod/online/status', risk: 'medium', json: true, hidden: true, authRequired: false },
       { command: 'task list', risk: 'low', json: true, authRequired: true },
       { command: 'task inspect/validate', risk: 'low', json: true, authRequired: true },
-      { command: 'recognize <url>', risk: 'medium', json: true, authRequired: true, agentWorkflow: 'machineContract.recipes.createTaskFromUrlWithAgent' },
+      { command: 'detect <url>', risk: 'medium', json: true, authRequired: true, agentWorkflow: 'machineContract.recipes.createTaskFromUrlWithAgent' },
       { command: 'run <taskId>', risk: 'medium', json: true, jsonl: true, authRequired: true },
       { command: 'cloud start/stop <taskId>', risk: 'medium', json: true, authRequired: true },
       { command: 'cloud status/history <taskId>', risk: 'low', json: true, authRequired: true },

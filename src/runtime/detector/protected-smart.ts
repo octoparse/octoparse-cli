@@ -3,7 +3,7 @@ import type { Page } from 'puppeteer-core';
 import { fetchClientServerKey, fetchClientSource } from '../api-client.js';
 import { resolveAuth } from '../auth.js';
 import type { AuthCredential } from '../auth.js';
-import type { RecognizedCandidate, RecognizedField, RecognizedPagination } from './types.js';
+import type { DetectedCandidate, DetectedField, DetectedPagination } from './types.js';
 
 const require = createRequire(import.meta.url);
 
@@ -65,17 +65,17 @@ interface ProtectedSourceBundle {
   dictionarySource: string;
 }
 
-interface SmartRecognizedField extends RecognizedField {
+interface SmartDetectedField extends DetectedField {
   sourceIndex: number;
 }
 
-type SmartFieldOperation = NonNullable<RecognizedField['operations']>[number];
+type SmartFieldOperation = NonNullable<DetectedField['operations']>[number];
 
 export function protectedSmartRequested(): boolean {
-  return process.env.OCTOPARSE_LEGACY_RECOGNIZER !== '1';
+  return process.env.OCTOPARSE_LEGACY_DETECTOR !== '1';
 }
 
-export async function detectProtectedSmartCandidates(page: Page, options: { maxCandidates: number; baseUrl?: string }): Promise<RecognizedCandidate[]> {
+export async function detectProtectedSmartCandidates(page: Page, options: { maxCandidates: number; baseUrl?: string }): Promise<DetectedCandidate[]> {
   const bundle = await loadProtectedSmartSources(options.baseUrl);
   const result = await runProtectedSmartInPage(page, bundle);
   return protectedSmartResultToCandidates(result, options.maxCandidates);
@@ -121,7 +121,7 @@ function protectModuleLoadErrorMessage(error: unknown): string {
     return [
       `Protected Smart requires a native @octopus/octopus-protect binding for ${platform}, but it is missing from this installation.`,
       'Reinstall a package version that bundles the matching native binding.',
-      'Temporary workaround: rerun recognize with --legacy-recognizer.'
+      'Temporary workaround: rerun detect with --legacy-detector.'
     ].join(' ');
   }
   return `Protected Smart native module failed to load on ${platform}: ${message}`;
@@ -210,7 +210,7 @@ async function runProtectedSmartInPage(page: Page, bundle: ProtectedSourceBundle
   }, bundle);
 }
 
-function protectedSmartResultToCandidates(result: SmartRawResult, maxCandidates: number): RecognizedCandidate[] {
+function protectedSmartResultToCandidates(result: SmartRawResult, maxCandidates: number): DetectedCandidate[] {
   const lists = (result.List ?? [])
     .filter((item) => item.type === 3 && item.element?.xpath && item.element.scheme?.length)
     .sort((a, b) => (b.sort ?? 0) - (a.sort ?? 0))
@@ -218,14 +218,14 @@ function protectedSmartResultToCandidates(result: SmartRawResult, maxCandidates:
   return lists.map((item, index) => {
     const element = item.element as SmartListResult;
     const rawSmartFields = (element.scheme ?? [])
-      .map((field, fieldIndex) => smartFieldToRecognizedField(element, field, fieldIndex))
-      .filter((field): field is SmartRecognizedField => Boolean(field));
+      .map((field, fieldIndex) => smartFieldToDetectedField(element, field, fieldIndex))
+      .filter((field): field is SmartDetectedField => Boolean(field));
     const preliminaryFields = postProcessSmartFields(rawSmartFields);
     const sampleRowIndices = selectSmartSampleRowIndices(preliminaryFields, element.data ?? []);
     const smartFields = postProcessSmartFields(applySmartSampleRows(preliminaryFields, element.data ?? [], sampleRowIndices));
     const fields = smartFields.map(stripSmartFieldMetadata);
     const sampleRows = buildSampleRows(smartFields, element.data ?? [], sampleRowIndices);
-    const pagination = smartPaginationToRecognized(item.page ?? result.Page);
+    const pagination = smartPaginationToDetected(item.page ?? result.Page);
     return {
       id: `protected_smart_${index + 1}`,
       type: fields.some((field) => field.kind === 'href') ? 'search_results' : 'repeated_card',
@@ -243,15 +243,15 @@ function protectedSmartResultToCandidates(result: SmartRawResult, maxCandidates:
         `fullColRate=${Number(element.fullColRate ?? 0).toFixed(2)}`
       ],
       ...(pagination ? { pagination } : {})
-    } satisfies RecognizedCandidate;
+    } satisfies DetectedCandidate;
   }).filter((candidate) => candidate.fields.length && candidate.itemCount > 0);
 }
 
-export function protectedSmartResultToCandidatesForTesting(result: SmartRawResult, maxCandidates: number): RecognizedCandidate[] {
+export function protectedSmartResultToCandidatesForTesting(result: SmartRawResult, maxCandidates: number): DetectedCandidate[] {
   return protectedSmartResultToCandidates(result, maxCandidates);
 }
 
-function smartFieldToRecognizedField(list: SmartListResult, field: SmartExtractItem, index: number): SmartRecognizedField | undefined {
+function smartFieldToDetectedField(list: SmartListResult, field: SmartExtractItem, index: number): SmartDetectedField | undefined {
   const relativeXPath = field.RelativeXPath || '';
   const xpath = field.AbsXPath || `${list.xpath || ''}${relativeXPath}`;
   if (!xpath) return undefined;
@@ -269,7 +269,7 @@ function smartFieldToRecognizedField(list: SmartListResult, field: SmartExtractI
   };
 }
 
-function postProcessSmartFields(fields: SmartRecognizedField[]): SmartRecognizedField[] {
+function postProcessSmartFields(fields: SmartDetectedField[]): SmartDetectedField[] {
   const useful = fields
     .filter((field) => field.kind !== 'href' || field.samples.some(Boolean))
     .filter((field, index, all) => !isNoisySmartField(field, index, all))
@@ -287,12 +287,12 @@ function postProcessSmartFields(fields: SmartRecognizedField[]): SmartRecognized
   return renamed.filter((_, index) => selected.has(index));
 }
 
-function stripSmartFieldMetadata(field: SmartRecognizedField): RecognizedField {
-  const { sourceIndex: _sourceIndex, ...recognized } = field;
-  return recognized;
+function stripSmartFieldMetadata(field: SmartDetectedField): DetectedField {
+  const { sourceIndex: _sourceIndex, ...detected } = field;
+  return detected;
 }
 
-function collapseVacatedSmartFieldSuffixes(fields: SmartRecognizedField[]): SmartRecognizedField[] {
+function collapseVacatedSmartFieldSuffixes(fields: SmartDetectedField[]): SmartDetectedField[] {
   const existing = new Set(fields.map((field) => field.name));
   const used = new Set<string>();
   return fields.map((field) => {
@@ -303,7 +303,7 @@ function collapseVacatedSmartFieldSuffixes(fields: SmartRecognizedField[]): Smar
   });
 }
 
-function isNoisySmartField(field: SmartRecognizedField, index: number, all: SmartRecognizedField[]): boolean {
+function isNoisySmartField(field: SmartDetectedField, index: number, all: SmartDetectedField[]): boolean {
   if (!field.samples.length) return true;
   if (isSmartFilterOrAdField(field, all)) return true;
   if (field.kind === 'href' && field.samples.every(isActionHref)) return true;
@@ -322,7 +322,7 @@ function isNoisySmartField(field: SmartRecognizedField, index: number, all: Smar
   return false;
 }
 
-function isSmartFilterOrAdField(field: SmartRecognizedField, all: SmartRecognizedField[]): boolean {
+function isSmartFilterOrAdField(field: SmartDetectedField, all: SmartDetectedField[]): boolean {
   if (field.kind !== 'text') return false;
   const identity = `${field.name} ${field.relativeXPath} ${field.samples.join(' ')}`;
   const hasRealTitle = all.some((item) => item !== field && item.kind === 'text' && item.samples.some(isCompactTitleText));
@@ -334,7 +334,7 @@ function isSmartFilterOrAdField(field: SmartRecognizedField, all: SmartRecognize
   return hasRealTitle && (filterName || emojiCount >= 3 && /(sort|clear|results?|salary|benefits)/i.test(identity) || sparseAdSamples && field.kind !== 'text');
 }
 
-function dedupeSmartFields(fields: SmartRecognizedField[]): SmartRecognizedField[] {
+function dedupeSmartFields(fields: SmartDetectedField[]): SmartDetectedField[] {
   const seen = new Set<string>();
   return fields.filter((field) => {
     const sampleKey = normalizeSamples(field.samples).join('|');
@@ -347,7 +347,7 @@ function dedupeSmartFields(fields: SmartRecognizedField[]): SmartRecognizedField
   });
 }
 
-function renameSmartFields(fields: SmartRecognizedField[]): SmartRecognizedField[] {
+function renameSmartFields(fields: SmartDetectedField[]): SmartDetectedField[] {
   const hasTitle = fields.some((field) => /^(标题|title)$/i.test(field.name));
   const titlePairs = new Set<string>();
   if (!hasTitle) {
@@ -373,7 +373,7 @@ function renameSmartFields(fields: SmartRecognizedField[]): SmartRecognizedField
   });
 }
 
-function suggestedSmartFieldName(field: SmartRecognizedField, fields: SmartRecognizedField[]): string | undefined {
+function suggestedSmartFieldName(field: SmartDetectedField, fields: SmartDetectedField[]): string | undefined {
   const generatedName = isGeneratedSmartName(field.name);
   const generatedStructure = hasGeneratedSmartStructure(field);
   const structuralRenameSignal = hasKnownSmartStructuralRenameSignal(field);
@@ -460,11 +460,11 @@ function suggestedSmartFieldName(field: SmartRecognizedField, fields: SmartRecog
   return undefined;
 }
 
-function finalizeSmartFields(fields: SmartRecognizedField[]): SmartRecognizedField[] {
+function finalizeSmartFields(fields: SmartDetectedField[]): SmartDetectedField[] {
   return fields.map(finalizeSmartField);
 }
 
-function finalizeSmartField(field: SmartRecognizedField): SmartRecognizedField {
+function finalizeSmartField(field: SmartDetectedField): SmartDetectedField {
   if (field.kind !== 'text') return field;
   let operations = [...(field.operations ?? [])];
   if (/^作者\d*$/i.test(field.name) && field.samples.some(hasLeadingAuthorPrefix)) {
@@ -495,7 +495,7 @@ function applySmartFieldOperations(value: string, operations?: SmartFieldOperati
   return output;
 }
 
-function compactRepeatedSmartFields(fields: SmartRecognizedField[]): SmartRecognizedField[] {
+function compactRepeatedSmartFields(fields: SmartDetectedField[]): SmartDetectedField[] {
   const counts = new Map<string, number>();
   const hasTitleHref = fields.some((field) => field.kind === 'href' && smartFieldFamily(field) === 'title_href');
   return fields.filter((field) => {
@@ -518,7 +518,7 @@ function compactRepeatedSmartFields(fields: SmartRecognizedField[]): SmartRecogn
   });
 }
 
-function smartFieldFamily(field: SmartRecognizedField): string {
+function smartFieldFamily(field: SmartDetectedField): string {
   const name = field.name.replace(/\d+$/g, '').replace(/[_\s-]+/g, '').toLowerCase();
   if (field.kind === 'href' && /^(标题链接|titlelink|url)$/.test(name)) return 'title_href';
   if (/^标题|^title/.test(name)) return 'title';
@@ -536,7 +536,7 @@ function smartFieldFamily(field: SmartRecognizedField): string {
   return `${field.kind}:${name}`;
 }
 
-function isAuxiliarySmartHref(field: SmartRecognizedField): boolean {
+function isAuxiliarySmartHref(field: SmartDetectedField): boolean {
   const identity = `${field.name} ${field.relativeXPath} ${field.samples.join(' ')}`;
   return /\/(?:pdf|ps|format)\//i.test(identity)
     || /[?&]edition=ia:/i.test(identity)
@@ -544,7 +544,7 @@ function isAuxiliarySmartHref(field: SmartRecognizedField): boolean {
     || /web\.archive\.org|ghostarchive\.org|\/caches?\b/i.test(identity);
 }
 
-function hasCleanerAuthorField(field: SmartRecognizedField, fields: SmartRecognizedField[]): boolean {
+function hasCleanerAuthorField(field: SmartDetectedField, fields: SmartDetectedField[]): boolean {
   const values = field.samples.map(normalizeAuthorSample).filter(Boolean);
   if (!values.length) return false;
   return fields.some((item) => item !== field && item.kind === 'text' && smartFieldFamily(item) === 'author' && item.samples.some((sample) => {
@@ -553,7 +553,7 @@ function hasCleanerAuthorField(field: SmartRecognizedField, fields: SmartRecogni
   }));
 }
 
-function hasCleanerSourceField(field: SmartRecognizedField, fields: SmartRecognizedField[]): boolean {
+function hasCleanerSourceField(field: SmartDetectedField, fields: SmartDetectedField[]): boolean {
   const values = field.samples.map(normalizeSourceSample).filter(Boolean);
   if (!values.length || !field.samples.some((sample) => /^\(.+\)$/.test(normalizeSample(sample)))) return false;
   return fields.some((item) => item !== field && item.kind === 'text' && smartFieldFamily(item) === 'source' && item.samples.some((sample) => {
@@ -562,15 +562,15 @@ function hasCleanerSourceField(field: SmartRecognizedField, fields: SmartRecogni
   }));
 }
 
-function hasSmartSemanticRenameSignal(field: SmartRecognizedField): boolean {
+function hasSmartSemanticRenameSignal(field: SmartDetectedField): boolean {
   return /^(?:title|updatedat|createdat|publishedat|publishdate|postedat|listingposted|date|time|timestamp|desc|details|description|summary|snippet|synopsis|abstract|searchsnippetsynopsis|citation(?:part)?|journal|publication|publisher|maintainer|comments?|notes?|remarks?|hastextgreydark|downloads?|downloadcount|stars?|stars?_?today|rating|ratings?|ratingcount|reviewcount|score|author|username|user|language|source(?:_?链接)?|domain(?:_?链接)?|site(?:_?链接)?|price|salary|stock|instock|availability|version|quicklinks(?:_?链接)?|homepage(?:_?链接)?|repository(?:_?链接)?|documentation(?:_?链接)?|image|img|cover|counter|count|activeinstalls?|testedwith|location|city|region|category|industry|batch|link|link_链接|标题_?链接)$/i.test(field.name.trim());
 }
 
-function hasKnownSmartStructuralRenameSignal(field: SmartRecognizedField): boolean {
+function hasKnownSmartStructuralRenameSignal(field: SmartDetectedField): boolean {
   return /s-post-summary--stats-item|s-post-summary--content-excerpt|s-user-card|flex--item|todo-no-class-here|ratingsbyline|resultdetails|bookauthor|searchresultitemcta/i.test(`${field.name} ${field.relativeXPath}`);
 }
 
-function stackOverflowStatFieldName(field: SmartRecognizedField, fields: SmartRecognizedField[]): string | undefined {
+function stackOverflowStatFieldName(field: SmartDetectedField, fields: SmartDetectedField[]): string | undefined {
   if (!isStackOverflowStatNumberField(field)) return undefined;
   if (/s-post-summary--stats-item__emphasized/i.test(field.relativeXPath || '')) return '票数';
   const statNumbers = fields
@@ -586,7 +586,7 @@ function stackOverflowStatFieldName(field: SmartRecognizedField, fields: SmartRe
   return '数量';
 }
 
-function isStackOverflowStatNumberField(field: SmartRecognizedField): boolean {
+function isStackOverflowStatNumberField(field: SmartDetectedField): boolean {
   const structural = `${field.name} ${field.relativeXPath}`;
   return field.kind === 'text'
     && /s-post-summary--stats-item/i.test(structural)
@@ -595,12 +595,12 @@ function isStackOverflowStatNumberField(field: SmartRecognizedField): boolean {
     && field.samples.every(isCompactCountText);
 }
 
-function preservesDistinctSmartStructure(field: SmartRecognizedField): boolean {
+function preservesDistinctSmartStructure(field: SmartDetectedField): boolean {
   return isStackOverflowStatNumberField(field)
     || /resultdetails|ratingsbyline/i.test(`${field.name} ${field.relativeXPath}`);
 }
 
-function isStackOverflowReputationField(field: SmartRecognizedField, fields: SmartRecognizedField[]): boolean {
+function isStackOverflowReputationField(field: SmartDetectedField, fields: SmartDetectedField[]): boolean {
   const structural = `${field.name} ${field.relativeXPath}`;
   return field.kind === 'text'
     && /todo-no-class-here/i.test(structural)
@@ -609,14 +609,14 @@ function isStackOverflowReputationField(field: SmartRecognizedField, fields: Sma
     && fields.some((item) => item.kind === 'href' && (/s-user-card/i.test(item.relativeXPath || '') || samplesMatchAuthorProfileHref(item.samples)));
 }
 
-function isUserCardDisplayNameField(field: SmartRecognizedField, fields: SmartRecognizedField[]): boolean {
+function isUserCardDisplayNameField(field: SmartDetectedField, fields: SmartDetectedField[]): boolean {
   const structural = `${field.name} ${field.relativeXPath}`;
   if (!/flex--item|s-user-card/i.test(structural)) return false;
   if (field.samples.length === 0 || field.samples.some((sample) => !sample.trim() || sample.length > 80)) return false;
   return fields.some((item) => item.kind === 'href' && (/s-user-card/i.test(item.relativeXPath || '') || samplesMatchAuthorProfileHref(item.samples)));
 }
 
-function hasSmartSampleRenameSignal(field: SmartRecognizedField): boolean {
+function hasSmartSampleRenameSignal(field: SmartDetectedField): boolean {
   if (field.kind !== 'text') return false;
   return field.samples.every(isLargeNumericText)
     || field.samples.every(isRecordIdentifierText)
@@ -634,23 +634,23 @@ function hasSmartSampleRenameSignal(field: SmartRecognizedField): boolean {
     || isLikelyCompanyField(field);
 }
 
-function smartFieldHasTagSignal(field: SmartRecognizedField): boolean {
+function smartFieldHasTagSignal(field: SmartDetectedField): boolean {
   return /tag|keyword|topic|subject|标签|关键词/i.test(`${field.name} ${field.relativeXPath}`)
     || field.samples.some(isTagHref)
     || field.samples.some(isRemoteOkFacetHref);
 }
 
-function smartFieldHasTypeSignal(field: SmartRecognizedField): boolean {
+function smartFieldHasTypeSignal(field: SmartDetectedField): boolean {
   return /type|category|industry|batch|类型|类别|行业|批次/i.test(`${field.name} ${field.relativeXPath}`)
     || field.samples.some(isTypeHref);
 }
 
-function smartFieldHasLocationSignal(field: SmartRecognizedField): boolean {
+function smartFieldHasLocationSignal(field: SmartDetectedField): boolean {
   return /location|city|region|country|位置|地点|城市|地区|国家/i.test(`${field.name} ${field.relativeXPath}`)
     || field.samples.some(isLocationHref);
 }
 
-function smartRelatedLinkName(field: SmartRecognizedField): string | undefined {
+function smartRelatedLinkName(field: SmartDetectedField): string | undefined {
   if (field.kind !== 'href' || !field.samples.length) return undefined;
   const identity = `${field.name} ${field.relativeXPath}`;
   const quickLinkLike = /quicklinks?|homepage|documentation|repository|repo|related|external/i.test(identity);
@@ -666,12 +666,12 @@ function smartRelatedLinkName(field: SmartRecognizedField): string | undefined {
   return undefined;
 }
 
-function matchingSmartHref(field: SmartRecognizedField, fields: SmartRecognizedField[]): SmartRecognizedField | undefined {
+function matchingSmartHref(field: SmartDetectedField, fields: SmartDetectedField[]): SmartDetectedField | undefined {
   if (field.kind === 'href') return undefined;
   return fields.find((item) => item !== field && item.kind === 'href' && item.relativeXPath === field.relativeXPath);
 }
 
-function containingSmartHref(field: SmartRecognizedField, fields: SmartRecognizedField[]): SmartRecognizedField | undefined {
+function containingSmartHref(field: SmartDetectedField, fields: SmartDetectedField[]): SmartDetectedField | undefined {
   if (field.kind === 'href') return undefined;
   const relative = normalizeSmartRelativeXPath(field.relativeXPath || '');
   if (!relative) return undefined;
@@ -691,7 +691,7 @@ function normalizeSmartRelativeXPath(value: string): string {
   return value.replace(/\/+$/g, '').trim();
 }
 
-function isLikelySmartTitleHref(field: SmartRecognizedField, fields: SmartRecognizedField[]): boolean {
+function isLikelySmartTitleHref(field: SmartDetectedField, fields: SmartDetectedField[]): boolean {
   if (field.kind !== 'href' || !field.samples.length) return false;
   const genericHrefName = isGeneratedSmartName(field.name) || /^(?:link|url|href|字段\d*|field_?\d*)$/i.test(field.name.trim());
   if (!genericHrefName) return false;
@@ -707,7 +707,7 @@ function isLikelySmartTitleHref(field: SmartRecognizedField, fields: SmartRecogn
   });
 }
 
-function isLikelySmartTitleText(field: SmartRecognizedField, fields: SmartRecognizedField[], pairedHref?: SmartRecognizedField): boolean {
+function isLikelySmartTitleText(field: SmartDetectedField, fields: SmartDetectedField[], pairedHref?: SmartDetectedField): boolean {
   if (field.kind !== 'text' || !pairedHref) return false;
   if (fields.some((item) => item !== field && item.kind === 'text' && /^(标题|title)$/i.test(item.name))) return false;
   if (samplesMatchPackagePublisherHref(pairedHref.samples) || samplesMatchAuthorProfileHref(pairedHref.samples) || smartFieldHasTagSignal(pairedHref) || smartFieldHasTypeSignal(pairedHref)) return false;
@@ -718,11 +718,11 @@ function isLikelySmartTitleText(field: SmartRecognizedField, fields: SmartRecogn
   return isLikelySmartTitleHref(pairedHref, fields) || /title|storylink|s-link|athing/i.test(pairedIdentity);
 }
 
-function isFirstUsableTextField(field: SmartRecognizedField, fields: SmartRecognizedField[]): boolean {
+function isFirstUsableTextField(field: SmartDetectedField, fields: SmartDetectedField[]): boolean {
   return field.kind === 'text' && fields.find((item) => item.kind === 'text' && item.samples.length) === field;
 }
 
-function isNestedRepeatedSubrecordField(field: SmartRecognizedField, all: SmartRecognizedField[]): boolean {
+function isNestedRepeatedSubrecordField(field: SmartDetectedField, all: SmartDetectedField[]): boolean {
   const group = repeatedSubrecordGroup(field.relativeXPath || '');
   if (!group) return false;
   const sameIndexedGroup = all.filter((item) => repeatedSubrecordGroup(item.relativeXPath || '') === group);
@@ -737,7 +737,7 @@ function repeatedSubrecordGroup(relativeXPath: string): string | undefined {
   return match[1];
 }
 
-function smartFieldPriority(field: SmartRecognizedField, index: number): number {
+function smartFieldPriority(field: SmartDetectedField, index: number): number {
   let score = Math.max(0, 80 - index);
   if (/^(标题|title)$/i.test(field.name)) score += 120;
   if (/标题.*链接|title.*link|url|链接$/i.test(field.name) && field.kind === 'href') score += 110;
@@ -771,12 +771,12 @@ function isGeneratedSmartName(name: string): boolean {
     || /^(?:_|css|ssrcss|ipc|tmp|col\d|colmd|dinline|dnone|buttonsecondary|tooltipped|textnormal|bookcover|ratingsbyline|resultdetails|btntext|packagesnippet|vr1pye|hvbaad|bwoy4d|srw_|colorfg|fgmuted|valign|textmodule|titlemodule|storycard|counter|link(?:_链接)?$|f\d+$|flexitem|flexshrink|usalist|sustyledtext|sucard|scard|jstilelink|wfull|frame(?:_链接)?$|pill|pillwrapper|chip|badge|gochip|my$|mb$|mt$|mr$|ml$|mx$)/i.test(value);
 }
 
-function hasGeneratedSmartStructure(field: SmartRecognizedField): boolean {
+function hasGeneratedSmartStructure(field: SmartDetectedField): boolean {
   const structural = `${field.name} ${field.relativeXPath}`;
   return /\b(?:my|mb|mt|mr|ml|mx)-\d|pill|chip|badge|jstilelink|w-?full|text-(?:xs|sm|base|lg)|font-|leading-|tracking-|shrink|grow|basis-|items-center/i.test(structural);
 }
 
-function isWholeRowTextField(field: SmartRecognizedField, all: SmartRecognizedField[]): boolean {
+function isWholeRowTextField(field: SmartDetectedField, all: SmartDetectedField[]): boolean {
   const relative = (field.relativeXPath || '').trim();
   if (relative !== '.' && relative !== '/self::*' && relative !== 'self::*') return false;
   return field.samples.some((sample) => {
@@ -788,7 +788,7 @@ function isWholeRowTextField(field: SmartRecognizedField, all: SmartRecognizedFi
   });
 }
 
-function isMisleadingContainerTextField(field: SmartRecognizedField, all: SmartRecognizedField[]): boolean {
+function isMisleadingContainerTextField(field: SmartDetectedField, all: SmartDetectedField[]): boolean {
   const relative = (field.relativeXPath || '').trim();
   if (!relative || !field.samples.length) return false;
   const childTextFields = all.filter((item) => {
@@ -811,7 +811,7 @@ function isMisleadingContainerTextField(field: SmartRecognizedField, all: SmartR
     || averageLength(field.samples) > averageLength(titleChild.samples) + 8;
 }
 
-function isSearchHighlightField(field: SmartRecognizedField, all: SmartRecognizedField[]): boolean {
+function isSearchHighlightField(field: SmartDetectedField, all: SmartDetectedField[]): boolean {
   const identity = `${field.name} ${field.relativeXPath}`;
   if (!/highlight|search-hit|高亮/i.test(identity)) return false;
   const values = normalizeSamples(field.samples);
@@ -831,7 +831,7 @@ function isSearchHighlightField(field: SmartRecognizedField, all: SmartRecognize
   return matches >= Math.max(1, Math.floor(field.samples.length * 0.67));
 }
 
-function hasPairedHref(field: SmartRecognizedField, all: SmartRecognizedField[]): boolean {
+function hasPairedHref(field: SmartDetectedField, all: SmartDetectedField[]): boolean {
   return all.some((item) => item !== field && item.kind === 'href' && item.relativeXPath === field.relativeXPath);
 }
 
@@ -923,7 +923,7 @@ function isCountryLocationText(value: string): boolean {
   return /^(?:united states|canada|united kingdom|germany|france|spain|portugal|netherlands|india|singapore|australia|brazil|mexico|japan|china|hong kong|taiwan|worldwide)$/i.test(normalized);
 }
 
-function isLikelyCompanyField(field: SmartRecognizedField): boolean {
+function isLikelyCompanyField(field: SmartDetectedField): boolean {
   if (field.kind !== 'text' || !field.samples.length) return false;
   const identity = `${field.name} ${field.relativeXPath}`;
   if (/type|category|industry|batch|tag|keyword|listing-job-type|job-type|类型|类别|行业|批次|标签|关键词/i.test(identity)) return false;
@@ -1096,7 +1096,7 @@ function normalizeSourceSample(value: string): string {
     .trim();
 }
 
-function isDuplicateTitleHrefVariant(field: SmartRecognizedField, fields: SmartRecognizedField[]): boolean {
+function isDuplicateTitleHrefVariant(field: SmartDetectedField, fields: SmartDetectedField[]): boolean {
   if (field.kind !== 'href' || smartFieldFamily(field) === 'title_href') return false;
   const titleHref = fields.find((item) => item !== field && item.kind === 'href' && smartFieldFamily(item) === 'title_href');
   if (!titleHref || !field.samples.length) return false;
@@ -1124,7 +1124,7 @@ function isDateLikeText(value: string): boolean {
     || /\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/i.test(value);
 }
 
-function isRedundantTitleFragment(field: SmartRecognizedField, all: SmartRecognizedField[]): boolean {
+function isRedundantTitleFragment(field: SmartDetectedField, all: SmartDetectedField[]): boolean {
   const title = all.find((item) => item !== field && item.kind === 'text' && /^(标题|title)$/i.test(item.name));
   if (!title || field.kind !== 'text') return false;
   if (field.samples.length !== title.samples.length && field.samples.length < 2) return false;
@@ -1161,7 +1161,7 @@ function averageLength(samples: string[]): number {
   return samples.reduce((sum, sample) => sum + sample.trim().length, 0) / samples.length;
 }
 
-function normalizeFieldName(name: string | undefined, kind: RecognizedField['kind'], index: number): string {
+function normalizeFieldName(name: string | undefined, kind: DetectedField['kind'], index: number): string {
   const trimmed = (name || '').trim();
   if (trimmed) return trimmed;
   if (kind === 'href') return index === 0 ? 'url' : `url_${index + 1}`;
@@ -1169,7 +1169,7 @@ function normalizeFieldName(name: string | undefined, kind: RecognizedField['kin
   return index === 0 ? 'text' : `field_${index + 1}`;
 }
 
-function applySmartSampleRows(fields: SmartRecognizedField[], data: string[][], rowIndices: number[]): SmartRecognizedField[] {
+function applySmartSampleRows(fields: SmartDetectedField[], data: string[][], rowIndices: number[]): SmartDetectedField[] {
   return fields.map((field) => {
     const samples = rowIndices
       .map((rowIndex) => applySmartFieldOperations(data[field.sourceIndex]?.[rowIndex] ?? '', field.operations))
@@ -1179,7 +1179,7 @@ function applySmartSampleRows(fields: SmartRecognizedField[], data: string[][], 
   });
 }
 
-function selectSmartSampleRowIndices(fields: SmartRecognizedField[], data: string[][]): number[] {
+function selectSmartSampleRowIndices(fields: SmartDetectedField[], data: string[][]): number[] {
   const rowCount = Math.max(0, ...data.map((column) => column.length));
   if (!rowCount) return [];
   const scored = Array.from({ length: rowCount }, (_, rowIndex) => {
@@ -1203,7 +1203,7 @@ function selectSmartSampleRowIndices(fields: SmartRecognizedField[], data: strin
   return selected.length ? selected : scored.slice(0, 3).map((item) => item.rowIndex);
 }
 
-function fieldValueLooksUsefulForSampling(field: SmartRecognizedField, value: string): boolean {
+function fieldValueLooksUsefulForSampling(field: SmartDetectedField, value: string): boolean {
   const normalized = normalizeSample(value);
   if (!normalized || isLowValueActionText(normalized) || isLowValueLinkLabel(normalized)) return false;
   if (/^(标题|title|描述|摘要|公司|作者|位置|时间|价格|版本|库存状态|下载|总下载|近期下载)$/i.test(field.name)) return true;
@@ -1219,7 +1219,7 @@ function isRowLevelFilterOrAdText(value: string): boolean {
     && /(salary|benefits|sort by|latest jobs|highest paid|most viewed|most applied|clear|results?|筛选|排序|最新|最多|清除)/i.test(normalized);
 }
 
-function buildSampleRows(fields: SmartRecognizedField[], data: string[][], rowIndices: number[]): Record<string, string>[] {
+function buildSampleRows(fields: SmartDetectedField[], data: string[][], rowIndices: number[]): Record<string, string>[] {
   const selectedRows = rowIndices.length ? rowIndices : Array.from({ length: Math.min(3, data[0]?.length ?? 0) }, (_, index) => index);
   const rows: Record<string, string>[] = [];
   for (const rowIndex of selectedRows.slice(0, 3)) {
@@ -1232,7 +1232,7 @@ function buildSampleRows(fields: SmartRecognizedField[], data: string[][], rowIn
   return rows;
 }
 
-function smartPaginationToRecognized(page: SmartRawResult['Page']): RecognizedPagination | undefined {
+function smartPaginationToDetected(page: SmartRawResult['Page']): DetectedPagination | undefined {
   if (!page?.XPath) return undefined;
   const type = page.PagingType === 1 ? 'load_more' : page.PagingType === 2 ? 'scroll' : 'next_page';
   return {

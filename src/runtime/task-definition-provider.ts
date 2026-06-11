@@ -41,7 +41,7 @@ export class TaskDefinitionProvider {
       xml: parsed.xml ?? '',
       xoml: parsed.xoml ?? '',
       fieldNames: Array.isArray(parsed.fieldNames) ? parsed.fieldNames : [],
-      recognition: parsed.recognition,
+      detection: parsed.detection,
       workflowSetting: parsed.workflowSetting,
       brokerSettings: parsed.brokerSettings,
       template: parsed.template,

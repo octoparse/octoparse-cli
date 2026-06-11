@@ -11,7 +11,7 @@ import { defaultSessionNameForUrl, saveBrowserSession, sessionOriginForUrl } fro
 import type { ChromeResolveStatus } from '../chrome-progress.js';
 import { hasLinuxDisplayEnvironment, startVirtualDisplayIfNeeded, type VirtualDisplayHandle } from '../virtual-display.js';
 import { detectProtectedSmartCandidates } from './protected-smart.js';
-import type { PageRecognitionResult, RecognizedAgentScreenshot, RecognizedCandidate, RecognizedCandidateDiagnostics, RecognizedCandidateLayout, RecognizedDetailMode, RecognizedDetailPlan, RecognizedField, RecognizedFieldDiagnostics, RecognizedLlmRankInput, RecognizedPagination, RecognizedPopupDismissal, RecognizedSearchPlan, RecognizeOptions } from './types.js';
+import type { PageDetectionResult, DetectedAgentScreenshot, DetectedCandidate, DetectedCandidateDiagnostics, DetectedCandidateLayout, DetectedDetailMode, DetectedDetailPlan, DetectedField, DetectedFieldDiagnostics, DetectedLlmRankInput, DetectedPagination, DetectedPopupDismissal, DetectedSearchPlan, DetectOptions } from './types.js';
 
 const require = createRequire(import.meta.url);
 const puppeteer = require('rebrowser-puppeteer-core') as typeof import('puppeteer-core');
@@ -20,13 +20,13 @@ const EngineModule = require('@octopus/engine') as {
 };
 
 interface RawCandidate {
-  type: RecognizedCandidate['type'];
+  type: DetectedCandidate['type'];
   selector: string;
   xpath: string;
   itemSelector?: string;
   itemXPath?: string;
   itemCount: number;
-  fields: RecognizedField[];
+  fields: DetectedField[];
   sampleRows: Record<string, string>[];
   reasons: string[];
   confidence: number;
@@ -40,7 +40,7 @@ type ExtensionCommandResponse = {
   error: string;
 };
 
-interface RecognizerExtensionBridge {
+interface DetectorExtensionBridge {
   runtimeConfig: { sessionId: string; wsUrl: string };
   sendActionCommand(command: Record<string, unknown>): Promise<ExtensionCommandResponse>;
   resolveTabId(pageUrl: string): number | undefined;
@@ -56,7 +56,7 @@ interface LoginInterventionResult {
   handled: boolean;
   allowSessionSave: boolean;
   ignoreFuturePrompts?: boolean;
-  popupDismissals?: RecognizedPopupDismissal[];
+  popupDismissals?: DetectedPopupDismissal[];
 }
 
 function mergeLoginIntervention(a: LoginInterventionResult, b: LoginInterventionResult): LoginInterventionResult {
@@ -69,7 +69,7 @@ function mergeLoginIntervention(a: LoginInterventionResult, b: LoginIntervention
   };
 }
 
-function updateSearchPlanFinalUrl(searchPlan: RecognizedSearchPlan | undefined, page: Page): RecognizedSearchPlan | undefined {
+function updateSearchPlanFinalUrl(searchPlan: DetectedSearchPlan | undefined, page: Page): DetectedSearchPlan | undefined {
   return searchPlan ? { ...searchPlan, finalUrl: page.url() } : undefined;
 }
 
@@ -81,12 +81,12 @@ function writeManualOverlayHintOnce(runtimeConsole: SuppressedRuntimeConsole, pa
   runtimeConsole.writeStderr(message);
 }
 
-export class RecognitionLoginRequiredError extends Error {
+export class DetectionLoginRequiredError extends Error {
   readonly code = 'LOGIN_SESSION_REQUIRED';
 
   constructor(message: string) {
     super(message);
-    this.name = 'RecognitionLoginRequiredError';
+    this.name = 'DetectionLoginRequiredError';
   }
 }
 
@@ -151,11 +151,11 @@ interface ScrollProbeSummary {
   bestActiveLoadMoreXPath?: string;
 }
 
-export async function recognizePage(options: RecognizeOptions): Promise<PageRecognitionResult> {
-  const runtimeConsole = suppressRecognizerRuntimeConsole();
-  let host: ExtensionRecognizerHost | null = null;
+export async function detectPage(options: DetectOptions): Promise<PageDetectionResult> {
+  const runtimeConsole = suppressDetectorRuntimeConsole();
+  let host: ExtensionDetectorHost | null = null;
   try {
-    host = await ExtensionRecognizerHost.start(options);
+    host = await ExtensionDetectorHost.start(options);
     let ignoreLoginInterventionPrompts = false;
     const handleLoginIntervention = async (reason: string): Promise<LoginInterventionResult> => {
       if (ignoreLoginInterventionPrompts) return { handled: false, allowSessionSave: false, ignoreFuturePrompts: true };
@@ -166,7 +166,7 @@ export async function recognizePage(options: RecognizeOptions): Promise<PageReco
     let page = host.page;
     page.setDefaultTimeout(options.timeoutMs);
     await waitForPageSettled(page, options.waitMs);
-    const popupDismissals: RecognizedPopupDismissal[] = [];
+    const popupDismissals: DetectedPopupDismissal[] = [];
     let loginIntervention = await handleLoginIntervention('login requirement detected after opening the page');
     popupDismissals.push(...loginIntervention.popupDismissals ?? []);
     page = host.page;
@@ -174,7 +174,7 @@ export async function recognizePage(options: RecognizeOptions): Promise<PageReco
       popupDismissals.push(...await dismissPageObstructions(page));
       if (popupDismissals.length) await waitForPageSettled(page, Math.min(options.waitMs, 800));
     }
-    let searchPlan: RecognizedSearchPlan | undefined;
+    let searchPlan: DetectedSearchPlan | undefined;
     if (options.input && Object.keys(options.input).length) {
       await adoptBestPageForSearchInput(host, options).catch(() => undefined);
       page = host.page;
@@ -220,7 +220,7 @@ export async function recognizePage(options: RecognizeOptions): Promise<PageReco
           throw new Error('Search did not reach a result page for the current keyword. Confirm the search opened the result page, or pass the search-result URL directly and retry.');
         }
       }
-      const preDetectionLogin = await handleLoginIntervention('login/verification requirement detected before extraction recognition');
+      const preDetectionLogin = await handleLoginIntervention('login/verification requirement detected before extraction detection');
       popupDismissals.push(...preDetectionLogin.popupDismissals ?? []);
       page = host.page;
       loginIntervention = mergeLoginIntervention(loginIntervention, preDetectionLogin);
@@ -297,7 +297,7 @@ async function chooseSaveSessionInteractively(runtimeConsole: SuppressedRuntimeC
       readState: async () => undefined,
       choices: () => [
         { title: 'Save login session and write a session reference into the generated task file', value: 'save' },
-        { title: 'Do not save; use it only for this recognition run', value: 'skip' }
+        { title: 'Do not save; use it only for this detection run', value: 'skip' }
       ]
     });
     return action === 'save';
@@ -326,11 +326,11 @@ async function chooseSaveSessionInBrowser(page: Page, runtimeConsole: Suppressed
 }
 
 async function submitInputsManually(
-  host: ExtensionRecognizerHost,
-  options: RecognizeOptions,
+  host: ExtensionDetectorHost,
+  options: DetectOptions,
   runtimeConsole: SuppressedRuntimeConsole,
   inputOverrides?: Map<string, SearchInputCandidate>
-): Promise<RecognizedSearchPlan | undefined> {
+): Promise<DetectedSearchPlan | undefined> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) return submitInputs(host, options, inputOverrides);
   runtimeConsole.restore();
   try {
@@ -421,7 +421,7 @@ async function showSearchSubmitPickerInBrowser(
     choices: [
       { title: selected?.xpath ? 'Confirm and run search' : 'Waiting for search button selection', value: selected?.xpath ? 'confirm' : 'wait', primary: Boolean(selected?.xpath) },
       { title: 'Keep selecting a search button on the page', value: 'wait' },
-      { title: 'Cancel search recognition', value: 'cancel' }
+      { title: 'Cancel search detection', value: 'cancel' }
     ],
     selectedXPath: selected?.xpath,
     selectedText: selected?.text,
@@ -486,7 +486,7 @@ async function chooseSearchSubmitInCli(
       },
       choices: () => [
         { title: current?.xpath ? 'Confirm this search button and run search' : 'Waiting for search button selection', value: current?.xpath ? 'confirm' : 'wait' },
-        { title: 'Cancel search recognition', value: 'cancel' }
+        { title: 'Cancel search detection', value: 'cancel' }
       ]
     });
     return { action, selected: current };
@@ -496,12 +496,12 @@ async function chooseSearchSubmitInCli(
 }
 
 async function inputSearchFieldsOnly(
-  host: ExtensionRecognizerHost,
-  options: RecognizeOptions,
+  host: ExtensionDetectorHost,
+  options: DetectOptions,
   inputOverrides?: Map<string, Pick<SearchInputCandidate, 'xpath'>>
-): Promise<RecognizedSearchPlan | undefined> {
+): Promise<DetectedSearchPlan | undefined> {
   const entries = Object.entries(options.input ?? {});
-  const inputs: RecognizedSearchPlan['inputs'] = [];
+  const inputs: DetectedSearchPlan['inputs'] = [];
   for (const [name, value] of entries) {
     const inputXPath = inputOverrides?.get(name)?.xpath || await findInputXPath(host.page, name);
     if (!inputXPath) continue;
@@ -533,13 +533,13 @@ async function inputSearchFieldsOnly(
   };
 }
 
-async function captureAgentScreenshot(page: Page, path: string): Promise<RecognizedAgentScreenshot> {
+async function captureAgentScreenshot(page: Page, path: string): Promise<DetectedAgentScreenshot> {
   const resolved = resolve(path);
   await page.screenshot({ path: resolved, fullPage: true });
   return { path: resolved, fullPage: true };
 }
 
-async function attachAgentDiagnostics(page: Page, candidates: RecognizedCandidate[]): Promise<RecognizedCandidate[]> {
+async function attachAgentDiagnostics(page: Page, candidates: DetectedCandidate[]): Promise<DetectedCandidate[]> {
   const input = candidates.map((candidate) => ({
     id: candidate.id,
     xpath: candidate.xpath,
@@ -651,11 +651,11 @@ async function attachAgentDiagnostics(page: Page, candidates: RecognizedCandidat
   return candidates.map((candidate) => {
     const item = byId.get(candidate.id);
     if (!item) return candidate;
-    const fieldDiag = new Map(item.fields.map((field) => [field.name, field.diagnostics as RecognizedFieldDiagnostics]));
-    const detailDiag = new Map(item.detailFields.map((field) => [field.name, field.diagnostics as RecognizedFieldDiagnostics]));
+    const fieldDiag = new Map(item.fields.map((field) => [field.name, field.diagnostics as DetectedFieldDiagnostics]));
+    const detailDiag = new Map(item.detailFields.map((field) => [field.name, field.diagnostics as DetectedFieldDiagnostics]));
     return {
       ...candidate,
-      diagnostics: item.diagnostics as RecognizedCandidateDiagnostics,
+      diagnostics: item.diagnostics as DetectedCandidateDiagnostics,
       fields: candidate.fields.map((field) => fieldDiag.has(field.name) ? { ...field, diagnostics: fieldDiag.get(field.name) } : field),
       ...(candidate.detailPlan ? {
         detailPlan: {
@@ -675,12 +675,12 @@ interface SuppressedRuntimeConsole {
   question(prompt?: string): Promise<string>;
 }
 
-function isRecognizerRuntimeNoise(message: string): boolean {
+function isDetectorRuntimeNoise(message: string): boolean {
   return /\[WorkflowAgent\].*target\s+销毁:\s*other/i.test(message)
     || /\[WorkflowAgent\].*target\s+destroyed:\s*other/i.test(message);
 }
 
-function suppressRecognizerRuntimeConsole(): SuppressedRuntimeConsole {
+function suppressDetectorRuntimeConsole(): SuppressedRuntimeConsole {
   if (process.env.OCTOPARSE_SHOW_RUNTIME_STDIO === '1') {
     return {
       suppress() {},
@@ -705,26 +705,26 @@ function suppressRecognizerRuntimeConsole(): SuppressedRuntimeConsole {
   let suppressed = false;
   const filteredStdoutWrite = ((chunk: unknown, ...args: unknown[]) => {
     const text = typeof chunk === 'string' || Buffer.isBuffer(chunk) ? String(chunk) : '';
-    if (text && isRecognizerRuntimeNoise(text)) return true;
+    if (text && isDetectorRuntimeNoise(text)) return true;
     return originalStdoutWrite(chunk as never, ...(args as []));
   }) as typeof process.stdout.write;
   const filteredStderrWrite = ((chunk: unknown, ...args: unknown[]) => {
     const text = typeof chunk === 'string' || Buffer.isBuffer(chunk) ? String(chunk) : '';
-    if (text && isRecognizerRuntimeNoise(text)) return true;
+    if (text && isDetectorRuntimeNoise(text)) return true;
     return originalStderrWrite(chunk as never, ...(args as []));
   }) as typeof process.stderr.write;
   const suppress = () => {
     if (suppressed) return;
     process.stdout.write = (((chunk: unknown, ...args: unknown[]) => {
       const text = typeof chunk === 'string' || Buffer.isBuffer(chunk) ? String(chunk) : '';
-      if (process.env.OCTOPARSE_TRACKING_DEBUG === '1' && text.startsWith('[recognize-debug]')) {
+      if (process.env.OCTOPARSE_TRACKING_DEBUG === '1' && text.startsWith('[detect-debug]')) {
         return filteredStdoutWrite(chunk as never, ...(args as []));
       }
       return true;
     }) as typeof process.stdout.write);
     process.stderr.write = (((chunk: unknown, ...args: unknown[]) => {
       const text = typeof chunk === 'string' || Buffer.isBuffer(chunk) ? String(chunk) : '';
-      if (process.env.OCTOPARSE_TRACKING_DEBUG === '1' && text.startsWith('[recognize-debug]')) {
+      if (process.env.OCTOPARSE_TRACKING_DEBUG === '1' && text.startsWith('[detect-debug]')) {
         return filteredStderrWrite(chunk as never, ...(args as []));
       }
       return true;
@@ -762,35 +762,35 @@ function suppressRecognizerRuntimeConsole(): SuppressedRuntimeConsole {
   };
 }
 
-class ExtensionRecognizerHost {
+class ExtensionDetectorHost {
   private constructor(
     private readonly browserInstance: Browser,
     private readonly runtimeExtensionPath: string | undefined,
     private readonly bridgeHub: BridgeHub,
-    private readonly extensionBridge: RecognizerExtensionBridge,
+    private readonly extensionBridge: DetectorExtensionBridge,
     public page: Page,
     private tabId: number,
     private readonly virtualDisplay: VirtualDisplayHandle
   ) {}
 
-  static async start(options: RecognizeOptions): Promise<ExtensionRecognizerHost> {
-    assertRecognizeDisplayAvailable(options);
-    const virtualDisplay = await startVirtualDisplayForRecognition(options);
-    const runId = `recognize_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+  static async start(options: DetectOptions): Promise<ExtensionDetectorHost> {
+    assertDetectDisplayAvailable(options);
+    const virtualDisplay = await startVirtualDisplayForDetection(options);
+    const runId = `detect_${Date.now()}_${Math.random().toString(16).slice(2)}`;
     const bridgeHub = new BridgeHub();
-    const extensionBridge = await bridgeHub.createSessionBridge(runId) as RecognizerExtensionBridge;
+    const extensionBridge = await bridgeHub.createSessionBridge(runId) as DetectorExtensionBridge;
     let browser: Browser | undefined;
     let runtimeExtensionPath: string | undefined;
 
     try {
       const chromePath = options.chromePath ?? (await EngineModule.resolveChrome({ onStatus: options.onChromeStatus })).executablePath;
-      runtimeExtensionPath = await prepareRecognizerRuntimeExtension(runId, extensionBridge);
-      browser = await launchRecognizerBrowser(chromePath, runtimeExtensionPath);
+      runtimeExtensionPath = await prepareDetectorRuntimeExtension(runId, extensionBridge);
+      browser = await launchDetectorBrowser(chromePath, runtimeExtensionPath);
       await bridgeHub.waitForSessionConnected(runId, Math.min(options.timeoutMs, 30_000));
-      const page = await openRecognizerTargetPage(browser, options.url, options.timeoutMs);
+      const page = await openDetectorTargetPage(browser, options.url, options.timeoutMs);
       const tabId = await waitForTabId(extensionBridge, page, options.timeoutMs);
       await readyCheck(extensionBridge, tabId, Math.min(options.timeoutMs, 15_000)).catch(() => undefined);
-      return new ExtensionRecognizerHost(browser, runtimeExtensionPath, bridgeHub, extensionBridge, page, tabId, virtualDisplay);
+      return new ExtensionDetectorHost(browser, runtimeExtensionPath, bridgeHub, extensionBridge, page, tabId, virtualDisplay);
     } catch (error) {
       await browser?.close().catch(() => undefined);
       if (runtimeExtensionPath) await rm(runtimeExtensionPath, { recursive: true, force: true }).catch(() => undefined);
@@ -840,13 +840,13 @@ class ExtensionRecognizerHost {
   }
 }
 
-function assertRecognizeDisplayAvailable(options: RecognizeOptions): void {
+function assertDetectDisplayAvailable(options: DetectOptions): void {
   if (process.platform !== 'linux' || (!options.manual && !options.interactive)) return;
   if (hasLinuxDisplayEnvironment()) return;
-  throw new Error('Linux manual recognition requires a visible browser environment, but no X server or WAYLAND_DISPLAY is available. Run it in a desktop session or provide a visible display through xvfb-run/VNC; non-manual recognition uses Xvfb automatically.');
+  throw new Error('Linux manual detection requires a visible browser environment, but no X server or WAYLAND_DISPLAY is available. Run it in a desktop session or provide a visible display through xvfb-run/VNC; non-manual detection uses Xvfb automatically.');
 }
 
-async function startVirtualDisplayForRecognition(options: RecognizeOptions): Promise<VirtualDisplayHandle> {
+async function startVirtualDisplayForDetection(options: DetectOptions): Promise<VirtualDisplayHandle> {
   if (options.manual || options.interactive) {
     return {
       enabled: false,
@@ -856,7 +856,7 @@ async function startVirtualDisplayForRecognition(options: RecognizeOptions): Pro
   return startVirtualDisplayIfNeeded();
 }
 
-async function prepareRecognizerRuntimeExtension(runId: string, extensionBridge: RecognizerExtensionBridge): Promise<string> {
+async function prepareDetectorRuntimeExtension(runId: string, extensionBridge: DetectorExtensionBridge): Promise<string> {
   const engineDist = dirname(require.resolve('@octopus/engine'));
   const templatePath = join(engineDist, 'extension');
   const runtimePath = join(tmpdir(), 'octoparse-engine-extension', `${runId}-${Date.now()}`);
@@ -866,7 +866,7 @@ async function prepareRecognizerRuntimeExtension(runId: string, extensionBridge:
   return runtimePath;
 }
 
-async function launchRecognizerBrowser(chromePath: string, runtimeExtensionPath: string): Promise<Browser> {
+async function launchDetectorBrowser(chromePath: string, runtimeExtensionPath: string): Promise<Browser> {
   return puppeteer.launch({
     headless: false,
     executablePath: chromePath,
@@ -917,7 +917,7 @@ async function waitForBrowserProcessExit(child: ChildProcess | null | undefined,
   ]);
 }
 
-async function waitForRecognizerPage(browser: Browser, url: string, timeoutMs: number): Promise<Page> {
+async function waitForDetectorPage(browser: Browser, url: string, timeoutMs: number): Promise<Page> {
   const deadline = Date.now() + timeoutMs;
   const targetHost = safeHost(url);
   while (Date.now() < deadline) {
@@ -934,13 +934,13 @@ async function waitForRecognizerPage(browser: Browser, url: string, timeoutMs: n
   return pages[0] ?? await browser.newPage();
 }
 
-async function openRecognizerTargetPage(browser: Browser, url: string, timeoutMs: number): Promise<Page> {
-  const page = await waitForRecognizerPage(browser, RECOGNIZER_PARKING_URL, Math.min(timeoutMs, 5000));
+async function openDetectorTargetPage(browser: Browser, url: string, timeoutMs: number): Promise<Page> {
+  const page = await waitForDetectorPage(browser, DETECTOR_PARKING_URL, Math.min(timeoutMs, 5000));
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
   return page;
 }
 
-async function waitForTabId(extensionBridge: RecognizerExtensionBridge, page: Page, timeoutMs: number): Promise<number> {
+async function waitForTabId(extensionBridge: DetectorExtensionBridge, page: Page, timeoutMs: number): Promise<number> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const candidates = [page.url(), page.url().replace(/\/$/, '')];
@@ -953,7 +953,7 @@ async function waitForTabId(extensionBridge: RecognizerExtensionBridge, page: Pa
   throw new Error(`extension tab was not registered for ${page.url()}`);
 }
 
-async function readyCheck(extensionBridge: RecognizerExtensionBridge, tabId: number, timeoutMs: number): Promise<void> {
+async function readyCheck(extensionBridge: DetectorExtensionBridge, tabId: number, timeoutMs: number): Promise<void> {
   const response = await extensionBridge.sendActionCommand({
     action: 'ready-check',
     tabId,
@@ -971,7 +971,7 @@ async function waitForManualContinue(page: Page, targetUrl: string, runtimeConso
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
       runtimeConsole.writeStderr(`\nOpened target page: ${targetUrl}\n`);
       runtimeConsole.writeStderr(`Current page: ${currentUrl}\n`);
-      runtimeConsole.writeStderr('If the site redirects to a login page, complete login in the browser. Press Enter when the target data is visible to start recognition...\n');
+      runtimeConsole.writeStderr('If the site redirects to a login page, complete login in the browser. Press Enter when the target data is visible to start detection...\n');
       await runtimeConsole.question('');
       runtimeConsole.suppress();
       return { dismissPopups: false, allowSessionSave: true };
@@ -986,8 +986,8 @@ async function waitForManualContinue(page: Page, targetUrl: string, runtimeConso
         'If the site redirects to a login page, complete login in the browser. If it does not return automatically after login, reopen the target page.'
       ].filter(Boolean).join('\n'),
       choices: [
-        { title: 'I am logged in and can see the target data; start recognition', value: 'recognize-logged-in' },
-        { title: 'The current page does not require login; start recognition', value: 'recognize-public' },
+        { title: 'I am logged in and can see the target data; start detection', value: 'detect-logged-in' },
+        { title: 'The current page does not require login; start detection', value: 'detect-public' },
         { title: 'Reopen target page', value: 'reload-target' },
         { title: 'Try dismissing the login popup and continue without logging in', value: 'dismiss-popups' },
         { title: 'Cancel', value: 'cancel' }
@@ -1002,9 +1002,9 @@ async function waitForManualContinue(page: Page, targetUrl: string, runtimeConso
       continue;
     }
     if (response.action === 'dismiss-popups') return { dismissPopups: true, allowSessionSave: false };
-    if (response.action === 'recognize-public') return { dismissPopups: false, allowSessionSave: false };
-    if (response.action === 'recognize-logged-in') return { dismissPopups: false, allowSessionSave: true };
-    throw new Error('User canceled manual recognition');
+    if (response.action === 'detect-public') return { dismissPopups: false, allowSessionSave: false };
+    if (response.action === 'detect-logged-in') return { dismissPopups: false, allowSessionSave: true };
+    throw new Error('User canceled manual detection');
   }
 }
 
@@ -1073,7 +1073,7 @@ async function waitForLoadingPlaceholders(page: Page, timeoutMs: number): Promis
   }, { timeout: timeoutMs, polling: 250 }).catch(() => undefined);
 }
 
-async function handleLoginInterventionIfNeeded(host: ExtensionRecognizerHost, options: RecognizeOptions, runtimeConsole: SuppressedRuntimeConsole, reason: string): Promise<LoginInterventionResult> {
+async function handleLoginInterventionIfNeeded(host: ExtensionDetectorHost, options: DetectOptions, runtimeConsole: SuppressedRuntimeConsole, reason: string): Promise<LoginInterventionResult> {
   let page = host.page;
   const obstruction = (await detectPageObstructions(page).catch(() => []))
     .find((item) => item.type === 'login' || item.type === 'captcha' || item.type === 'paywall');
@@ -1097,7 +1097,7 @@ async function handleLoginInterventionIfNeeded(host: ExtensionRecognizerHost, op
     : `${reason}: detected ${popupTypeLabel(obstruction?.type)} popup.`;
   const interactive = shouldPromptForLoginIntervention(options);
   if (!interactive) {
-    throw new RecognitionLoginRequiredError(`${message} Open the page with --manual to complete login; add --save-session to save the session before automatic recognition.`);
+    throw new DetectionLoginRequiredError(`${message} Open the page with --manual to complete login; add --save-session to save the session before automatic detection.`);
   }
 
   runtimeConsole.restore();
@@ -1125,15 +1125,15 @@ async function handleLoginInterventionIfNeeded(host: ExtensionRecognizerHost, op
             'Complete login/verification in the browser, then return here to continue.'
           ].join('\n'),
           choices: [
-            { title: 'Login is not needed; continue recognition', value: 'continue-without-login' },
-            { title: 'I completed login/verification; continue recognition', value: 'continue' },
+            { title: 'Login is not needed; continue detection', value: 'continue-without-login' },
+            { title: 'I completed login/verification; continue detection', value: 'continue' },
             { title: 'Cancel', value: 'cancel' }
           ],
           initial: initialAction === 'continue' ? 1 : 0
         });
         return response.action || 'cancel';
       });
-    if (action === 'cancel' || !action) throw new Error('User canceled recognition after login');
+    if (action === 'cancel' || !action) throw new Error('User canceled detection after login');
     if (action === 'continue') {
       await adoptBestPageAfterLogin(host, options).catch(() => undefined);
       page = host.page;
@@ -1157,12 +1157,12 @@ async function handleLoginInterventionIfNeeded(host: ExtensionRecognizerHost, op
   }
 }
 
-function shouldPromptForLoginIntervention(options: RecognizeOptions): boolean {
+function shouldPromptForLoginIntervention(options: DetectOptions): boolean {
   return options.manual || options.interactive;
 }
 
 async function chooseLoginInterventionInBrowser(
-  host: ExtensionRecognizerHost,
+  host: ExtensionDetectorHost,
   message: string,
   initialAction: 'continue' | 'continue-without-login',
   runtimeConsole: SuppressedRuntimeConsole
@@ -1173,13 +1173,13 @@ async function chooseLoginInterventionInBrowser(
     message: [
       message,
       initialAction === 'continue-without-login'
-        ? 'If this is only a login popup and does not block the current page content, you can continue; this recognition run will not pause for the same popup type again.'
+        ? 'If this is only a login popup and does not block the current page content, you can continue; this detection run will not pause for the same popup type again.'
         : 'After continuing, the best page will be selected again and page content will be checked.'
     ].join('\n'),
     choices: [
       { title: 'Logged in/verified, continue', value: 'continue', primary: initialAction === 'continue' },
       { title: 'No login needed, continue', value: 'continue-without-login', primary: initialAction === 'continue-without-login' },
-      { title: 'Cancel recognition', value: 'cancel' }
+      { title: 'Cancel detection', value: 'cancel' }
     ]
   } satisfies Parameters<typeof showManualOverlay>[1];
   const browser = host.browser();
@@ -1212,7 +1212,7 @@ async function chooseLoginInterventionInBrowser(
   }
 }
 
-async function adoptBestPageAfterLogin(host: ExtensionRecognizerHost, options: RecognizeOptions): Promise<void> {
+async function adoptBestPageAfterLogin(host: ExtensionDetectorHost, options: DetectOptions): Promise<void> {
   const browser = host.browser();
   if (!browser) return;
   await delay(500);
@@ -1229,7 +1229,7 @@ async function adoptBestPageAfterLogin(host: ExtensionRecognizerHost, options: R
   if (best.page !== host.page) await host.usePage(best.page);
 }
 
-async function scorePostLoginPage(page: Page, options: RecognizeOptions, index: number, total: number): Promise<number> {
+async function scorePostLoginPage(page: Page, options: DetectOptions, index: number, total: number): Promise<number> {
   return page.evaluate((input) => {
     const url = location.href;
     const title = document.title || '';
@@ -1295,7 +1295,7 @@ async function scorePostLoginPage(page: Page, options: RecognizeOptions, index: 
   });
 }
 
-async function adoptBestPageForSearchInput(host: ExtensionRecognizerHost, options: RecognizeOptions): Promise<void> {
+async function adoptBestPageForSearchInput(host: ExtensionDetectorHost, options: DetectOptions): Promise<void> {
   const browser = host.browser();
   if (!browser) return;
   const pages = (await browser.pages()).filter((page) => !page.isClosed());
@@ -1311,7 +1311,7 @@ async function adoptBestPageForSearchInput(host: ExtensionRecognizerHost, option
   if (best.page !== host.page) await host.usePage(best.page);
 }
 
-async function scoreSearchInputPage(page: Page, options: RecognizeOptions, index: number, total: number): Promise<number> {
+async function scoreSearchInputPage(page: Page, options: DetectOptions, index: number, total: number): Promise<number> {
   return page.evaluate((input) => {
     const visible = (element: Element | null): boolean => {
       if (!element) return false;
@@ -1364,7 +1364,7 @@ async function scoreSearchInputPage(page: Page, options: RecognizeOptions, index
   });
 }
 
-async function adoptBestPageAfterSearch(host: ExtensionRecognizerHost, options: RecognizeOptions, beforePages: Set<Page>): Promise<void> {
+async function adoptBestPageAfterSearch(host: ExtensionDetectorHost, options: DetectOptions, beforePages: Set<Page>): Promise<void> {
   const browser = host.browser();
   if (!browser) return;
   await delay(500);
@@ -1389,7 +1389,7 @@ async function adoptBestPageAfterSearch(host: ExtensionRecognizerHost, options: 
   if (best.page !== host.page) await host.usePage(best.page);
 }
 
-async function scoreSearchResultPage(page: Page, options: RecognizeOptions, isNewPage: boolean, index: number, total: number): Promise<number> {
+async function scoreSearchResultPage(page: Page, options: DetectOptions, isNewPage: boolean, index: number, total: number): Promise<number> {
   return page.evaluate((input) => {
     const url = location.href;
     const title = document.title || '';
@@ -1485,7 +1485,7 @@ function watchNewPage(browser: Browser | undefined, beforePages: Set<Page>, time
   return watcher;
 }
 
-async function adoptNewSearchPage(host: ExtensionRecognizerHost, options: RecognizeOptions, newPagePromise: NewPageWatcher): Promise<void> {
+async function adoptNewSearchPage(host: ExtensionDetectorHost, options: DetectOptions, newPagePromise: NewPageWatcher): Promise<void> {
   if (await pageLooksLikeSearchResult(host.page, options).catch(() => false) || await pageHasSearchLoginGate(host.page).catch(() => false)) {
     newPagePromise.cancel?.();
     return;
@@ -1505,7 +1505,7 @@ async function adoptNewSearchPage(host: ExtensionRecognizerHost, options: Recogn
   await host.usePage(page);
 }
 
-async function pageLooksLikeSearchResult(page: Page, options: RecognizeOptions): Promise<boolean> {
+async function pageLooksLikeSearchResult(page: Page, options: DetectOptions): Promise<boolean> {
   const keyword = Object.values(options.input ?? {})[0] ?? '';
   return page.evaluate((input) => {
     const url = location.href;
@@ -1606,15 +1606,15 @@ async function detectLoginLikePage(page: Page): Promise<{ reason: string } | und
   });
 }
 
-function popupTypeLabel(type: RecognizedPopupDismissal['type'] | undefined): string {
+function popupTypeLabel(type: DetectedPopupDismissal['type'] | undefined): string {
   if (type === 'login') return 'login';
   if (type === 'captcha') return 'captcha/verification';
   if (type === 'paywall') return 'paywall/permission';
   return 'login/verification';
 }
 
-async function dismissPageObstructions(page: Page, options: { includeLogin?: boolean } = {}): Promise<RecognizedPopupDismissal[]> {
-  const results: RecognizedPopupDismissal[] = [];
+async function dismissPageObstructions(page: Page, options: { includeLogin?: boolean } = {}): Promise<DetectedPopupDismissal[]> {
+  const results: DetectedPopupDismissal[] = [];
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const detected = await detectPageObstructions(page);
     const item = detected[0];
@@ -1712,7 +1712,7 @@ async function popupIsRemoved(page: Page, popupXPath: string): Promise<boolean> 
 async function detectPageObstructions(page: Page): Promise<Array<{
   popupXPath: string;
   popupText: string;
-  type: RecognizedPopupDismissal['type'];
+  type: DetectedPopupDismissal['type'];
   confidence: number;
   closeXPath?: string;
   closeText?: string;
@@ -1720,7 +1720,7 @@ async function detectPageObstructions(page: Page): Promise<Array<{
   canHide: boolean;
 }>> {
   const detected = await page.evaluate(() => {
-    type PopupType = RecognizedPopupDismissal['type'];
+    type PopupType = DetectedPopupDismissal['type'];
     type Candidate = {
       popupXPath: string;
       popupText: string;
@@ -2017,7 +2017,7 @@ async function clickXPath(page: Page, xpath: string): Promise<boolean> {
   }, xpath);
 }
 
-function dedupePopupDismissals(items: RecognizedPopupDismissal[]): RecognizedPopupDismissal[] {
+function dedupePopupDismissals(items: DetectedPopupDismissal[]): DetectedPopupDismissal[] {
   const seen = new Set<string>();
   return items.filter((item) => {
     const key = `${item.action}:${item.type}:${item.xpath ?? ''}:${item.text ?? ''}`;
@@ -2041,7 +2041,7 @@ async function autoScroll(page: Page, scrolls: number): Promise<ScrollProbeSumma
     if (!snapshot) continue;
     snapshots.push(snapshot);
     if (process.env.OCTOPARSE_TRACKING_DEBUG === '1') {
-      process.stderr.write(`[recognize-debug] scroll probe ${index + 1}/${maxScrolls}: ${JSON.stringify(snapshot)}\n`);
+      process.stderr.write(`[detect-debug] scroll probe ${index + 1}/${maxScrolls}: ${JSON.stringify(snapshot)}\n`);
     }
     if (snapshot.hasActiveLoadMore) {
       stableCount = 0;
@@ -2056,7 +2056,7 @@ async function autoScroll(page: Page, scrolls: number): Promise<ScrollProbeSumma
   await scrollPageToTop(page).catch(() => undefined);
   const summary = summarizeScrollProbe(snapshots);
   if (process.env.OCTOPARSE_TRACKING_DEBUG === '1') {
-    process.stderr.write(`[recognize-debug] scroll probe summary: ${JSON.stringify({ ...summary, snapshots: summary.snapshots.length })}\n`);
+    process.stderr.write(`[detect-debug] scroll probe summary: ${JSON.stringify({ ...summary, snapshots: summary.snapshots.length })}\n`);
   }
   return summary;
 }
@@ -2209,11 +2209,11 @@ function scrollProbeStable(previous: ScrollProbeSnapshot, next: ScrollProbeSnaps
   return (pageHeightStable && contentStable && itemStable) || stuck;
 }
 
-async function detectCandidates(page: Page, options: RecognizeOptions, scrollProbe?: ScrollProbeSummary): Promise<RecognizedCandidate[]> {
-  if (!options.legacyRecognizer) {
+async function detectCandidates(page: Page, options: DetectOptions, scrollProbe?: ScrollProbeSummary): Promise<DetectedCandidate[]> {
+  if (!options.legacyDetector) {
     const protectedSmart = await detectProtectedSmartCandidates(page, { maxCandidates: options.maxCandidates, baseUrl: options.apiBaseUrl });
     if (!protectedSmart.length) {
-      throw new Error('Protected Smart returned no list candidates. Use --legacy-recognizer only for debugging the old detector.');
+      throw new Error('Protected Smart returned no list candidates. Use --legacy-detector only for debugging the old detector.');
     }
     const outputLimit = options.interactive ? Math.max(options.maxCandidates, 24) : options.maxCandidates;
     const fallback = await detectFallbackListCandidates(page, Math.max(outputLimit, 12), options.interactive);
@@ -2221,7 +2221,7 @@ async function detectCandidates(page: Page, options: RecognizeOptions, scrollPro
     const withPagination = await detectPaginationForCandidates(page, merged, scrollProbe);
     const withDiagnostics = await attachAgentDiagnostics(page, withPagination).catch(() => withPagination);
     const withLayoutScores = await applyLayoutScores(page, withDiagnostics);
-    const filtered = filterRecognizedBoilerplateCandidates(withLayoutScores);
+    const filtered = filterDetectedBoilerplateCandidates(withLayoutScores);
     const ranked = options.goal ? applyGoalScores(filtered, options.goal) : rankCandidates(filtered);
     return options.llmRank ? applyLlmRankPreparation(ranked.slice(0, outputLimit), options.goal) : ranked.slice(0, outputLimit);
   }
@@ -2241,15 +2241,15 @@ async function detectCandidates(page: Page, options: RecognizeOptions, scrollPro
     .sort((a, b) => b.confidence - a.confidence)
     .slice(0, refinementLimit);
 
-  const recognized = sorted.map((candidate, index) => ({
+  const detected = sorted.map((candidate, index) => ({
     id: `${candidate.type}_${index + 1}`,
     title: candidateTitle(candidate),
     ...candidate
   }));
-  const withPagination = await detectPaginationForCandidates(page, recognized, scrollProbe);
+  const withPagination = await detectPaginationForCandidates(page, detected, scrollProbe);
   const withRefinedFields = await refineCandidateFields(page, withPagination);
   const withLayoutScores = await applyLayoutScores(page, withRefinedFields);
-  const filtered = filterRecognizedBoilerplateCandidates(withLayoutScores);
+  const filtered = filterDetectedBoilerplateCandidates(withLayoutScores);
   const deduped = dedupeEquivalentCandidates(filtered);
   const ranked = options.goal ? applyGoalScores(deduped, options.goal) : rankCandidates(deduped);
   const limited = ranked.slice(0, outputLimit);
@@ -2271,7 +2271,7 @@ async function detectRawCandidates(page: Page, interactive = false): Promise<Raw
   return candidates;
 }
 
-async function detectFallbackListCandidates(page: Page, limit: number, interactive = false): Promise<RecognizedCandidate[]> {
+async function detectFallbackListCandidates(page: Page, limit: number, interactive = false): Promise<DetectedCandidate[]> {
   const raw = await detectRawCandidates(page, interactive);
   const seen = new Set<string>();
   const sorted = raw
@@ -2285,17 +2285,17 @@ async function detectFallbackListCandidates(page: Page, limit: number, interacti
     .sort((a, b) => b.confidence - a.confidence)
     .slice(0, Math.max(limit, 12));
   if (!sorted.length) return [];
-  const recognized = sorted.map((candidate, index) => ({
+  const detected = sorted.map((candidate, index) => ({
     id: `fallback_${candidate.type}_${index + 1}`,
     title: `${candidateTitle(candidate)} (fallback)`,
     ...candidate,
     confidence: Number(Math.max(0.1, candidate.confidence - 0.06).toFixed(2)),
     reasons: [...candidate.reasons, 'Fallback detector candidate']
   }));
-  return refineCandidateFields(page, recognized);
+  return refineCandidateFields(page, detected);
 }
 
-async function chooseCandidateInteractively(page: Page, candidates: RecognizedCandidate[], runtimeConsole: SuppressedRuntimeConsole): Promise<string[]> {
+async function chooseCandidateInteractively(page: Page, candidates: DetectedCandidate[], runtimeConsole: SuppressedRuntimeConsole): Promise<string[]> {
   const selectable = candidates.filter((candidate) => candidate.type === 'table' || candidate.type === 'repeated_card' || candidate.type === 'search_results' || candidate.type === 'link_collection');
   if (!selectable.length) return [];
   let currentIndex = 0;
@@ -2307,7 +2307,7 @@ async function chooseCandidateInteractively(page: Page, candidates: RecognizedCa
     .catch(() => false);
   try {
     if (!process.stdin.isTTY || !process.stdout.isTTY) {
-      runtimeConsole.writeStderr(`\nHighlighted recommended recognition result 1/${selectable.length} in the browser: ${formatCandidateSummary(currentCandidate)}.\n`);
+      runtimeConsole.writeStderr(`\nHighlighted recommended detection result 1/${selectable.length} in the browser: ${formatCandidateSummary(currentCandidate)}.\n`);
       runtimeConsole.writeStderr('Return to the terminal to continue with the current recommended result.\n');
       await runtimeConsole.question('');
       return [currentCandidate.id];
@@ -2320,7 +2320,7 @@ async function chooseCandidateInteractively(page: Page, candidates: RecognizedCa
         : await runLiveSelectMenu({
           write: (value) => runtimeConsole.writeStderr(value),
           title: () => [
-            `Current recognition result: ${currentIndex + 1}/${selectable.length}`,
+            `Current detection result: ${currentIndex + 1}/${selectable.length}`,
             formatCandidateSummary(currentCandidate),
             'Only the current result is highlighted in the browser; switch results as needed, then confirm before configuring pagination.'
           ].filter(Boolean).join('\n'),
@@ -2328,10 +2328,10 @@ async function chooseCandidateInteractively(page: Page, candidates: RecognizedCa
             lastCandidateSelection = await readOverlaySelection(page);
           },
           choices: () => [
-            { title: 'Confirm this recognition result and continue to pagination', value: 'confirm' },
-            { title: `Switch to next recognition result (${((currentIndex + 1) % selectable.length) + 1}/${selectable.length})`, value: 'next' },
-            { title: `Switch to previous recognition result (${((currentIndex - 1 + selectable.length) % selectable.length) + 1}/${selectable.length})`, value: 'prev' },
-            { title: 'Cancel manual recognition', value: 'cancel' }
+            { title: 'Confirm this detection result and continue to pagination', value: 'confirm' },
+            { title: `Switch to next detection result (${((currentIndex + 1) % selectable.length) + 1}/${selectable.length})`, value: 'next' },
+            { title: `Switch to previous detection result (${((currentIndex - 1 + selectable.length) % selectable.length) + 1}/${selectable.length})`, value: 'prev' },
+            { title: 'Cancel manual detection', value: 'cancel' }
           ]
         });
       await clearManualOverlayAction(page).catch(() => undefined);
@@ -2351,7 +2351,7 @@ async function chooseCandidateInteractively(page: Page, candidates: RecognizedCa
         if (browserOverlayReady) {
           await showManualProgressOverlay(page, {
             title: 'Analyzing pagination',
-            message: 'Recognition result confirmed; detecting next-page, load-more, or scroll pagination.',
+            message: 'Detection result confirmed; detecting next-page, load-more, or scroll pagination.',
             status: 'Processing, please wait.'
           }).then(() => {
             keepManualOverlayForNextStep = true;
@@ -2359,7 +2359,7 @@ async function chooseCandidateInteractively(page: Page, candidates: RecognizedCa
         }
         return latest.length ? latest : [currentCandidate.id];
       }
-      throw new Error('User canceled manual recognition');
+      throw new Error('User canceled manual detection');
     }
   } finally {
     if (!keepManualOverlayForNextStep) await removeManualOverlay(page).catch(() => undefined);
@@ -2370,34 +2370,34 @@ async function chooseCandidateInteractively(page: Page, candidates: RecognizedCa
 
 async function showCandidateChoiceInBrowser(
   page: Page,
-  selectable: RecognizedCandidate[],
+  selectable: DetectedCandidate[],
   currentIndex: number,
-  currentCandidate: RecognizedCandidate,
+  currentCandidate: DetectedCandidate,
   runtimeConsole: SuppressedRuntimeConsole
 ): Promise<void> {
-  writeManualOverlayHintOnce(runtimeConsole, page, 'candidate', '\nUse the browser overlay to confirm the recognition result.\n');
+  writeManualOverlayHintOnce(runtimeConsole, page, 'candidate', '\nUse the browser overlay to confirm the detection result.\n');
   const selected = await readOverlaySelection(page).catch(() => []);
   await showManualOverlay(page, {
-    title: `Recognition Result ${currentIndex + 1}/${selectable.length}`,
+    title: `Detection Result ${currentIndex + 1}/${selectable.length}`,
     message: [
       formatCandidateSummary(currentCandidate),
       'Only the current result is highlighted in the browser; switch results as needed, then confirm to configure pagination.'
     ].join('\n'),
     status: selected.length ? `Selected: ${selected.join(', ')}` : `Selected: ${currentCandidate.id}`,
     choices: [
-      { title: 'Confirm current recognition result', value: 'confirm', primary: true },
+      { title: 'Confirm current detection result', value: 'confirm', primary: true },
       { title: `Next (${((currentIndex + 1) % selectable.length) + 1}/${selectable.length})`, value: 'next' },
       { title: `Previous (${((currentIndex - 1 + selectable.length) % selectable.length) + 1}/${selectable.length})`, value: 'prev' },
-      { title: 'Cancel manual recognition', value: 'cancel' }
+      { title: 'Cancel manual detection', value: 'cancel' }
     ]
   });
 }
 
 async function waitForCandidateManualAction(
   page: Page,
-  selectable: RecognizedCandidate[],
+  selectable: DetectedCandidate[],
   currentIndex: number,
-  currentCandidate: RecognizedCandidate,
+  currentCandidate: DetectedCandidate,
   runtimeConsole: SuppressedRuntimeConsole
 ): Promise<ManualOverlayAction> {
   let selected = await readOverlaySelection(page).catch(() => []);
@@ -2417,12 +2417,12 @@ async function waitForCandidateManualAction(
   }
 }
 
-function formatCandidateSummary(candidate: RecognizedCandidate): string {
+function formatCandidateSummary(candidate: DetectedCandidate): string {
   const fields = candidate.fields.slice(0, 8).map((field) => field.name).join(', ');
-  return `${recognizerCandidateTypeLabel(candidate.type)}, ${candidate.itemCount} items${fields ? `, fields: ${fields}` : ''}`;
+  return `${detectorCandidateTypeLabel(candidate.type)}, ${candidate.itemCount} items${fields ? `, fields: ${fields}` : ''}`;
 }
 
-async function choosePaginationInteractively(page: Page, candidates: RecognizedCandidate[], runtimeConsole: SuppressedRuntimeConsole, scrollProbe?: ScrollProbeSummary): Promise<RecognizedPagination | undefined> {
+async function choosePaginationInteractively(page: Page, candidates: DetectedCandidate[], runtimeConsole: SuppressedRuntimeConsole, scrollProbe?: ScrollProbeSummary): Promise<DetectedPagination | undefined> {
   const restoreViewport = await preparePaginationDetectionViewport(page, candidates).catch(() => undefined);
   const options = await detectInteractivePaginationOptions(page, candidates, scrollProbe);
   if (!options.length) {
@@ -2438,14 +2438,14 @@ async function choosePaginationInteractively(page: Page, candidates: RecognizedC
   await restoreViewport?.().catch(() => undefined);
   if (process.env.OCTOPARSE_TRACKING_DEBUG === '1') {
     const diagnostics = await capturePaginationDiagnostics(page).catch(() => []);
-    runtimeConsole.writeStderr(`\n[recognize-debug] pagination options: ${JSON.stringify(options.map((option) => ({
+    runtimeConsole.writeStderr(`\n[detect-debug] pagination options: ${JSON.stringify(options.map((option) => ({
       type: option.type,
       text: option.text,
       confidence: option.confidence,
       xpath: option.xpath,
       reasons: option.reasons
     })), null, 2)}\n`);
-    runtimeConsole.writeStderr(`[recognize-debug] bottom clickable/text candidates: ${JSON.stringify(diagnostics, null, 2)}\n`);
+    runtimeConsole.writeStderr(`[detect-debug] bottom clickable/text candidates: ${JSON.stringify(diagnostics, null, 2)}\n`);
   }
 
   await installPaginationOverlay(page, options);
@@ -2478,7 +2478,7 @@ async function choosePaginationInteractively(page: Page, candidates: RecognizedC
           choices: () => [
             { title: lastPaginationSelection ? 'Confirm recommended pagination' : 'Waiting for browser selection', value: lastPaginationSelection ? 'confirm' : 'wait' },
             { title: 'Extract single page without pagination', value: 'single-page' },
-            { title: 'Cancel manual recognition', value: 'cancel' }
+            { title: 'Cancel manual detection', value: 'cancel' }
           ]
         });
       await clearManualOverlayAction(page).catch(() => undefined);
@@ -2512,7 +2512,7 @@ async function choosePaginationInteractively(page: Page, candidates: RecognizedC
         }
         return selected ? options.find((option) => paginationKey(option) === selected) : recommended;
       }
-      throw new Error('User canceled manual recognition');
+      throw new Error('User canceled manual detection');
     }
   } finally {
     if (!keepManualOverlayForNextStep) await removeManualOverlay(page).catch(() => undefined);
@@ -2523,7 +2523,7 @@ async function choosePaginationInteractively(page: Page, candidates: RecognizedC
 
 async function showPaginationChoiceInBrowser(
   page: Page,
-  options: RecognizedPagination[],
+  options: DetectedPagination[],
   selectedKey: string | undefined,
   runtimeConsole: SuppressedRuntimeConsole
 ): Promise<void> {
@@ -2535,7 +2535,7 @@ async function showPaginationChoiceInBrowser(
     choices: [
       { title: selectedKey ? 'Confirm current pagination' : 'Waiting for browser selection', value: selectedKey ? 'confirm' : 'wait', primary: Boolean(selectedKey) },
       { title: 'Extract single page', value: 'single-page' },
-      { title: 'Cancel manual recognition', value: 'cancel' }
+      { title: 'Cancel manual detection', value: 'cancel' }
     ]
   });
 }
@@ -2555,7 +2555,7 @@ async function showManualProgressOverlay(page: Page, options: {
 
 async function waitForPaginationManualAction(
   page: Page,
-  options: RecognizedPagination[],
+  options: DetectedPagination[],
   selectedKey: string | undefined,
   runtimeConsole: SuppressedRuntimeConsole
 ): Promise<ManualOverlayAction> {
@@ -2579,26 +2579,26 @@ let lastCandidateSelection: string[] = [];
 let lastPaginationSelection: string | undefined;
 let lastDetailFieldSelection: string[] = [];
 
-async function chooseDetailPlanInteractively(page: Page, candidates: RecognizedCandidate[], runtimeConsole: SuppressedRuntimeConsole, timeoutMs: number): Promise<Map<string, RecognizedDetailPlan>> {
-  const output = new Map<string, RecognizedDetailPlan>();
+async function chooseDetailPlanInteractively(page: Page, candidates: DetectedCandidate[], runtimeConsole: SuppressedRuntimeConsole, timeoutMs: number): Promise<Map<string, DetectedDetailPlan>> {
+  const output = new Map<string, DetectedDetailPlan>();
   for (const candidate of candidates) {
-    const urlField = candidate.fields.find((field) => field.name === 'url' && field.kind === 'href');
+    const urlField = selectDetailUrlField(candidate);
     if (!urlField) continue;
     const sampleUrls = Array.from(new Set([
-      ...candidate.sampleRows.map((row) => row.url),
+      ...candidate.sampleRows.map((row) => row[urlField.name]),
       ...urlField.samples
-    ].filter((value): value is string => Boolean(value && /^https?:\/\//i.test(value))))).slice(0, 3);
+    ].filter(isHttpUrl))).slice(0, 3);
     if (!sampleUrls.length) continue;
-    const mode = await chooseDetailModeInteractively(page, candidate, sampleUrls, runtimeConsole);
+    const mode = await chooseDetailModeInteractively(page, candidate, urlField.name, sampleUrls, runtimeConsole);
     if (mode === 'list_only') continue;
     const detail = await inspectDetailSampleManually(page, sampleUrls[0], runtimeConsole, timeoutMs).catch((error) => ({
       fields: [],
       sampleRows: [],
-      reasons: [`Detail page sample recognition failed: ${error instanceof Error ? error.message : String(error)}`]
+      reasons: [`Detail page sample detection failed: ${error instanceof Error ? error.message : String(error)}`]
     }));
     output.set(candidate.id, {
       mode,
-      urlField: 'url',
+      urlField: urlField.name,
       sampleUrls: sampleUrls.slice(0, 1),
       fields: detail.fields,
       sampleRows: detail.sampleRows,
@@ -2613,13 +2613,26 @@ async function chooseDetailPlanInteractively(page: Page, candidates: RecognizedC
   return output;
 }
 
-async function chooseDetailModeInteractively(page: Page, candidate: RecognizedCandidate, sampleUrls: string[], runtimeConsole: SuppressedRuntimeConsole): Promise<RecognizedDetailMode> {
+function selectDetailUrlField(candidate: DetectedCandidate): DetectedField | undefined {
+  const hrefFields = candidate.fields.filter((field) => field.kind === 'href' && fieldHasHttpSample(candidate, field));
+  return hrefFields.find((field) => field.name === 'url') ?? hrefFields[0];
+}
+
+function fieldHasHttpSample(candidate: DetectedCandidate, field: DetectedField): boolean {
+  return field.samples.some(isHttpUrl) || candidate.sampleRows.some((row) => isHttpUrl(row[field.name]));
+}
+
+function isHttpUrl(value: unknown): value is string {
+  return typeof value === 'string' && /^https?:\/\//i.test(value);
+}
+
+async function chooseDetailModeInteractively(page: Page, candidate: DetectedCandidate, urlFieldName: string, sampleUrls: string[], runtimeConsole: SuppressedRuntimeConsole): Promise<DetectedDetailMode> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) return 'list_only';
   try {
-    return await chooseDetailModeInBrowser(page, candidate, sampleUrls, runtimeConsole).catch(() => runLiveSelectMenu({
+    return await chooseDetailModeInBrowser(page, candidate, urlFieldName, sampleUrls, runtimeConsole).catch(() => runLiveSelectMenu({
       write: (value) => runtimeConsole.writeStderr(value),
       title: () => [
-        `Candidate ${candidate.id} contains detail URL field "url".`,
+        `Candidate ${candidate.id} contains detail URL field "${urlFieldName}".`,
         `Sample: ${truncateText(sampleUrls[0] || '', 90)}`,
         'Choose extraction mode:'
       ].join('\n'),
@@ -2638,15 +2651,16 @@ async function chooseDetailModeInteractively(page: Page, candidate: RecognizedCa
 
 async function chooseDetailModeInBrowser(
   page: Page,
-  candidate: RecognizedCandidate,
+  candidate: DetectedCandidate,
+  urlFieldName: string,
   sampleUrls: string[],
   runtimeConsole: SuppressedRuntimeConsole
-): Promise<RecognizedDetailMode> {
+): Promise<DetectedDetailMode> {
   writeManualOverlayHintOnce(runtimeConsole, page, `detail-mode:${candidate.id}`, '\nUse the browser overlay to confirm detail page extraction mode.\n');
   await showManualOverlay(page, {
     title: 'Detail Page Extraction Mode',
     message: [
-      `Candidate ${candidate.id} contains detail URL field "url".`,
+      `Candidate ${candidate.id} contains detail URL field "${urlFieldName}".`,
       `Sample: ${truncateText(sampleUrls[0] || '', 90)}`
     ].join('\n'),
     choices: [
@@ -2661,12 +2675,12 @@ async function chooseDetailModeInBrowser(
   return 'list_only';
 }
 
-async function inspectDetailSamples(page: Page, urls: string[], timeoutMs: number): Promise<{ fields: RecognizedField[]; sampleRows: Record<string, string>[]; reasons: string[] }> {
+async function inspectDetailSamples(page: Page, urls: string[], timeoutMs: number): Promise<{ fields: DetectedField[]; sampleRows: Record<string, string>[]; reasons: string[] }> {
   const browser = page.browser();
   const currentUrl = page.url();
   const sampled = urls.slice(0, 3);
   const rows: Record<string, string>[] = [];
-  let templateFields: RecognizedField[] = [];
+  let templateFields: DetectedField[] = [];
   const reasons: string[] = [];
   for (const url of sampled) {
     const detailPage = await browser.newPage();
@@ -2677,7 +2691,7 @@ async function inspectDetailSamples(page: Page, urls: string[], timeoutMs: numbe
       const candidates = await detectDetails(detailPage);
       const detail = candidates[0];
       if (!detail) {
-        reasons.push(`No detail fields recognized: ${url}`);
+        reasons.push(`No detail fields detected: ${url}`);
         continue;
       }
       if (!templateFields.length) {
@@ -2695,11 +2709,11 @@ async function inspectDetailSamples(page: Page, urls: string[], timeoutMs: numbe
   if (page.url() !== currentUrl) {
     await page.goto(currentUrl, { waitUntil: 'domcontentloaded', timeout: timeoutMs }).catch(() => undefined);
   }
-  if (templateFields.length) reasons.push(`Recognized fields from ${rows.length} detail page sample(s): ${templateFields.map((field) => field.name).join(', ')}`);
+  if (templateFields.length) reasons.push(`Detected fields from ${rows.length} detail page sample(s): ${templateFields.map((field) => field.name).join(', ')}`);
   return { fields: templateFields, sampleRows: rows, reasons };
 }
 
-async function inspectDetailSampleManually(page: Page, url: string, runtimeConsole: SuppressedRuntimeConsole, timeoutMs: number): Promise<{ fields: RecognizedField[]; sampleRows: Record<string, string>[]; reasons: string[] }> {
+async function inspectDetailSampleManually(page: Page, url: string, runtimeConsole: SuppressedRuntimeConsole, timeoutMs: number): Promise<{ fields: DetectedField[]; sampleRows: Record<string, string>[]; reasons: string[] }> {
   const browser = page.browser();
   const detailPage = await browser.newPage();
   try {
@@ -2733,7 +2747,7 @@ async function inspectDetailSampleManually(page: Page, url: string, runtimeConso
               choices: () => [
                 { title: lastDetailFieldSelection.length ? 'Confirm current detail fields' : 'Waiting for browser selection', value: lastDetailFieldSelection.length ? 'confirm' : 'wait' },
                 { title: 'Clear detail fields and select again', value: 'clear' },
-                { title: 'Cancel manual recognition', value: 'cancel' }
+                { title: 'Cancel manual detection', value: 'cancel' }
               ]
             });
           await clearManualOverlayAction(detailPage).catch(() => undefined);
@@ -2746,7 +2760,7 @@ async function inspectDetailSampleManually(page: Page, url: string, runtimeConso
             continue;
           }
           if (action === 'confirm') break;
-          throw new Error('User canceled manual recognition');
+          throw new Error('User canceled manual detection');
         }
       }
 
@@ -2778,7 +2792,7 @@ async function showDetailFieldChoiceInBrowser(page: Page, selectedFields: string
     choices: [
       { title: selectedFields.length ? 'Confirm current detail fields' : 'Waiting for browser selection', value: selectedFields.length ? 'confirm' : 'wait', primary: Boolean(selectedFields.length) },
       { title: 'Clear detail fields', value: 'clear' },
-      { title: 'Cancel manual recognition', value: 'cancel' }
+      { title: 'Cancel manual detection', value: 'cancel' }
     ]
   });
 }
@@ -2862,7 +2876,7 @@ async function runLiveSelectMenu<T extends string>(options: {
     const choices = options.choices();
     if (value === '\u0003') {
       cleanup();
-      rejectValue?.(new Error('User canceled manual recognition'));
+      rejectValue?.(new Error('User canceled manual detection'));
       return;
     }
     if (value === '\u001b[A') {
@@ -3385,7 +3399,7 @@ async function showManualOverlay(page: Page, options: {
         button.textContent = choice.value === 'cancel' ? 'Canceling...' : 'Processing...';
         if (!status.isConnected) panel.insertBefore(status, actions);
         status.className = 'status processing';
-        status.textContent = choice.value === 'cancel' ? 'Canceling recognition, please wait.' : 'Action received, processing, please wait.';
+        status.textContent = choice.value === 'cancel' ? 'Canceling detection, please wait.' : 'Action received, processing, please wait.';
         w.__octopusManualOverlayState = {
           ...(w.__octopusManualOverlayState || {}),
           action: choice.value
@@ -3770,14 +3784,14 @@ async function removeSearchSubmitPickerOverlay(page: Page): Promise<void> {
   });
 }
 
-function formatSelectedCandidates(ids: string[], candidates: RecognizedCandidate[]): string {
+function formatSelectedCandidates(ids: string[], candidates: DetectedCandidate[]): string {
   if (!ids.length) return 'none';
   const byId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
   return ids.map((id) => {
     const candidate = byId.get(id);
     if (!candidate) return id;
     const fields = candidate.fields.slice(0, 4).map((field) => field.name).join(',');
-    return `${id} ${recognizerCandidateTypeLabel(candidate.type)} ${candidate.itemCount} items${fields ? ` [${fields}]` : ''}`;
+    return `${id} ${detectorCandidateTypeLabel(candidate.type)} ${candidate.itemCount} items${fields ? ` [${fields}]` : ''}`;
   }).join('; ');
 }
 
@@ -3791,8 +3805,8 @@ function selectedDetailFields(selected: Array<{
   xpath: string;
   selector: string;
   sample: string;
-  diagnostics?: RecognizedFieldDiagnostics;
-}>): RecognizedField[] {
+  diagnostics?: DetectedFieldDiagnostics;
+}>): DetectedField[] {
   const counts = new Map<string, number>();
   return selected
     .filter((field) => field.xpath && field.sample)
@@ -3815,7 +3829,7 @@ function selectedDetailFields(selected: Array<{
     });
 }
 
-function contentCleanupOperations(): RecognizedField['operations'] {
+function contentCleanupOperations(): DetectedField['operations'] {
   return [
     { type: 'regex_replace', params: ['\\.data_color_scheme_dark\\{[\\s\\S]*$', ''] },
     { type: 'regex_replace', params: ['--weui-[\\s\\S]*$', ''] },
@@ -3828,7 +3842,7 @@ function sanitizeDetailFieldName(value: string): string {
   return normalized || 'field';
 }
 
-function formatSelectedPagination(key: string | undefined, options: RecognizedPagination[]): string {
+function formatSelectedPagination(key: string | undefined, options: DetectedPagination[]): string {
   if (!key) return 'single-page extraction';
   const option = options.find((item) => paginationKey(item) === key);
   if (!option) return key;
@@ -3838,7 +3852,7 @@ function formatSelectedPagination(key: string | undefined, options: RecognizedPa
   return `${label}${mode}${text}, confidence ${Math.round(option.confidence * 100)}%`;
 }
 
-function recognizerCandidateTypeLabel(type: RecognizedCandidate['type']): string {
+function detectorCandidateTypeLabel(type: DetectedCandidate['type']): string {
   if (type === 'table') return 'table';
   if (type === 'search_results') return 'results list';
   if (type === 'repeated_card') return 'repeated cards';
@@ -3915,7 +3929,7 @@ async function capturePaginationDiagnostics(page: Page): Promise<Array<{ tag: st
   });
 }
 
-async function preparePaginationDetectionViewport(page: Page, candidates: RecognizedCandidate[]): Promise<(() => Promise<void>) | undefined> {
+async function preparePaginationDetectionViewport(page: Page, candidates: DetectedCandidate[]): Promise<(() => Promise<void>) | undefined> {
   const targets = candidates.map((candidate) => candidate.itemXPath || candidate.xpath).filter(Boolean);
   if (!targets.length) return undefined;
   const originalY = await page.evaluate(() => window.scrollY).catch(() => undefined);
@@ -3960,7 +3974,7 @@ async function preparePaginationDetectionViewport(page: Page, candidates: Recogn
   };
 }
 
-async function detectInteractivePaginationOptions(page: Page, candidates: RecognizedCandidate[], scrollProbe?: ScrollProbeSummary): Promise<RecognizedPagination[]> {
+async function detectInteractivePaginationOptions(page: Page, candidates: DetectedCandidate[], scrollProbe?: ScrollProbeSummary): Promise<DetectedPagination[]> {
   const selected = candidates.map((candidate) => ({
     id: candidate.id,
     xpath: candidate.xpath,
@@ -4554,11 +4568,11 @@ async function detectInteractivePaginationOptions(page: Page, candidates: Recogn
       .filter((option, index, array) => array.findIndex((item) => item.xpath === option.xpath) === index)
       .sort((a, b) => b.confidence - a.confidence)
       .slice(0, 8);
-  }, selected) as RecognizedPagination[];
+  }, selected) as DetectedPagination[];
 
   const existing = selected
     .map((item) => item.pagination && !scrollProbeRulesOutScroll(item, scrollProbe) ? item.pagination : undefined)
-    .filter((pagination): pagination is RecognizedPagination => Boolean(pagination));
+    .filter((pagination): pagination is DetectedPagination => Boolean(pagination));
   const probeDetected = Object.values(scrollProbePaginationForCandidates(candidates, scrollProbe));
   return [...detected, ...existing, ...probeDetected]
     .filter(isPlausiblePaginationOption)
@@ -4569,7 +4583,7 @@ async function detectInteractivePaginationOptions(page: Page, candidates: Recogn
     .sort(comparePaginationOptions);
 }
 
-function isPlausiblePaginationOption(pagination: RecognizedPagination): boolean {
+function isPlausiblePaginationOption(pagination: DetectedPagination): boolean {
   if (pagination.type === 'load_more') return reliableLoadMorePagination(pagination);
   if (pagination.type !== 'next_page') return true;
   const text = (pagination.text || '').trim();
@@ -4586,7 +4600,7 @@ function isPlausiblePaginationOption(pagination: RecognizedPagination): boolean 
   return false;
 }
 
-function reliableLoadMorePagination(pagination: RecognizedPagination): boolean {
+function reliableLoadMorePagination(pagination: DetectedPagination): boolean {
   if (pagination.type !== 'load_more') return false;
   const text = (pagination.text || '').replace(/\s+/g, ' ').trim();
   const evidence = `${pagination.xpath || ''} ${pagination.reasons.join(' ')}`;
@@ -4605,21 +4619,21 @@ function loadMoreRecordExpanderText(value: string): boolean {
     || /^(?:查看|显示|展开|查看更多).{0,8}(?:详情|详细信息)(?:\s|$)/i.test(normalized);
 }
 
-function comparePaginationOptions(a: RecognizedPagination, b: RecognizedPagination): number {
-  const typeWeight = (pagination: RecognizedPagination) => {
+function comparePaginationOptions(a: DetectedPagination, b: DetectedPagination): number {
+  const typeWeight = (pagination: DetectedPagination) => {
     if (pagination.type === 'load_more') return 0.26;
     if (pagination.type === 'next_page') return reliableNextPagination(pagination) ? 0.28 : -0.16;
     if (pagination.type === 'scroll') return 0.04;
     return 0;
   };
-  const sourceWeight = (pagination: RecognizedPagination) => {
+  const sourceWeight = (pagination: DetectedPagination) => {
     const reasons = pagination.reasons.join(' ');
     return /protected SmartProxy|SmartProxy/i.test(reasons) ? 0.08 : 0;
   };
   return (b.confidence + typeWeight(b) + sourceWeight(b)) - (a.confidence + typeWeight(a) + sourceWeight(a));
 }
 
-async function installCandidateOverlay(page: Page, candidates: RecognizedCandidate[], paginations: RecognizedPagination[] = []): Promise<void> {
+async function installCandidateOverlay(page: Page, candidates: DetectedCandidate[], paginations: DetectedPagination[] = []): Promise<void> {
   const overlayCandidates = candidates
     .filter((candidate) => candidate.type === 'table' || candidate.type === 'repeated_card' || candidate.type === 'search_results' || candidate.type === 'link_collection')
     .map((candidate) => ({
@@ -4651,15 +4665,15 @@ async function installCandidateOverlay(page: Page, candidates: RecognizedCandida
   }));
   await page.evaluate(({ items, paginationItems }) => {
     const w = window as typeof window & {
-      __octopusRecognitionSelection?: string;
-      __octopusRecognitionSelections?: string[];
-      __octopusRecognitionClearSelection?: () => void;
-      __octopusRecognitionCleanup?: () => void;
+      __octopusDetectionSelection?: string;
+      __octopusDetectionSelections?: string[];
+      __octopusDetectionClearSelection?: () => void;
+      __octopusDetectionCleanup?: () => void;
     };
-    w.__octopusRecognitionCleanup?.();
-    document.getElementById('octopus-recognition-overlay-root')?.remove();
-    w.__octopusRecognitionSelection = undefined;
-    w.__octopusRecognitionSelections = [];
+    w.__octopusDetectionCleanup?.();
+    document.getElementById('octopus-detection-overlay-root')?.remove();
+    w.__octopusDetectionSelection = undefined;
+    w.__octopusDetectionSelections = [];
 
     const palette = [
       '#009f4d',
@@ -4672,7 +4686,7 @@ async function installCandidateOverlay(page: Page, candidates: RecognizedCandida
       '#4b5563'
     ];
     const root = document.createElement('div');
-    root.id = 'octopus-recognition-overlay-root';
+    root.id = 'octopus-detection-overlay-root';
     root.style.position = 'fixed';
     root.style.left = '0';
     root.style.top = '0';
@@ -4715,11 +4729,11 @@ async function installCandidateOverlay(page: Page, candidates: RecognizedCandida
       const originalOutline = html.style.outline;
       const originalOutlineOffset = html.style.outlineOffset;
       const originalBackground = html.style.backgroundColor;
-      html.dataset.octopusRecognitionOutline = originalOutline;
-      html.dataset.octopusRecognitionOutlineOffset = originalOutlineOffset;
-      html.dataset.octopusRecognitionBackground = originalBackground;
-      html.dataset.octopusRecognitionColor = color;
-      html.dataset.octopusRecognitionEmphasis = emphasis;
+      html.dataset.octopusDetectionOutline = originalOutline;
+      html.dataset.octopusDetectionOutlineOffset = originalOutlineOffset;
+      html.dataset.octopusDetectionBackground = originalBackground;
+      html.dataset.octopusDetectionColor = color;
+      html.dataset.octopusDetectionEmphasis = emphasis;
       html.style.outline = `${emphasis === 'primary' ? 3 : 2}px ${emphasis === 'primary' ? 'solid' : 'dashed'} ${color}`;
       html.style.outlineOffset = '-2px';
       html.style.backgroundColor = emphasis === 'primary' ? `${color}16` : `${color}08`;
@@ -5039,10 +5053,10 @@ async function installCandidateOverlay(page: Page, candidates: RecognizedCandida
 
     function drawFieldBox(element: Element, labelText: string, color: string): void {
       const html = element as HTMLElement;
-      if (!html.dataset.octopusRecognitionFieldOutline) {
-        html.dataset.octopusRecognitionFieldOutline = html.style.outline;
-        html.dataset.octopusRecognitionFieldOutlineOffset = html.style.outlineOffset;
-        html.dataset.octopusRecognitionFieldBackground = html.style.backgroundColor;
+      if (!html.dataset.octopusDetectionFieldOutline) {
+        html.dataset.octopusDetectionFieldOutline = html.style.outline;
+        html.dataset.octopusDetectionFieldOutlineOffset = html.style.outlineOffset;
+        html.dataset.octopusDetectionFieldBackground = html.style.backgroundColor;
       }
       html.style.outline = `2px solid ${color}`;
       html.style.outlineOffset = '-1px';
@@ -5073,10 +5087,10 @@ async function installCandidateOverlay(page: Page, candidates: RecognizedCandida
       const originalOutlineOffset = html.style.outlineOffset;
       const originalBackground = html.style.backgroundColor;
       const originalBoxShadow = html.style.boxShadow;
-      html.dataset.octopusRecognitionOutline = originalOutline;
-      html.dataset.octopusRecognitionOutlineOffset = originalOutlineOffset;
-      html.dataset.octopusRecognitionBackground = originalBackground;
-      html.dataset.octopusRecognitionBoxShadow = originalBoxShadow;
+      html.dataset.octopusDetectionOutline = originalOutline;
+      html.dataset.octopusDetectionOutlineOffset = originalOutlineOffset;
+      html.dataset.octopusDetectionBackground = originalBackground;
+      html.dataset.octopusDetectionBoxShadow = originalBoxShadow;
       html.style.outline = '3px solid #f97316';
       html.style.outlineOffset = '-2px';
       html.style.backgroundColor = 'rgba(249,115,22,.14)';
@@ -5118,8 +5132,8 @@ async function installCandidateOverlay(page: Page, candidates: RecognizedCandida
       highlighted.forEach((element) => {
         const candidateId = byElement.get(element);
         const selected = candidateId ? selectedIds.has(candidateId) : false;
-        const color = element.dataset.octopusRecognitionColor || '#2563eb';
-        const emphasis = element.dataset.octopusRecognitionEmphasis === 'secondary' ? 'secondary' : 'primary';
+        const color = element.dataset.octopusDetectionColor || '#2563eb';
+        const emphasis = element.dataset.octopusDetectionEmphasis === 'secondary' ? 'secondary' : 'primary';
         element.style.outline = `${selected ? 5 : emphasis === 'primary' ? 3 : 2}px ${selected || emphasis === 'primary' ? 'solid' : 'dashed'} ${color}`;
         element.style.outlineOffset = '-2px';
         element.style.backgroundColor = selected ? `${color}33` : emphasis === 'primary' ? `${color}16` : `${color}08`;
@@ -5133,8 +5147,8 @@ async function installCandidateOverlay(page: Page, candidates: RecognizedCandida
         label.style.transform = selected ? 'scale(1.08)' : '';
         label.style.filter = selected ? 'saturate(1.35)' : '';
       });
-      w.__octopusRecognitionSelection = Array.from(selectedIds)[0];
-      w.__octopusRecognitionSelections = Array.from(selectedIds);
+      w.__octopusDetectionSelection = Array.from(selectedIds)[0];
+      w.__octopusDetectionSelections = Array.from(selectedIds);
     }
 
     const prepared = items
@@ -5229,45 +5243,45 @@ async function installCandidateOverlay(page: Page, candidates: RecognizedCandida
     document.addEventListener('click', handleClick, true);
     window.addEventListener('scroll', handleViewportChange, true);
     window.addEventListener('resize', handleViewportChange, true);
-    w.__octopusRecognitionClearSelection = () => {
+    w.__octopusDetectionClearSelection = () => {
       selectedIds.clear();
       syncSelectionStyles();
     };
-    w.__octopusRecognitionCleanup = () => {
+    w.__octopusDetectionCleanup = () => {
       document.removeEventListener('click', handleClick, true);
       window.removeEventListener('scroll', handleViewportChange, true);
       window.removeEventListener('resize', handleViewportChange, true);
       highlighted.forEach((element) => {
-        element.style.outline = element.dataset.octopusRecognitionOutline || '';
-        element.style.outlineOffset = element.dataset.octopusRecognitionOutlineOffset || '';
-        element.style.backgroundColor = element.dataset.octopusRecognitionBackground || '';
-        element.style.boxShadow = element.dataset.octopusRecognitionBoxShadow || '';
+        element.style.outline = element.dataset.octopusDetectionOutline || '';
+        element.style.outlineOffset = element.dataset.octopusDetectionOutlineOffset || '';
+        element.style.backgroundColor = element.dataset.octopusDetectionBackground || '';
+        element.style.boxShadow = element.dataset.octopusDetectionBoxShadow || '';
         element.style.cursor = '';
         element.style.opacity = '';
-        delete element.dataset.octopusRecognitionOutline;
-        delete element.dataset.octopusRecognitionOutlineOffset;
-        delete element.dataset.octopusRecognitionBackground;
-        delete element.dataset.octopusRecognitionBoxShadow;
-        delete element.dataset.octopusRecognitionColor;
-        delete element.dataset.octopusRecognitionEmphasis;
+        delete element.dataset.octopusDetectionOutline;
+        delete element.dataset.octopusDetectionOutlineOffset;
+        delete element.dataset.octopusDetectionBackground;
+        delete element.dataset.octopusDetectionBoxShadow;
+        delete element.dataset.octopusDetectionColor;
+        delete element.dataset.octopusDetectionEmphasis;
       });
       fieldHighlighted.forEach((element) => {
-        element.style.outline = element.dataset.octopusRecognitionFieldOutline || '';
-        element.style.outlineOffset = element.dataset.octopusRecognitionFieldOutlineOffset || '';
-        element.style.backgroundColor = element.dataset.octopusRecognitionFieldBackground || '';
-        delete element.dataset.octopusRecognitionFieldOutline;
-        delete element.dataset.octopusRecognitionFieldOutlineOffset;
-        delete element.dataset.octopusRecognitionFieldBackground;
+        element.style.outline = element.dataset.octopusDetectionFieldOutline || '';
+        element.style.outlineOffset = element.dataset.octopusDetectionFieldOutlineOffset || '';
+        element.style.backgroundColor = element.dataset.octopusDetectionFieldBackground || '';
+        delete element.dataset.octopusDetectionFieldOutline;
+        delete element.dataset.octopusDetectionFieldOutlineOffset;
+        delete element.dataset.octopusDetectionFieldBackground;
       });
       root.remove();
-      delete w.__octopusRecognitionClearSelection;
-      delete w.__octopusRecognitionCleanup;
-      delete w.__octopusRecognitionSelections;
+      delete w.__octopusDetectionClearSelection;
+      delete w.__octopusDetectionCleanup;
+      delete w.__octopusDetectionSelections;
     };
   }, { items: overlayCandidates, paginationItems: overlayPaginations });
 }
 
-async function installPaginationOverlay(page: Page, paginations: RecognizedPagination[]): Promise<void> {
+async function installPaginationOverlay(page: Page, paginations: DetectedPagination[]): Promise<void> {
   const overlayPaginations = paginations.map((pagination) => ({
     key: paginationKey(pagination),
     type: pagination.type,
@@ -5444,9 +5458,9 @@ async function installPaginationOverlay(page: Page, paginations: RecognizedPagin
 
 async function readOverlaySelection(page: Page): Promise<string[]> {
   return page.evaluate(() => {
-    const w = window as typeof window & { __octopusRecognitionSelections?: string[]; __octopusRecognitionSelection?: string };
-    if (Array.isArray(w.__octopusRecognitionSelections)) return w.__octopusRecognitionSelections;
-    return w.__octopusRecognitionSelection ? [w.__octopusRecognitionSelection] : [];
+    const w = window as typeof window & { __octopusDetectionSelections?: string[]; __octopusDetectionSelection?: string };
+    if (Array.isArray(w.__octopusDetectionSelections)) return w.__octopusDetectionSelections;
+    return w.__octopusDetectionSelection ? [w.__octopusDetectionSelection] : [];
   });
 }
 
@@ -5995,7 +6009,7 @@ async function readDetailFieldObjects(page: Page): Promise<Array<{
   xpath: string;
   selector: string;
   sample: string;
-  diagnostics?: RecognizedFieldDiagnostics;
+  diagnostics?: DetectedFieldDiagnostics;
 }>> {
   return page.evaluate(() => {
     const w = window as typeof window & {
@@ -6005,7 +6019,7 @@ async function readDetailFieldObjects(page: Page): Promise<Array<{
         xpath: string;
         selector: string;
         sample: string;
-        diagnostics?: RecognizedFieldDiagnostics;
+        diagnostics?: DetectedFieldDiagnostics;
       }>;
     };
     return Array.isArray(w.__octopusDetailFieldObjects) ? w.__octopusDetailFieldObjects : [];
@@ -6042,8 +6056,8 @@ async function clearPaginationOverlaySelection(page: Page): Promise<void> {
 
 async function removeCandidateOverlay(page: Page): Promise<void> {
   await page.evaluate(() => {
-    const w = window as typeof window & { __octopusRecognitionCleanup?: () => void };
-    w.__octopusRecognitionCleanup?.();
+    const w = window as typeof window & { __octopusDetectionCleanup?: () => void };
+    w.__octopusDetectionCleanup?.();
   });
 }
 
@@ -6054,11 +6068,11 @@ async function removePaginationOverlay(page: Page): Promise<void> {
   });
 }
 
-function paginationKey(pagination: RecognizedPagination): string {
+function paginationKey(pagination: DetectedPagination): string {
   return `${pagination.type}:${pagination.xpath || pagination.text}`;
 }
 
-async function refineCandidateFields(page: Page, candidates: RecognizedCandidate[]): Promise<RecognizedCandidate[]> {
+async function refineCandidateFields(page: Page, candidates: DetectedCandidate[]): Promise<DetectedCandidate[]> {
   const input = candidates
     .filter((candidate) => candidate.type !== 'detail' && candidate.type !== 'form')
     .map((candidate) => ({
@@ -7072,7 +7086,7 @@ async function refineCandidateFields(page: Page, candidates: RecognizedCandidate
       output[item.id] = { fields: cleanFields, sampleRows };
     }
     return output;
-  }, input) as Record<string, { fields: RecognizedField[]; sampleRows: Record<string, string>[] }>;
+  }, input) as Record<string, { fields: DetectedField[]; sampleRows: Record<string, string>[] }>;
 
   return candidates.map((candidate) => {
     const refined = refinedById[candidate.id];
@@ -7193,7 +7207,7 @@ async function detectDetails(page: Page): Promise<RawCandidate[]> {
       }
     };
   });
-  const fields: RecognizedField[] = [];
+  const fields: DetectedField[] = [];
   for (const [name, value] of Object.entries(detail.fields)) {
     if (!value?.value) continue;
     fields.push({
@@ -7203,7 +7217,7 @@ async function detectDetails(page: Page): Promise<RawCandidate[]> {
       xpath: value.xpath,
       relativeSelector: value.selector,
       relativeXPath: value.xpath,
-      ...(name === 'content' && 'diagnostics' in value && value.diagnostics ? { diagnostics: value.diagnostics as RecognizedFieldDiagnostics } : {}),
+      ...(name === 'content' && 'diagnostics' in value && value.diagnostics ? { diagnostics: value.diagnostics as DetectedFieldDiagnostics } : {}),
       ...(name === 'content' ? { operations: contentCleanupOperations() } : {}),
       samples: [value.value].filter(Boolean)
     });
@@ -7224,7 +7238,7 @@ async function detectDetails(page: Page): Promise<RawCandidate[]> {
   }];
 }
 
-async function submitInputs(host: ExtensionRecognizerHost, options: RecognizeOptions, inputOverrides?: Map<string, SearchInputCandidate>): Promise<RecognizedSearchPlan | undefined> {
+async function submitInputs(host: ExtensionDetectorHost, options: DetectOptions, inputOverrides?: Map<string, SearchInputCandidate>): Promise<DetectedSearchPlan | undefined> {
   const beforePages = new Set<Page>((await host.browser()?.pages().catch(() => []) ?? []).filter((page) => !page.isClosed()));
   await debugSearchTabs('before-submit', host, options, beforePages).catch(() => undefined);
   const newPageWatcher = watchNewPage(host.browser(), beforePages, Math.min(options.timeoutMs, 12_000));
@@ -7255,7 +7269,7 @@ async function submitInputs(host: ExtensionRecognizerHost, options: RecognizeOpt
     debugSearchSubmitDecision('click-submit-error', undefined, { error: String(_error?.message || _error) });
     return undefined;
   });
-  let submit: RecognizedSearchPlan['submit'] | undefined = effectiveSubmit
+  let submit: DetectedSearchPlan['submit'] | undefined = effectiveSubmit
     ? { mode: 'click', xpath: effectiveSubmit.xpath, ...(effectiveSubmit.text ? { text: effectiveSubmit.text } : {}) }
     : undefined;
   if (!effectiveSubmit && lastInputXPath) {
@@ -7329,7 +7343,7 @@ async function resolveSearchInputOverrides(page: Page, names: string[], existing
   return resolved;
 }
 
-async function retrySearchWithEnter(host: ExtensionRecognizerHost, options: RecognizeOptions, existingPlan: RecognizedSearchPlan | undefined): Promise<RecognizedSearchPlan | undefined> {
+async function retrySearchWithEnter(host: ExtensionDetectorHost, options: DetectOptions, existingPlan: DetectedSearchPlan | undefined): Promise<DetectedSearchPlan | undefined> {
   const entries = Object.entries(options.input ?? {});
   const last = entries[entries.length - 1];
   const lastInput = existingPlan?.inputs[existingPlan.inputs.length - 1];
@@ -7372,7 +7386,7 @@ async function retrySearchWithEnter(host: ExtensionRecognizerHost, options: Reco
     : undefined;
 }
 
-async function debugSearchTabs(label: string, host: ExtensionRecognizerHost, options: RecognizeOptions, beforePages: Set<Page>): Promise<void> {
+async function debugSearchTabs(label: string, host: ExtensionDetectorHost, options: DetectOptions, beforePages: Set<Page>): Promise<void> {
   if (process.env.OCTOPARSE_TRACKING_DEBUG !== '1') return;
   const browser = host.browser();
   if (!browser) return;
@@ -7385,7 +7399,7 @@ async function debugSearchTabs(label: string, host: ExtensionRecognizerHost, opt
     title: await page.title().catch(() => ''),
     score: await scoreSearchResultPage(page, options, !beforePages.has(page), index, pages.length).catch(() => null)
   })));
-  process.stderr.write(`[recognize-debug] search tabs ${label}: ${JSON.stringify(tabs, null, 2)}\n`);
+  process.stderr.write(`[detect-debug] search tabs ${label}: ${JSON.stringify(tabs, null, 2)}\n`);
 }
 
 async function waitAfterSearchSubmitOrLogin(page: Page, timeoutMs: number): Promise<void> {
@@ -7458,7 +7472,7 @@ async function searchSubmitSnapshot(page: Page): Promise<{
   });
 }
 
-async function confirmSearchInputsInteractively(host: ExtensionRecognizerHost, options: RecognizeOptions, runtimeConsole: SuppressedRuntimeConsole): Promise<Map<string, SearchInputCandidate> | undefined> {
+async function confirmSearchInputsInteractively(host: ExtensionDetectorHost, options: DetectOptions, runtimeConsole: SuppressedRuntimeConsole): Promise<Map<string, SearchInputCandidate> | undefined> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) return undefined;
   const entries = Object.entries(options.input ?? {});
   if (!entries.length) return undefined;
@@ -7507,7 +7521,7 @@ async function chooseSearchInputRetryInBrowser(
     message: `Open or focus the search box on the page, then detect again.\nKeyword: ${name} = ${value}`,
     choices: [
       { title: 'Detect again', value: 'retry', primary: true },
-      { title: 'Cancel search recognition', value: 'cancel' }
+      { title: 'Cancel search detection', value: 'cancel' }
     ]
   });
   const selection = await waitForManualOverlayAction(page);
@@ -7522,7 +7536,7 @@ async function chooseSearchInputRetryInCli(name: string, value: string): Promise
     message: `No usable search input was detected: ${name} = ${value}`,
     choices: [
       { title: 'I opened/focused the search box in the browser; detect again', description: 'Use this when the site hides search behind a popup, button, or login state.', value: 'retry' },
-      { title: 'Cancel search recognition', description: 'Stop this recognize run to avoid choosing the wrong input.', value: 'cancel' }
+      { title: 'Cancel search detection', description: 'Stop this detect run to avoid choosing the wrong input.', value: 'cancel' }
     ],
     initial: 0
   });
@@ -7550,7 +7564,7 @@ async function chooseSearchInputCandidateInBrowser(
         description: `${searchInputCandidateLabel(candidate)} | ${candidate.xpath}`,
         primary: index === 0
       })),
-      { title: 'Cancel search recognition', value: 'cancel' }
+      { title: 'Cancel search detection', value: 'cancel' }
     ]
   });
   const selection = await waitForManualOverlayAction(page);
@@ -7564,7 +7578,7 @@ async function chooseSearchInputCandidateInCli(name: string, value: string, cand
     description: `XPath: ${candidate.xpath}${candidate.buttonXPath ? ` | submit: ${candidate.buttonText || candidate.buttonXPath}` : ' | submit: Enter fallback'}`,
     value: `candidate:${index}`
   }));
-  choices.push({ title: 'Cancel search recognition', description: 'Stop this recognize run to avoid choosing the wrong input.', value: 'cancel' });
+  choices.push({ title: 'Cancel search detection', description: 'Stop this detect run to avoid choosing the wrong input.', value: 'cancel' });
   const response = await prompts({
     type: 'select',
     name: 'action',
@@ -8040,7 +8054,7 @@ async function findSearchInputCandidates(page: Page, name: string): Promise<Sear
 }
 
 async function clickSubmit(
-  host: ExtensionRecognizerHost,
+  host: ExtensionDetectorHost,
   submitText: string | undefined,
   timeoutMs: number,
   inputs: SearchSubmitInputRef[] = [],
@@ -8077,7 +8091,7 @@ async function clickSubmit(
 }
 
 async function clickRecordedSearchSubmit(
-  host: ExtensionRecognizerHost,
+  host: ExtensionDetectorHost,
   button: SearchSubmitButton,
   timeoutMs: number,
   inputs: SearchSubmitInputRef[] = []
@@ -8107,10 +8121,10 @@ async function clickRecordedSearchSubmit(
 
 function debugSearchSubmitDecision(label: string, button: SearchSubmitButton | undefined, extra: Record<string, unknown> = {}): void {
   if (process.env.OCTOPARSE_TRACKING_DEBUG !== '1') return;
-  process.stderr.write(`[recognize-debug] search submit ${label}: ${JSON.stringify({ button, ...extra })}\n`);
+  process.stderr.write(`[detect-debug] search submit ${label}: ${JSON.stringify({ button, ...extra })}\n`);
 }
 
-async function captureSearchSubmitEffectBaseline(host: ExtensionRecognizerHost): Promise<{
+async function captureSearchSubmitEffectBaseline(host: ExtensionDetectorHost): Promise<{
   url: string;
   textLength: number;
   pageCount: number;
@@ -8129,7 +8143,7 @@ async function captureSearchSubmitEffectBaseline(host: ExtensionRecognizerHost):
 }
 
 async function waitForSearchSubmitEffect(
-  host: ExtensionRecognizerHost,
+  host: ExtensionDetectorHost,
   baseline: { url: string; textLength: number; pageCount: number; hasLoginGate: boolean; hasResultContent: boolean } | undefined,
   timeoutMs: number
 ): Promise<boolean> {
@@ -8150,7 +8164,7 @@ async function waitForSearchSubmitEffect(
   return false;
 }
 
-async function clickSearchSubmitByGeometry(host: ExtensionRecognizerHost, inputXPath: string, timeoutMs: number): Promise<SearchSubmitButton | undefined> {
+async function clickSearchSubmitByGeometry(host: ExtensionDetectorHost, inputXPath: string, timeoutMs: number): Promise<SearchSubmitButton | undefined> {
   const button = await resolveSearchSubmitButtonByGeometry(host.page, inputXPath).catch(() => undefined);
   debugSearchSubmitDecision('geometry-resolved', button);
   if (!button?.xpath) return undefined;
@@ -8742,7 +8756,7 @@ async function detectTables(page: Page): Promise<RawCandidate[]> {
   const candidates: RawCandidate[] = [];
   for (const info of tableInfos) {
     if (info.dataRows.length < 2 || info.headers.length < 2) continue;
-    const fields: RecognizedField[] = info.headers.slice(0, 12).map((header, fieldIndex) => ({
+    const fields: DetectedField[] = info.headers.slice(0, 12).map((header, fieldIndex) => ({
       name: normalizeFieldName(header, `column_${fieldIndex + 1}`),
       kind: 'text',
       selector: `tr td:nth-child(${fieldIndex + 1})`,
@@ -9319,7 +9333,7 @@ async function detectInteractiveElementGroups(page: Page): Promise<RawCandidate[
   });
 
   return groups.map((group) => {
-    const fields: RecognizedField[] = [{
+    const fields: DetectedField[] = [{
       name: 'text',
       kind: 'text',
       selector: group.itemSelector,
@@ -9364,11 +9378,11 @@ async function detectDeptaCandidates(page: Page): Promise<RawCandidate[]> {
     .filter((candidate): candidate is RawCandidate => Boolean(candidate));
 }
 
-export async function detectPaginationForCandidatesForTesting(page: Page, candidates: RecognizedCandidate[], scrollProbe?: ScrollProbeSummary): Promise<RecognizedCandidate[]> {
+export async function detectPaginationForCandidatesForTesting(page: Page, candidates: DetectedCandidate[], scrollProbe?: ScrollProbeSummary): Promise<DetectedCandidate[]> {
   return detectPaginationForCandidates(page, candidates, scrollProbe);
 }
 
-export async function detectInteractivePaginationOptionsForTesting(page: Page, candidates: RecognizedCandidate[], scrollProbe?: ScrollProbeSummary): Promise<RecognizedPagination[]> {
+export async function detectInteractivePaginationOptionsForTesting(page: Page, candidates: DetectedCandidate[], scrollProbe?: ScrollProbeSummary): Promise<DetectedPagination[]> {
   return detectInteractivePaginationOptions(page, candidates, scrollProbe);
 }
 
@@ -9379,7 +9393,7 @@ export async function detectSearchResultBlocksForTesting(page: Page): Promise<Ra
 export async function detectPageObstructionsForTesting(page: Page): Promise<Array<{
   popupXPath: string;
   popupText: string;
-  type: RecognizedPopupDismissal['type'];
+  type: DetectedPopupDismissal['type'];
   confidence: number;
   closeXPath?: string;
   closeText?: string;
@@ -9389,15 +9403,15 @@ export async function detectPageObstructionsForTesting(page: Page): Promise<Arra
   return detectPageObstructions(page);
 }
 
-export function shouldPromptForLoginInterventionForTesting(options: RecognizeOptions): boolean {
+export function shouldPromptForLoginInterventionForTesting(options: DetectOptions): boolean {
   return shouldPromptForLoginIntervention(options);
 }
 
-export async function dismissPageObstructionsForTesting(page: Page, options: { includeLogin?: boolean } = {}): Promise<RecognizedPopupDismissal[]> {
+export async function dismissPageObstructionsForTesting(page: Page, options: { includeLogin?: boolean } = {}): Promise<DetectedPopupDismissal[]> {
   return dismissPageObstructions(page, options);
 }
 
-export async function refineCandidateFieldsForTesting(page: Page, candidates: RecognizedCandidate[]): Promise<RecognizedCandidate[]> {
+export async function refineCandidateFieldsForTesting(page: Page, candidates: DetectedCandidate[]): Promise<DetectedCandidate[]> {
   return refineCandidateFields(page, candidates);
 }
 
@@ -9421,23 +9435,27 @@ export async function resolveSearchSubmitButtonByGeometryForTesting(page: Page, 
   return resolveSearchSubmitButtonByGeometry(page, inputXPath);
 }
 
-export async function scoreSearchResultPageForTesting(page: Page, options: RecognizeOptions, isNewPage = false, index = 0, total = 1): Promise<number> {
+export async function scoreSearchResultPageForTesting(page: Page, options: DetectOptions, isNewPage = false, index = 0, total = 1): Promise<number> {
   return scoreSearchResultPage(page, options, isNewPage, index, total);
 }
 
-export async function pageLooksLikeSearchResultForTesting(page: Page, options: RecognizeOptions): Promise<boolean> {
+export async function pageLooksLikeSearchResultForTesting(page: Page, options: DetectOptions): Promise<boolean> {
   return pageLooksLikeSearchResult(page, options);
 }
 
-export function isPlausiblePaginationOptionForTesting(pagination: RecognizedPagination): boolean {
+export function isPlausiblePaginationOptionForTesting(pagination: DetectedPagination): boolean {
   return isPlausiblePaginationOption(pagination);
 }
 
-export function preferredPaginationForTesting(existing: RecognizedPagination | undefined, detected: RecognizedPagination | undefined): RecognizedPagination | undefined {
+export function preferredPaginationForTesting(existing: DetectedPagination | undefined, detected: DetectedPagination | undefined): DetectedPagination | undefined {
   return preferredPagination(existing, detected);
 }
 
-async function detectPaginationForCandidates(page: Page, candidates: RecognizedCandidate[], scrollProbe?: ScrollProbeSummary): Promise<RecognizedCandidate[]> {
+export function selectDetailUrlFieldForTesting(candidate: DetectedCandidate): DetectedField | undefined {
+  return selectDetailUrlField(candidate);
+}
+
+async function detectPaginationForCandidates(page: Page, candidates: DetectedCandidate[], scrollProbe?: ScrollProbeSummary): Promise<DetectedCandidate[]> {
   const input = candidates
     .filter((candidate) => candidate.type !== 'detail' && candidate.type !== 'form')
     .map((candidate) => ({
@@ -9941,17 +9959,17 @@ async function detectPaginationForCandidates(page: Page, candidates: RecognizedC
       if (selected) result[item.id] = selected;
     }
     return result;
-  }, input) as Record<string, RecognizedPagination>;
+  }, input) as Record<string, DetectedPagination>;
 
   const probePaginationById = scrollProbePaginationForCandidates(candidates, scrollProbe);
   return candidates.map((candidate) => {
     const existingPagination = candidate.pagination && !scrollProbeRulesOutScroll(candidate, scrollProbe)
       ? candidate.pagination
       : undefined;
-    const paginationSources: Array<RecognizedPagination | undefined> = [existingPagination, paginationById[candidate.id], probePaginationById[candidate.id]];
+    const paginationSources: Array<DetectedPagination | undefined> = [existingPagination, paginationById[candidate.id], probePaginationById[candidate.id]];
     const pagination = paginationSources
-      .filter((item): item is RecognizedPagination => item ? isPlausiblePaginationOption(item) : false)
-      .reduce<RecognizedPagination | undefined>((selected, item) => preferredPagination(selected, item), undefined);
+      .filter((item): item is DetectedPagination => item ? isPlausiblePaginationOption(item) : false)
+      .reduce<DetectedPagination | undefined>((selected, item) => preferredPagination(selected, item), undefined);
     const { pagination: _discardedPagination, ...candidateWithoutPagination } = candidate;
     return {
       ...candidateWithoutPagination,
@@ -9960,7 +9978,7 @@ async function detectPaginationForCandidates(page: Page, candidates: RecognizedC
   });
 }
 
-function scrollProbeRulesOutScroll(candidate: Pick<RecognizedCandidate, 'itemCount' | 'pagination'>, scrollProbe?: ScrollProbeSummary): boolean {
+function scrollProbeRulesOutScroll(candidate: Pick<DetectedCandidate, 'itemCount' | 'pagination'>, scrollProbe?: ScrollProbeSummary): boolean {
   if (candidate.pagination?.type !== 'scroll' || !scrollProbe) return false;
   if (scrollProbeHasReliableActiveLoadMore(scrollProbe)) return false;
   if (scrollProbeLooksLikeStaticLargeList(candidate, scrollProbe)) return true;
@@ -9970,9 +9988,9 @@ function scrollProbeRulesOutScroll(candidate: Pick<RecognizedCandidate, 'itemCou
   return !scrollProbe.sawGrowth || (grewArticleLikeCount === 0 && candidate.itemCount <= 20);
 }
 
-function scrollProbePaginationForCandidates(candidates: RecognizedCandidate[], scrollProbe?: ScrollProbeSummary): Record<string, RecognizedPagination> {
+function scrollProbePaginationForCandidates(candidates: DetectedCandidate[], scrollProbe?: ScrollProbeSummary): Record<string, DetectedPagination> {
   if (!scrollProbe) return {};
-  const result: Record<string, RecognizedPagination> = {};
+  const result: Record<string, DetectedPagination> = {};
   const grewArticleLikeCount = scrollProbe.grewArticleLikeCount ?? 0;
   const grewContentHeight = scrollProbe.grewContentHeight ?? 0;
   const grewPageHeight = scrollProbe.grewPageHeight ?? 0;
@@ -10000,8 +10018,8 @@ function scrollProbePaginationForCandidates(candidates: RecognizedCandidate[], s
         scope: 'global',
         revealByScroll: true,
         reasons: [
-          'load-more observed during recognition scroll probe',
-          ...(scrollProbe.sawGrowth ? ['content grew during recognition scroll probe'] : [])
+          'load-more observed during detection scroll probe',
+          ...(scrollProbe.sawGrowth ? ['content grew during detection scroll probe'] : [])
         ]
       };
       continue;
@@ -10024,7 +10042,7 @@ function scrollProbePaginationForCandidates(candidates: RecognizedCandidate[], s
       isAjax: true,
       scope: 'global',
       reasons: [
-        'list-like item count grew during recognition scroll probe',
+        'list-like item count grew during detection scroll probe',
         `scroll probe added ${grewArticleLikeCount} list-like items`,
         ...(grewContentHeight ? [`scroll probe increased content text by ${grewContentHeight} chars`] : []),
         ...(grewPageHeight ? [`scroll probe increased page height by ${grewPageHeight}px`] : [])
@@ -10034,7 +10052,7 @@ function scrollProbePaginationForCandidates(candidates: RecognizedCandidate[], s
   return result;
 }
 
-function scrollProbeLooksLikeStaticLargeList(candidate: Pick<RecognizedCandidate, 'itemCount'>, scrollProbe: ScrollProbeSummary): boolean {
+function scrollProbeLooksLikeStaticLargeList(candidate: Pick<DetectedCandidate, 'itemCount'>, scrollProbe: ScrollProbeSummary): boolean {
   if (scrollProbeHasReliableActiveLoadMore(scrollProbe)) return false;
   const grewArticleLikeCount = scrollProbe.grewArticleLikeCount ?? 0;
   if (candidate.itemCount < 180 || grewArticleLikeCount < 2) return false;
@@ -10058,12 +10076,12 @@ function scrollProbeLoadMoreXPath(scrollProbe: ScrollProbeSummary): string {
   const matchedText = text?.match(/加载更多|查看更多|显示更多|点击加载|load more|show more|see more/i)?.[0];
   if (matchedText) {
     const lowerText = `translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')`;
-    return `//*[(${loadMoreTagOrRoleXPath()}) and contains(${lowerText}, ${xpathStringLiteral(matchedText.toLowerCase())}) and ${loadMoreEndTextExclusionForRecognizerXPath()}]`;
+    return `//*[(${loadMoreTagOrRoleXPath()}) and contains(${lowerText}, ${xpathStringLiteral(matchedText.toLowerCase())}) and ${loadMoreEndTextExclusionForDetectorXPath()}]`;
   }
-  return scrollProbe.bestActiveLoadMoreXPath || genericLoadMoreRecognizerXPath();
+  return scrollProbe.bestActiveLoadMoreXPath || genericLoadMoreDetectorXPath();
 }
 
-function genericLoadMoreRecognizerXPath(): string {
+function genericLoadMoreDetectorXPath(): string {
   const lowerText = `translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')`;
   const classExpr = `translate(concat(" ", normalize-space(@class), " "), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')`;
   const roleExpr = `translate(@role, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')`;
@@ -10079,14 +10097,14 @@ function genericLoadMoreRecognizerXPath(): string {
     `contains(${classExpr}, " loadmore ")`,
     `${roleExpr}="button" and (contains(${lowerText}, "more") or contains(${lowerText}, "更多"))`
   ].join(' or ');
-  return `//*[(${loadMoreTagOrRoleXPath()}) and (${positive}) and ${loadMoreEndTextExclusionForRecognizerXPath()}]`;
+  return `//*[(${loadMoreTagOrRoleXPath()}) and (${positive}) and ${loadMoreEndTextExclusionForDetectorXPath()}]`;
 }
 
 function loadMoreTagOrRoleXPath(): string {
   return 'self::a or self::button or self::div or self::span or self::li or @onclick or @role';
 }
 
-function loadMoreEndTextExclusionForRecognizerXPath(): string {
+function loadMoreEndTextExclusionForDetectorXPath(): string {
   const lowerText = `translate(normalize-space(.), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')`;
   return [
     `not(contains(${lowerText}, "没有更多"))`,
@@ -10112,11 +10130,11 @@ function xpathStringLiteral(value: string): string {
   return `concat('${value.split("'").join(`',"'",'`)}')`;
 }
 
-function preferredPagination(existing: RecognizedPagination | undefined, detected: RecognizedPagination | undefined): RecognizedPagination | undefined {
+function preferredPagination(existing: DetectedPagination | undefined, detected: DetectedPagination | undefined): DetectedPagination | undefined {
   if (!existing) return detected;
   if (!detected) return existing;
   const merged = mergePaginationSignals(existing, detected);
-  let selected: RecognizedPagination;
+  let selected: DetectedPagination;
   if (existing.type === 'next_page' && detected.type === 'scroll' && !reliableNextPagination(existing)) selected = detected;
   else if (existing.type === 'scroll' && detected.type === 'next_page' && !reliableNextPagination(detected)) selected = existing;
   else if (existing.type !== 'scroll' && detected.type === 'scroll') selected = existing;
@@ -10126,7 +10144,7 @@ function preferredPagination(existing: RecognizedPagination | undefined, detecte
   return merged(selected);
 }
 
-function reliableNextPagination(pagination: RecognizedPagination): boolean {
+function reliableNextPagination(pagination: DetectedPagination): boolean {
   if (pagination.type !== 'next_page') return false;
   const text = (pagination.text || '').trim();
   const xpath = pagination.xpath || '';
@@ -10141,7 +10159,7 @@ function reliableNextPagination(pagination: RecognizedPagination): boolean {
   return pagination.confidence >= 0.86 && !/(arrow-right|right|carousel|filter|筛选|分类|category|tag|tab|chip|swiper|slider)/i.test(`${xpath} ${reasons}`);
 }
 
-function mergePaginationSignals(a: RecognizedPagination, b: RecognizedPagination): (selected: RecognizedPagination) => RecognizedPagination {
+function mergePaginationSignals(a: DetectedPagination, b: DetectedPagination): (selected: DetectedPagination) => DetectedPagination {
   const revealByScroll = a.revealByScroll || b.revealByScroll || a.type === 'scroll' && b.type === 'load_more' || b.type === 'scroll' && a.type === 'load_more';
   return (selected) => revealByScroll && selected.type === 'load_more'
     ? {
@@ -10155,7 +10173,7 @@ function mergePaginationSignals(a: RecognizedPagination, b: RecognizedPagination
 }
 
 function deptaCandidate(group: DeptaListGroup): RawCandidate | null {
-  const fields: RecognizedField[] = [];
+  const fields: DetectedField[] = [];
   const titleSamples = group.rowSamples
     .map((row) => row.chunks.find((chunk) => chunk.length >= 2 && chunk !== row.text) || row.text)
     .filter(Boolean)
@@ -10259,7 +10277,7 @@ function repeatedCardCandidate(item: {
   itemCount: number;
   rows: Array<{ text: string; links: Array<{ text: string; href: string }>; images: string[]; chunks: string[] }>;
 }): RawCandidate | null {
-  const fields: RecognizedField[] = [];
+  const fields: DetectedField[] = [];
   const firstLinkSamples = item.rows.map((row) => row.links[0]?.text).filter(Boolean);
   if (firstLinkSamples.length) {
     fields.push({
@@ -10361,7 +10379,7 @@ function searchResultBlockCandidate(group: {
   const titleXPath = appendRelativeXPath(group.itemXPath, titleRelativeXPath);
   const summaryXPath = appendRelativeXPath(group.itemXPath, summaryRelativeXPath);
   const categoryXPath = !group.shadowHost && group.categoryPath ? appendRelativeXPath(group.itemXPath, group.categoryPath) : '';
-  const fields: RecognizedField[] = [
+  const fields: DetectedField[] = [
     {
       name: 'title',
       kind: 'text',
@@ -10586,7 +10604,7 @@ function candidateTitle(candidate: RawCandidate): string {
   return 'Detail content';
 }
 
-function applyGoalScores(candidates: RecognizedCandidate[], goal: string): RecognizedCandidate[] {
+function applyGoalScores(candidates: DetectedCandidate[], goal: string): DetectedCandidate[] {
   const tokens = goalTokens(goal);
   return candidates
     .map((candidate) => {
@@ -10629,11 +10647,11 @@ function applyGoalScores(candidates: RecognizedCandidate[], goal: string): Recog
     .map((item) => item.candidate);
 }
 
-export function applyGoalScoresForTesting(candidates: RecognizedCandidate[], goal: string): RecognizedCandidate[] {
+export function applyGoalScoresForTesting(candidates: DetectedCandidate[], goal: string): DetectedCandidate[] {
   return applyGoalScores(candidates, goal);
 }
 
-async function applyLayoutScores(page: Page, candidates: RecognizedCandidate[]): Promise<RecognizedCandidate[]> {
+async function applyLayoutScores(page: Page, candidates: DetectedCandidate[]): Promise<DetectedCandidate[]> {
   const input = candidates
     .filter((candidate) => candidate.type !== 'detail' && candidate.type !== 'form')
     .map((candidate) => ({
@@ -10648,7 +10666,7 @@ async function applyLayoutScores(page: Page, candidates: RecognizedCandidate[]):
     }));
   if (!input.length) return rankCandidates(candidates);
   const layouts = await page.evaluate((items) => {
-    type LayoutInfo = RecognizedCandidateLayout;
+    type LayoutInfo = DetectedCandidateLayout;
     const viewportWidth = Math.max(1, window.innerWidth || document.documentElement.clientWidth || 1);
     const viewportHeight = Math.max(1, window.innerHeight || document.documentElement.clientHeight || 1);
     const bodyHeight = Math.max(1, document.documentElement.scrollHeight || document.body?.scrollHeight || viewportHeight);
@@ -10846,14 +10864,14 @@ async function applyLayoutScores(page: Page, candidates: RecognizedCandidate[]):
   }));
 }
 
-function rankCandidates(candidates: RecognizedCandidate[]): RecognizedCandidate[] {
+function rankCandidates(candidates: DetectedCandidate[]): DetectedCandidate[] {
   return candidates
     .slice()
     .sort((a, b) => candidateRankingScore(b) - candidateRankingScore(a));
 }
 
-export function dedupeEquivalentCandidates(candidates: RecognizedCandidate[]): RecognizedCandidate[] {
-  const kept: RecognizedCandidate[] = [];
+export function dedupeEquivalentCandidates(candidates: DetectedCandidate[]): DetectedCandidate[] {
+  const kept: DetectedCandidate[] = [];
   for (const candidate of rankCandidates(candidates)) {
     const duplicateIndex = kept.findIndex((item) => candidatesLikelySameDataset(item, candidate));
     if (duplicateIndex === -1) {
@@ -10867,11 +10885,11 @@ export function dedupeEquivalentCandidates(candidates: RecognizedCandidate[]): R
   return rankCandidates(kept);
 }
 
-export function filterRecognizedBoilerplateCandidates(candidates: RecognizedCandidate[]): RecognizedCandidate[] {
+export function filterDetectedBoilerplateCandidates(candidates: DetectedCandidate[]): DetectedCandidate[] {
   return candidates.filter((candidate) => !candidateIsLegalBoilerplate(candidate));
 }
 
-function candidateIsLegalBoilerplate(candidate: Pick<RecognizedCandidate, 'sampleRows' | 'fields' | 'reasons' | 'layout' | 'type'>): boolean {
+function candidateIsLegalBoilerplate(candidate: Pick<DetectedCandidate, 'sampleRows' | 'fields' | 'reasons' | 'layout' | 'type'>): boolean {
   if (candidate.layout?.role === 'footer' && candidate.layout.boilerplatePenalty >= 0.55) return true;
   if (candidate.reasons.some((reason) => /footer\/legal boilerplate/i.test(reason))) return true;
   const values = [
@@ -10881,7 +10899,7 @@ function candidateIsLegalBoilerplate(candidate: Pick<RecognizedCandidate, 'sampl
   return values.some((value) => isLegalBoilerplateText(value));
 }
 
-function candidatesLikelySameDataset(left: RecognizedCandidate, right: RecognizedCandidate): boolean {
+function candidatesLikelySameDataset(left: DetectedCandidate, right: DetectedCandidate): boolean {
   if (left.type === 'form' || right.type === 'form' || left.type === 'detail' || right.type === 'detail') return false;
   if (left.id === right.id) return true;
   const leftItems = normalizeXPathForOverlap(left.itemXPath || left.xpath);
@@ -10902,7 +10920,7 @@ function candidatesLikelySameDataset(left: RecognizedCandidate, right: Recognize
   return textOverlap >= 0.55 && fieldNameOverlap(left, right) >= 0.5;
 }
 
-function candidateDedupScore(candidate: RecognizedCandidate): number {
+function candidateDedupScore(candidate: DetectedCandidate): number {
   const fieldNames = new Set(candidate.fields.map((field) => field.name));
   const semanticFields = Array.from(fieldNames)
     .filter((name) => /^(?:title|url|image|date|author|likes|summary|标题|标题链接|链接|图片|日期|时间|作者|摘要|描述|价格|评分|数量)$|href|link/i.test(name))
@@ -10925,14 +10943,14 @@ function normalizeXPathForOverlap(xpath: string | undefined): string {
   return (xpath || '').replace(/\[\d+\]/g, '').replace(/\/+$/g, '');
 }
 
-function sampleValuesForCandidate(candidate: RecognizedCandidate, names: string[]): string[] {
+function sampleValuesForCandidate(candidate: DetectedCandidate, names: string[]): string[] {
   const wanted = new Set(names);
   return candidate.sampleRows
     .flatMap((row) => Object.entries(row).filter(([key]) => wanted.has(key)).map(([, value]) => normalizeSampleValue(value)))
     .filter(Boolean);
 }
 
-function normalizedSampleTexts(candidate: RecognizedCandidate): string[] {
+function normalizedSampleTexts(candidate: DetectedCandidate): string[] {
   return candidate.sampleRows
     .flatMap((row) => Object.values(row))
     .map(normalizeSampleValue)
@@ -10947,7 +10965,7 @@ function normalizeSampleValue(value: string): string {
     .toLowerCase();
 }
 
-function fieldNameOverlap(left: RecognizedCandidate, right: RecognizedCandidate): number {
+function fieldNameOverlap(left: DetectedCandidate, right: DetectedCandidate): number {
   const leftNames = left.fields.map((field) => field.name);
   const rightNames = right.fields.map((field) => field.name);
   return jaccard(leftNames, rightNames);
@@ -10964,11 +10982,11 @@ function jaccard(left: string[], right: string[]): number {
   return intersection / (leftSet.size + rightSet.size - intersection);
 }
 
-function candidateRankingScore(candidate: RecognizedCandidate): number {
+function candidateRankingScore(candidate: DetectedCandidate): number {
   return (candidate.goalScore ?? candidate.confidence + layoutRankingBoost(candidate)) + candidateDataQualityBoost(candidate);
 }
 
-function candidateDataQualityBoost(candidate: RecognizedCandidate): number {
+function candidateDataQualityBoost(candidate: DetectedCandidate): number {
   const fields = candidate.fields;
   const sampleValues = [
     ...fields.flatMap((field) => field.samples),
@@ -11003,7 +11021,7 @@ function candidateDataQualityBoost(candidate: RecognizedCandidate): number {
   return Math.max(-0.35, Math.min(0.25, boost));
 }
 
-function candidateLooksLikeFooterOrNavigation(candidate: RecognizedCandidate): boolean {
+function candidateLooksLikeFooterOrNavigation(candidate: DetectedCandidate): boolean {
   if (candidate.layout && ['footer', 'header', 'nav', 'ad'].includes(candidate.layout.role)) return true;
   const values = [
     ...candidate.sampleRows.flatMap((row) => Object.values(row)),
@@ -11015,7 +11033,7 @@ function candidateLooksLikeFooterOrNavigation(candidate: RecognizedCandidate): b
   return navTerms / values.length >= 0.45 && shortRate >= 0.75;
 }
 
-function candidateLooksLikeTaxonomyFilterList(candidate: RecognizedCandidate): boolean {
+function candidateLooksLikeTaxonomyFilterList(candidate: DetectedCandidate): boolean {
   if (candidate.fields.length > 2 || candidate.itemCount < 8) return false;
   const hrefs = candidate.fields
     .filter((field) => field.kind === 'href')
@@ -11026,7 +11044,7 @@ function candidateLooksLikeTaxonomyFilterList(candidate: RecognizedCandidate): b
   return hrefs.every((value) => /(?:[?&](?:type|category|tag|topic|filter|industry|batch)=|\/(?:type|category|categories|tag|tags|topics?|filters?|industries|batches)\b)/i.test(value));
 }
 
-function protectedSmartFullColRate(candidate: RecognizedCandidate): number | undefined {
+function protectedSmartFullColRate(candidate: DetectedCandidate): number | undefined {
   const reason = candidate.reasons.find((item) => /fullColRate=/i.test(item));
   const value = reason?.match(/fullColRate=([0-9.]+)/i)?.[1];
   if (!value) return undefined;
@@ -11041,7 +11059,7 @@ function isLabelOnlySample(value: string): boolean {
     || (normalized.length <= 24 && /[:：]$/.test(String(value).trim()));
 }
 
-function layoutRankingBoost(candidate: Pick<RecognizedCandidate, 'layout' | 'type'>): number {
+function layoutRankingBoost(candidate: Pick<DetectedCandidate, 'layout' | 'type'>): number {
   const layout = candidate.layout;
   if (!layout) return 0;
   let boost = layout.score * 0.18 + layout.mainScore * 0.1 - layout.sidebarPenalty * 0.18 - layout.boilerplatePenalty * 0.18;
@@ -11052,7 +11070,7 @@ function layoutRankingBoost(candidate: Pick<RecognizedCandidate, 'layout' | 'typ
   return boost;
 }
 
-function applyLlmRankPreparation(candidates: RecognizedCandidate[], goal?: string): RecognizedCandidate[] {
+function applyLlmRankPreparation(candidates: DetectedCandidate[], goal?: string): DetectedCandidate[] {
   return candidates.map((candidate) => ({
     ...candidate,
     goalReasons: [
@@ -11062,7 +11080,7 @@ function applyLlmRankPreparation(candidates: RecognizedCandidate[], goal?: strin
   }));
 }
 
-function buildLlmRankInput(candidates: RecognizedCandidate[], goal?: string): RecognizedLlmRankInput {
+function buildLlmRankInput(candidates: DetectedCandidate[], goal?: string): DetectedLlmRankInput {
   return {
     ...(goal ? { goal } : {}),
     instruction: 'Choose the candidate that best represents the primary user-intended data list. Prefer main content regions with rich repeated records. Penalize navigation, ads, sidebars, and boilerplate unless the goal explicitly asks for them. Return a candidate id and a short reason.',
@@ -11096,7 +11114,7 @@ function scoreCandidate(input: { itemCount: number; fieldCount: number; semantic
   return Number(Math.max(0.1, Math.min(0.98, 0.25 + itemScore + fieldScore + semanticScore - input.penalty)).toFixed(2));
 }
 
-function rowToSample(fields: RecognizedField[], row: string[]): Record<string, string> {
+function rowToSample(fields: DetectedField[], row: string[]): Record<string, string> {
   const record: Record<string, string> = {};
   fields.forEach((field, index) => {
     record[field.name] = row[index] ?? '';
@@ -11113,11 +11131,11 @@ function normalizeFieldName(value: string, fallback: string): string {
   return ascii || fallback;
 }
 
-const RECOGNIZER_PARKING_URL = [
+const DETECTOR_PARKING_URL = [
   'data:text/html,',
   encodeURIComponent([
     '<!doctype html>',
-    '<html><head><title>Octoparse Recognizer</title></head>',
+    '<html><head><title>Octoparse Detector</title></head>',
     '<body style="margin:0">',
     '<div style="height:200000px"></div>',
     '</body></html>'

@@ -4,21 +4,21 @@ import { access, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { mock, test } from 'node:test';
-import { buildAgentContextForTesting, buildTaskFromAgentPlan, previewAgentPlanForTesting, recognizeCommand, resolveAgentScreenshotPathForTesting, resolveAvailableRecognizedTaskFile, runInlineAgentRecognizeForTesting, runUrlCommand, splitRunUrlArgs } from '../dist/commands/recognize.js';
+import { buildAgentContextForTesting, buildTaskFromAgentPlan, previewAgentPlanForTesting, detectCommand, detectUrlCommand, resolveAgentScreenshotPathForTesting, resolveAvailableDetectedTaskFile, runInlineAgentDetectForTesting, splitRunUrlArgs } from '../dist/commands/detect.js';
 import { browserSessionPath, loadBrowserSession, saveBrowserSession } from '../dist/runtime/browser-session.js';
 import { hasLinuxDisplayEnvironment, requiresVirtualDisplay } from '../dist/runtime/virtual-display.js';
-import { applyGoalScoresForTesting, dedupeEquivalentCandidates, detectInteractivePaginationOptionsForTesting, detectPageObstructionsForTesting, detectPaginationForCandidatesForTesting, detectSearchResultBlocksForTesting, dismissPageObstructionsForTesting, filterRecognizedBoilerplateCandidates, findSearchInputCandidatesForTesting, isPlausiblePaginationOptionForTesting, pageLooksLikeSearchResultForTesting, preferredPaginationForTesting, refineCandidateFieldsForTesting, resetManualOverlayHintKeysForTesting, resolveSearchSubmitButtonByGeometryForTesting, resolveSearchSubmitButtonForTesting, scoreSearchResultPageForTesting, shouldPromptForLoginInterventionForTesting, writeManualOverlayHintOnceForTesting } from '../dist/runtime/recognizer/page-recognizer.js';
-import { protectedSmartResultToCandidatesForTesting } from '../dist/runtime/recognizer/protected-smart.js';
-import { buildTaskFromCandidate } from '../dist/runtime/recognizer/xml.js';
+import { applyGoalScoresForTesting, dedupeEquivalentCandidates, detectInteractivePaginationOptionsForTesting, detectPageObstructionsForTesting, detectPaginationForCandidatesForTesting, detectSearchResultBlocksForTesting, dismissPageObstructionsForTesting, filterDetectedBoilerplateCandidates, findSearchInputCandidatesForTesting, isPlausiblePaginationOptionForTesting, pageLooksLikeSearchResultForTesting, preferredPaginationForTesting, refineCandidateFieldsForTesting, resetManualOverlayHintKeysForTesting, resolveSearchSubmitButtonByGeometryForTesting, resolveSearchSubmitButtonForTesting, scoreSearchResultPageForTesting, selectDetailUrlFieldForTesting, shouldPromptForLoginInterventionForTesting, writeManualOverlayHintOnceForTesting } from '../dist/runtime/detector/page-detector.js';
+import { protectedSmartResultToCandidatesForTesting } from '../dist/runtime/detector/protected-smart.js';
+import { buildTaskFromCandidate } from '../dist/runtime/detector/xml.js';
 
-test('resolveAvailableRecognizedTaskFile creates a default file without overwriting existing tasks', async () => {
+test('resolveAvailableDetectedTaskFile creates a default file without overwriting existing tasks', async () => {
   const previousCwd = cwd();
-  const dir = await mkdtemp(join(tmpdir(), 'recognizer-output-'));
+  const dir = await mkdtemp(join(tmpdir(), 'detector-output-'));
   try {
     chdir(dir);
-    assert.equal(resolveAvailableRecognizedTaskFile('recognized_example.com'), resolve('recognized_example.com.json'));
-    await writeFile(resolve('recognized_example.com.json'), '{}\n');
-    assert.equal(resolveAvailableRecognizedTaskFile('recognized_example.com'), resolve('recognized_example.com-1.json'));
+    assert.equal(resolveAvailableDetectedTaskFile('detected_example.com'), resolve('detected_example.com.json'));
+    await writeFile(resolve('detected_example.com.json'), '{}\n');
+    assert.equal(resolveAvailableDetectedTaskFile('detected_example.com'), resolve('detected_example.com-1.json'));
   } finally {
     chdir(previousCwd);
   }
@@ -26,7 +26,7 @@ test('resolveAvailableRecognizedTaskFile creates a default file without overwrit
 
 test('resolveAgentScreenshotPathForTesting enables default full-page screenshots for agent workflows', async () => {
   const previousCwd = cwd();
-  const dir = await mkdtemp(join(tmpdir(), 'recognizer-agent-shot-'));
+  const dir = await mkdtemp(join(tmpdir(), 'detector-agent-shot-'));
   try {
     chdir(dir);
     const testCwd = cwd();
@@ -70,19 +70,19 @@ test('virtual display detection identifies Linux servers without a display', () 
   }
 });
 
-test('recognize rejects obsolete explicit screenshot flags', async () => {
+test('detect rejects obsolete explicit screenshot flags', async () => {
   const previousLog = console.log;
   console.log = () => {};
   try {
-    assert.equal(await recognizeCommand(['https://example.com/list', '--prepare-agent', '--screenshot', 'custom.png', '--json', '--quiet']), 1);
-    assert.equal(await recognizeCommand(['https://example.com/list', '--agent-screenshot', 'custom.png', '--json', '--quiet']), 1);
-    assert.equal(await runUrlCommand('https://example.com/list', ['--auto', '--screenshot', 'custom.png', '--json']), 1);
+    assert.equal(await detectCommand(['https://example.com/list', '--prepare-agent', '--screenshot', 'custom.png', '--json', '--quiet']), 1);
+    assert.equal(await detectCommand(['https://example.com/list', '--agent-screenshot', 'custom.png', '--json', '--quiet']), 1);
+    assert.equal(await detectUrlCommand('https://example.com/list', ['--auto', '--screenshot', 'custom.png', '--json']), 1);
   } finally {
     console.log = previousLog;
   }
 });
 
-test('splitRunUrlArgs keeps run output separate from recognize task output', () => {
+test('splitRunUrlArgs keeps run output separate from detect task output', () => {
   const split = splitRunUrlArgs([
     '--auto',
     '--goal',
@@ -102,7 +102,7 @@ test('splitRunUrlArgs keeps run output separate from recognize task output', () 
     '--llm-rank'
   ]);
 
-  assert.deepEqual(split.recognizeArgs, [
+  assert.deepEqual(split.detectArgs, [
     '--auto',
     '--goal',
     'articles',
@@ -128,11 +128,11 @@ test('splitRunUrlArgs keeps run output separate from recognize task output', () 
   ]);
 });
 
-test('recognize --agent rejects missing agent command before page recognition', async () => {
+test('detect --agent rejects missing agent command before page detection', async () => {
   const previousLog = console.log;
   console.log = () => {};
   try {
-    const code = await recognizeCommand(['https://example.com/list', '--agent', '--json', '--quiet']);
+    const code = await detectCommand(['https://example.com/list', '--agent', '--json', '--quiet']);
     assert.equal(code, 1);
   } finally {
     console.log = previousLog;
@@ -141,7 +141,7 @@ test('recognize --agent rejects missing agent command before page recognition', 
 
 test('saveBrowserSession writes private cookie files and preserves covered hosts', async () => {
   const previousHome = process.env.HOME;
-  const home = await mkdtemp(join(tmpdir(), 'recognizer-session-home-'));
+  const home = await mkdtemp(join(tmpdir(), 'detector-session-home-'));
   process.env.HOME = home;
   try {
     const reference = await saveBrowserSession({
@@ -1317,7 +1317,7 @@ test('detectSearchResultBlocks scans open shadow roots for SPA search results', 
   assert.match(candidates[0].sampleRows[0].url, /Fetch_API/);
 });
 
-test('filterRecognizedBoilerplateCandidates removes legal footer records but keeps ordinary link collections', () => {
+test('filterDetectedBoilerplateCandidates removes legal footer records but keeps ordinary link collections', () => {
   const footer = {
     id: 'search_results_2',
     type: 'search_results',
@@ -1385,7 +1385,7 @@ test('filterRecognizedBoilerplateCandidates removes legal footer records but kee
     }
   };
 
-  const filtered = filterRecognizedBoilerplateCandidates([footer, links, mixedLegalFooter, layoutFooter]);
+  const filtered = filterDetectedBoilerplateCandidates([footer, links, mixedLegalFooter, layoutFooter]);
   assert.deepEqual(filtered.map((candidate) => candidate.id), ['link_collection_1']);
 });
 
@@ -2632,7 +2632,7 @@ test('findSearchInputCandidates ignores search-like textareas inside login modal
 });
 
 test('search result scoring prefers actual result tab over CSDN entry and article tabs', async () => {
-  const options = recognizeOptionsForSearchScoring('https://www.csdn.net/', 'openai');
+  const options = detectOptionsForSearchScoring('https://www.csdn.net/', 'openai');
   const entry = fakeSearchPage({
     url: 'https://www.csdn.net/',
     title: 'CSDN_专业开发者社区',
@@ -2816,10 +2816,10 @@ test('detectPageObstructionsForTesting ignores ordinary Baidu search home conten
   assert.deepEqual(detected, []);
 });
 
-test('auto recognize does not prompt for manual login intervention just because the terminal is interactive', () => {
-  assert.equal(shouldPromptForLoginInterventionForTesting(recognizeOptionsForSearchScoring('https://www.baidu.com/', '李小龙')), false);
+test('auto detect does not prompt for manual login intervention just because the terminal is interactive', () => {
+  assert.equal(shouldPromptForLoginInterventionForTesting(detectOptionsForSearchScoring('https://www.baidu.com/', '李小龙')), false);
   assert.equal(shouldPromptForLoginInterventionForTesting({
-    ...recognizeOptionsForSearchScoring('https://www.baidu.com/', '李小龙'),
+    ...detectOptionsForSearchScoring('https://www.baidu.com/', '李小龙'),
     manual: true,
     interactive: true
   }), true);
@@ -2987,8 +2987,8 @@ test('refineCandidateFieldsForTesting names icon-only engagement metrics by icon
 test('buildTaskFromCandidate creates a local task JSON payload accepted by task provider shape', () => {
   const task = buildTaskFromCandidate({
     url: 'https://example.com/list',
-    taskId: 'recognized_example',
-    taskName: 'Recognized Example',
+    taskId: 'detected_example',
+    taskName: 'Detected Example',
     candidate: {
       id: 'search_results_1',
       type: 'search_results',
@@ -3022,7 +3022,7 @@ test('buildTaskFromCandidate creates a local task JSON payload accepted by task 
     }
   });
 
-  assert.equal(task.taskId, 'recognized_example');
+  assert.equal(task.taskId, 'detected_example');
   assert.deepEqual(task.fieldNames, ['title', 'url']);
   assert.match(task.xml, /<ns0:NavigateAction/);
   assert.match(task.xml, /<ns0:LoopAction/);
@@ -3039,8 +3039,8 @@ test('buildTaskFromCandidate creates a local task JSON payload accepted by task 
 test('buildTaskFromCandidate preserves search input and submit actions before extraction', () => {
   const task = buildTaskFromCandidate({
     url: 'https://www.baidu.com/s?wd=%E6%9D%8E%E5%B0%8F%E9%BE%99',
-    taskId: 'recognized_baidu_search',
-    taskName: 'Recognized Baidu Search',
+    taskId: 'detected_baidu_search',
+    taskName: 'Detected Baidu Search',
     searchPlan: {
       startUrl: 'https://www.baidu.com/',
       finalUrl: 'https://www.baidu.com/s?wd=%E6%9D%8E%E5%B0%8F%E9%BE%99',
@@ -3066,9 +3066,9 @@ test('buildTaskFromCandidate preserves search input and submit actions before ex
     }
   });
 
-  assert.equal(task.recognition.url, 'https://www.baidu.com/s?wd=%E6%9D%8E%E5%B0%8F%E9%BE%99');
-  assert.equal(task.recognition.search?.startUrl, 'https://www.baidu.com/');
-  assert.equal(task.recognition.search?.inputs[0]?.xpath, '/html[1]/body[1]/div[1]/form[1]/span[1]/input[1]');
+  assert.equal(task.detection.url, 'https://www.baidu.com/s?wd=%E6%9D%8E%E5%B0%8F%E9%BE%99');
+  assert.equal(task.detection.search?.startUrl, 'https://www.baidu.com/');
+  assert.equal(task.detection.search?.inputs[0]?.xpath, '/html[1]/body[1]/div[1]/form[1]/span[1]/input[1]');
   assert.match(task.xml, /URL="https:\/\/www\.baidu\.com\/"/);
   assert.match(task.xml, /<ns0:EnterTextAction/);
   assert.match(task.xml, /TextToSet="李小龙"/);
@@ -3086,8 +3086,8 @@ test('buildTaskFromCandidate preserves search input and submit actions before ex
 test('buildTaskFromCandidate can submit search by enter when no button was found', () => {
   const task = buildTaskFromCandidate({
     url: 'https://example.com/search?q=lee',
-    taskId: 'recognized_enter_search',
-    taskName: 'Recognized Enter Search',
+    taskId: 'detected_enter_search',
+    taskName: 'Detected Enter Search',
     searchPlan: {
       startUrl: 'https://example.com/',
       finalUrl: 'https://example.com/search?q=lee',
@@ -3119,8 +3119,8 @@ test('buildTaskFromCandidate can submit search by enter when no button was found
 test('buildTaskFromCandidate does not insert search result navigation when URL did not change', () => {
   const task = buildTaskFromCandidate({
     url: 'https://example.com/search',
-    taskId: 'recognized_same_url_search',
-    taskName: 'Recognized Same URL Search',
+    taskId: 'detected_same_url_search',
+    taskName: 'Detected Same URL Search',
     searchPlan: {
       startUrl: 'https://example.com/search',
       finalUrl: 'https://example.com/search',
@@ -3150,8 +3150,8 @@ test('buildTaskFromCandidate does not insert search result navigation when URL d
 test('buildTaskFromCandidate inserts safe popup dismissal clicks after navigation', () => {
   const task = buildTaskFromCandidate({
     url: 'https://example.com/list',
-    taskId: 'recognized_popup',
-    taskName: 'Recognized Popup',
+    taskId: 'detected_popup',
+    taskName: 'Detected Popup',
     candidate: {
       id: 'search_results_1',
       type: 'search_results',
@@ -3201,14 +3201,14 @@ test('buildTaskFromCandidate inserts safe popup dismissal clicks after navigatio
   assert.match(task.xml, /Caption="Dismiss login popup"/);
   assert.match(task.xml, /ElementXPath="&lt;ActionItem&gt;&lt;AbsXpath&gt;\/html\[1\]\/body\[1\]\/div\[2\]\/button\[1\]/);
   assert.doesNotMatch(task.xml, /Dismiss captcha popup/);
-  assert.equal(task.recognition.popupDismissals.length, 2);
+  assert.equal(task.detection.popupDismissals.length, 2);
 });
 
 test('buildTaskFromCandidate stores only a browser session reference', () => {
   const task = buildTaskFromCandidate({
     url: 'https://example.com/list',
-    taskId: 'recognized_session',
-    taskName: 'Recognized Session',
+    taskId: 'detected_session',
+    taskName: 'Detected Session',
     candidate: {
       id: 'search_results_1',
       type: 'search_results',
@@ -3242,7 +3242,7 @@ test('buildTaskFromCandidate stores only a browser session reference', () => {
     }
   });
 
-  assert.deepEqual(task.recognition.session, {
+  assert.deepEqual(task.detection.session, {
     name: 'example.com',
     origin: 'https://example.com',
     savedAt: '2026-05-27T00:00:00.000Z',
@@ -3295,7 +3295,7 @@ test('buildAgentContextForTesting exposes deterministic candidates for external 
     ]
   }, '采新闻列表');
 
-  assert.equal(context.schemaVersion, 'octopus.recognize.agent-context.v1');
+  assert.equal(context.schemaVersion, 'octopus.detect.agent-context.v1');
   assert.equal(context.goal, '采新闻列表');
   assert.equal(context.recommendedCandidateId, 'search_results_1');
   assert.equal(context.screenshot.path, '/tmp/example.full.png');
@@ -3379,7 +3379,7 @@ test('previewAgentPlanForTesting reports risky detail content choices for extern
     }
   });
 
-  assert.equal(preview.schemaVersion, 'octopus.recognize.agent-preview.v1');
+  assert.equal(preview.schemaVersion, 'octopus.detect.agent-preview.v1');
   assert.equal(preview.pass, false);
   assert.equal(preview.detail.fields[0].name, 'body');
   assert.match(preview.warnings.join('\n'), /content text looks short/);
@@ -3470,23 +3470,23 @@ test('buildTaskFromAgentPlan applies external agent field choices and detail pla
         }
       }
     },
-    taskId: 'recognized_agent',
-    taskName: 'Recognized Agent'
+    taskId: 'detected_agent',
+    taskName: 'Detected Agent'
   });
 
   assert.deepEqual(task.fieldNames, ['headline', 'url', 'body']);
-  assert.equal(task.recognition.candidateId, 'search_results_1');
-  assert.equal(task.recognition.detailPlan.mode, 'list_with_detail');
-  assert.deepEqual(task.recognition.detailPlan.fields.map((field) => field.name), ['body']);
+  assert.equal(task.detection.candidateId, 'search_results_1');
+  assert.equal(task.detection.detailPlan.mode, 'list_with_detail');
+  assert.deepEqual(task.detection.detailPlan.fields.map((field) => field.name), ['body']);
   assert.match(task.xml, /Name&gt;headline/);
   assert.match(task.xml, /Name&gt;body/);
   assert.match(task.xml, /x:Name="ClickDetail"/);
   assert.doesNotMatch(task.xml, /Name&gt;summary/);
 });
 
-test('runInlineAgentRecognizeForTesting lets an external command generate and apply a plan', async () => {
+test('runInlineAgentDetectForTesting lets an external command generate and apply a plan', async () => {
   const previousCwd = cwd();
-  const dir = await mkdtemp(join(tmpdir(), 'recognizer-inline-agent-'));
+  const dir = await mkdtemp(join(tmpdir(), 'detector-inline-agent-'));
   const agentScript = join(dir, 'agent.mjs');
   const taskFile = join(dir, 'task.json');
   const seenWorkDirFile = join(dir, 'seen-workdir.txt');
@@ -3496,7 +3496,7 @@ import { dirname } from 'node:path';
 const context = JSON.parse(await readFile(process.env.OCTOPARSE_AGENT_CONTEXT, 'utf8'));
 await writeFile(${JSON.stringify(seenWorkDirFile)}, dirname(process.env.OCTOPARSE_AGENT_CONTEXT));
 const plan = {
-  schemaVersion: 'octopus.recognize.agent-plan.v1',
+  schemaVersion: 'octopus.detect.agent-plan.v1',
   selection: {
     candidateId: context.recommendedCandidateId,
     fields: [
@@ -3511,7 +3511,7 @@ await writeFile(process.env.OCTOPARSE_AGENT_PLAN, JSON.stringify(plan, null, 2))
 
   try {
     chdir(dir);
-    const code = await runInlineAgentRecognizeForTesting({
+    const code = await runInlineAgentDetectForTesting({
       args: ['--agent-command', `${process.execPath} ${agentScript}`, '--yes', '--output', taskFile],
       quiet: true,
       result: {
@@ -3544,8 +3544,8 @@ await writeFile(process.env.OCTOPARSE_AGENT_PLAN, JSON.stringify(plan, null, 2))
     assert.equal(code, 0);
     const task = JSON.parse(await readFile(taskFile, 'utf8'));
     assert.deepEqual(task.fieldNames, ['headline', 'url']);
-    assert.equal(task.recognition.candidateId, 'search_results_1');
-    assert.equal(task.recognition.selectionSource, undefined);
+    assert.equal(task.detection.candidateId, 'search_results_1');
+    assert.equal(task.detection.selectionSource, undefined);
     assert.doesNotMatch(task.xml, /Name&gt;summary/);
     const seenWorkDir = await readFile(seenWorkDirFile, 'utf8');
     await assert.rejects(access(seenWorkDir), { code: 'ENOENT' });
@@ -3554,11 +3554,11 @@ await writeFile(process.env.OCTOPARSE_AGENT_PLAN, JSON.stringify(plan, null, 2))
   }
 });
 
-test('buildTaskFromCandidate stores recognized detail plan metadata', () => {
+test('buildTaskFromCandidate stores detected detail plan metadata', () => {
   const task = buildTaskFromCandidate({
     url: 'https://example.com/list',
-    taskId: 'recognized_detail_plan',
-    taskName: 'Recognized Detail Plan',
+    taskId: 'detected_detail_plan',
+    taskName: 'Detected Detail Plan',
     candidate: {
       id: 'search_results_1',
       type: 'search_results',
@@ -3611,20 +3611,20 @@ test('buildTaskFromCandidate stores recognized detail plan metadata', () => {
     }
   });
 
-  assert.equal(task.recognition.detailPlan.mode, 'list_with_detail');
-  assert.deepEqual(task.recognition.detailPlan.sampleUrls, ['https://example.com/a']);
-  assert.deepEqual(task.recognition.detailPlan.fields.map((field) => field.name), ['detail_content']);
-  assert.equal(task.recognition.detailPlan.status, 'planned');
+  assert.equal(task.detection.detailPlan.mode, 'list_with_detail');
+  assert.deepEqual(task.detection.detailPlan.sampleUrls, ['https://example.com/a']);
+  assert.deepEqual(task.detection.detailPlan.fields.map((field) => field.name), ['detail_content']);
+  assert.equal(task.detection.detailPlan.status, 'planned');
   assert.deepEqual(task.fieldNames, ['title', 'url', 'detail_content']);
   assert.match(task.xml, /x:Name="ExtractItems"/);
-  assert.match(task.xml, /Caption="Extract recognized list data"/);
+  assert.match(task.xml, /Caption="Extract detected list data"/);
   assert.match(task.xml, /x:Name="ClickDetail"/);
   assert.match(task.xml, /Caption="Click detail link"/);
   assert.match(task.xml, /OpenInNewWindow="true"/);
   assert.match(task.xml, /OpenByHref="false"/);
   assert.match(task.xml, /PageIndex="0"[^>]*ElementXPath="&lt;ActionItem&gt;&lt;AbsXpath&gt;\/a\[1\]/);
   assert.match(task.xml, /x:Name="ExtractDetail"/);
-  assert.match(task.xml, /Caption="Extract recognized detail data"/);
+  assert.match(task.xml, /Caption="Extract detected detail data"/);
   assert.match(task.xml, /PageIndex="1"/);
   assert.match(task.xml, /detail_content/);
   assert.match(task.xml, /Name&gt;detail_content/);
@@ -3633,11 +3633,55 @@ test('buildTaskFromCandidate stores recognized detail plan metadata', () => {
   assert.match(task.xml, /IsAppend&gt;true/);
 });
 
+test('selectDetailUrlFieldForTesting accepts non-url href fields for detail prompts', () => {
+  const candidate = {
+    id: 'search_results_1',
+    type: 'search_results',
+    title: 'Search/list results',
+    confidence: 0.8,
+    selector: 'main',
+    xpath: '/html/body/main',
+    itemSelector: 'article',
+    itemXPath: '/html/body/main/article',
+    itemCount: 3,
+    fields: [
+      { name: 'title', kind: 'text', selector: 'a', xpath: '/html/body/main/article/a', relativeXPath: './a', samples: ['Alpha'] },
+      { name: 'titleLink', kind: 'href', selector: 'a', xpath: '/html/body/main/article/a', relativeXPath: './a', samples: ['https://example.com/a'] }
+    ],
+    sampleRows: [{ title: 'Alpha', titleLink: 'https://example.com/a' }],
+    reasons: ['test']
+  };
+
+  assert.equal(selectDetailUrlFieldForTesting(candidate)?.name, 'titleLink');
+});
+
+test('selectDetailUrlFieldForTesting still prefers url over other href fields', () => {
+  const candidate = {
+    id: 'search_results_1',
+    type: 'search_results',
+    title: 'Search/list results',
+    confidence: 0.8,
+    selector: 'main',
+    xpath: '/html/body/main',
+    itemSelector: 'article',
+    itemXPath: '/html/body/main/article',
+    itemCount: 3,
+    fields: [
+      { name: 'titleLink', kind: 'href', selector: 'a.title', xpath: '/html/body/main/article/a[1]', relativeXPath: './a[1]', samples: ['https://example.com/title'] },
+      { name: 'url', kind: 'href', selector: 'a.detail', xpath: '/html/body/main/article/a[2]', relativeXPath: './a[2]', samples: ['https://example.com/detail'] }
+    ],
+    sampleRows: [{ titleLink: 'https://example.com/title', url: 'https://example.com/detail' }],
+    reasons: ['test']
+  };
+
+  assert.equal(selectDetailUrlFieldForTesting(candidate)?.name, 'url');
+});
+
 test('buildTaskFromCandidate creates direct extraction XML for detail pages', () => {
   const task = buildTaskFromCandidate({
     url: 'https://example.com/article',
-    taskId: 'recognized_detail',
-    taskName: 'Recognized Detail',
+    taskId: 'detected_detail',
+    taskName: 'Detected Detail',
     candidate: {
       id: 'detail_1',
       type: 'detail',
@@ -3677,8 +3721,8 @@ test('buildTaskFromCandidate creates direct extraction XML for detail pages', ()
 test('buildTaskFromCandidate creates detail-only list navigation XML', () => {
   const task = buildTaskFromCandidate({
     url: 'https://example.com/list',
-    taskId: 'recognized_detail_only',
-    taskName: 'Recognized Detail Only',
+    taskId: 'detected_detail_only',
+    taskName: 'Detected Detail Only',
     candidate: {
       id: 'search_results_1',
       type: 'search_results',
@@ -3742,8 +3786,8 @@ test('buildTaskFromCandidate creates detail-only list navigation XML', () => {
 test('buildTaskFromCandidate wraps list extraction with next-page click loop', () => {
   const task = buildTaskFromCandidate({
     url: 'https://example.com/list',
-    taskId: 'recognized_pages',
-    taskName: 'Recognized Pages',
+    taskId: 'detected_pages',
+    taskName: 'Detected Pages',
     candidate: {
       id: 'search_results_1',
       type: 'search_results',
@@ -3778,7 +3822,7 @@ test('buildTaskFromCandidate wraps list extraction with next-page click loop', (
     }
   });
 
-  assert.equal(task.recognition.paginationType, 'next_page');
+  assert.equal(task.detection.paginationType, 'next_page');
   assert.match(task.xml, /x:Name="LoopPages"/);
   assert.match(task.xml, /LoopType="FixedItem"/);
   assert.match(task.xml, /FixedItem="&lt;ActionItem&gt;&lt;AbsXpath&gt;\/html\[1\]\/body\[1\]\/nav\[1\]\/a\[2\]/);
@@ -3795,8 +3839,8 @@ test('buildTaskFromCandidate wraps list extraction with next-page click loop', (
 test('buildTaskFromCandidate uses ajax load-more pagination loop', () => {
   const task = buildTaskFromCandidate({
     url: 'https://example.com/list',
-    taskId: 'recognized_more',
-    taskName: 'Recognized More',
+    taskId: 'detected_more',
+    taskName: 'Detected More',
     candidate: {
       id: 'repeated_card_1',
       type: 'repeated_card',
@@ -3831,7 +3875,7 @@ test('buildTaskFromCandidate uses ajax load-more pagination loop', () => {
     }
   });
 
-  assert.equal(task.recognition.paginationType, 'load_more');
+  assert.equal(task.detection.paginationType, 'load_more');
   assert.match(task.xml, /Caption="Loop load more button"/);
   assert.match(task.xml, /Click load more/);
   assert.match(task.xml, /没有更多/);
@@ -3843,8 +3887,8 @@ test('buildTaskFromCandidate uses ajax load-more pagination loop', () => {
 test('buildTaskFromCandidate uses scroll-revealed load-more pagination loop', () => {
   const task = buildTaskFromCandidate({
     url: 'https://example.com/search',
-    taskId: 'recognized_mixed_more',
-    taskName: 'Recognized Mixed More',
+    taskId: 'detected_mixed_more',
+    taskName: 'Detected Mixed More',
     candidate: {
       id: 'search_results_1',
       type: 'search_results',
@@ -3880,7 +3924,7 @@ test('buildTaskFromCandidate uses scroll-revealed load-more pagination loop', ()
     }
   });
 
-  assert.equal(task.recognition.paginationType, 'load_more');
+  assert.equal(task.detection.paginationType, 'load_more');
   assert.match(task.xml, /Caption="Loop scroll then load more"/);
   assert.match(task.xml, /x:Name="ScrollPage"/);
   assert.match(task.xml, /x:Name="TryLoadMore"/);
@@ -3895,8 +3939,8 @@ test('buildTaskFromCandidate uses scroll-revealed load-more pagination loop', ()
 test('buildTaskFromCandidate uses scroll pagination without a load-more click', () => {
   const task = buildTaskFromCandidate({
     url: 'https://example.com/waterfall',
-    taskId: 'recognized_scroll',
-    taskName: 'Recognized Scroll',
+    taskId: 'detected_scroll',
+    taskName: 'Detected Scroll',
     candidate: {
       id: 'search_results_1',
       type: 'search_results',
@@ -3931,7 +3975,7 @@ test('buildTaskFromCandidate uses scroll pagination without a load-more click', 
     }
   });
 
-  assert.equal(task.recognition.paginationType, 'scroll');
+  assert.equal(task.detection.paginationType, 'scroll');
   assert.match(task.xml, /Caption="Loop scroll page"/);
   assert.match(task.xml, /LoopType="FixedItem"/);
   assert.match(task.xml, /x:Name="ScrollPage"/);
@@ -3953,8 +3997,8 @@ test('buildTaskFromCandidate uses scroll pagination without a load-more click', 
 test('buildTaskFromCandidate keeps social card fields as extractable columns', () => {
   const task = buildTaskFromCandidate({
     url: 'https://example.com/waterfall',
-    taskId: 'recognized_social_cards',
-    taskName: 'Recognized Social Cards',
+    taskId: 'detected_social_cards',
+    taskName: 'Detected Social Cards',
     candidate: {
       id: 'search_results_1',
       type: 'search_results',
@@ -4027,8 +4071,8 @@ test('buildTaskFromCandidate keeps social card fields as extractable columns', (
 test('buildTaskFromCandidate preserves date regex extraction fields', () => {
   const task = buildTaskFromCandidate({
     url: 'https://example.com/news',
-    taskId: 'recognized_dates',
-    taskName: 'Recognized Dates',
+    taskId: 'detected_dates',
+    taskName: 'Detected Dates',
     candidate: {
       id: 'search_results_1',
       type: 'search_results',
@@ -4677,7 +4721,7 @@ function fakeObstructionPage({ bodyHeight, viewportHeight, elements, bodyOverflo
   };
 }
 
-function recognizeOptionsForSearchScoring(url, keyword) {
+function detectOptionsForSearchScoring(url, keyword) {
   return {
     url,
     input: { q: keyword },

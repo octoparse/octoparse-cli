@@ -141,7 +141,7 @@ test('capabilities is available before authentication and documents API key cont
   assert.equal(payload.data.browserRuntime.linuxArm64.affectedCommands.includes('run-url'), false);
   assert.equal(payload.data.machineContract.stable, true);
   assert.equal(payload.data.machineContract.json.usageErrorsUseEnvelope, true);
-  assert.equal(payload.data.commands.find((item) => item.command === 'recognize <url>')?.agentWorkflow, 'machineContract.recipes.createTaskFromUrlWithAgent');
+  assert.equal(payload.data.commands.find((item) => item.command === 'detect <url>')?.agentWorkflow, 'machineContract.recipes.createTaskFromUrlWithAgent');
   assert.match(payload.data.machineContract.recipes.createTaskFromUrlWithAgent.intent, /LLM\/agent/);
   assert.ok(payload.data.machineContract.recipes.createTaskFromUrlWithAgent.agentShouldChooseThisRecipeWhen.some((item) => /URL/.test(item)));
   assert.match(payload.data.machineContract.recipes.createTaskFromUrlWithAgent.agentResponsibilities.join(' '), /--goal/);
@@ -1371,7 +1371,7 @@ test('run completion prints a copyable local data export command', () => {
   );
 });
 
-test('injectGlobalCookie enables task browser session cookies without exposing them in recognition metadata', () => {
+test('injectGlobalCookie enables task browser session cookies without exposing them in detection metadata', () => {
   const xml = '<ns0:RootAction globalCookie="" isSetGlobalCookie="false"><ns0:NavigateAction /></ns0:RootAction>';
   const injected = injectGlobalCookie(xml, 'sid=secret&value; theme=dark');
   assert.match(injected, /isSetGlobalCookie="true"/);
@@ -1385,7 +1385,7 @@ test('injectGlobalCookie inserts missing root cookie attributes', () => {
   assert.match(injected, /<ns0:RootAction[^>]*isSetGlobalCookie="true"/);
 });
 
-test('recognized browser session cookies are injected into runtime task xml and xoml', async () => {
+test('detected browser session cookies are injected into runtime task xml and xoml', async () => {
   const root = await mkdtemp(join(tmpdir(), 'octoparse-session-runtime-'));
   const home = join(root, 'home');
   const taskFile = join(root, 'task.json');
@@ -1403,10 +1403,10 @@ test('recognized browser session cookies are injected into runtime task xml and 
   }));
   await writeFile(taskFile, JSON.stringify({
     ...minimalTask,
-    taskId: 'recognized-session-runtime',
-    taskName: 'Recognized Session Runtime',
+    taskId: 'detected-session-runtime',
+    taskName: 'Detected Session Runtime',
     xoml: '<?xml version="1.0"?><definitions><process id="stale" isExecutable="true"><userTask actionType="StaleAction" id="staleAction" /></process></definitions>',
-    recognition: {
+    detection: {
       session: {
         name: 'example.com',
         origin: 'https://example.com',
@@ -1421,13 +1421,13 @@ test('recognized browser session cookies are injected into runtime task xml and 
   const previousHome = process.env.HOME;
   process.env.HOME = home;
   try {
-    const result = await runWithFakeRuntimeEvent('recognized-session-runtime', { taskFile });
+    const result = await runWithFakeRuntimeEvent('detected-session-runtime', { taskFile });
     assert.equal(result.code, 0);
     assert.match(result.workflowTask.xml, /globalCookie="sid=secret&amp;value"/);
     assert.match(result.workflowTask.xml, /isSetGlobalCookie="true"/);
     assert.doesNotMatch(result.workflowTask.xoml, /StaleAction/);
     assert.match(result.workflowTask.xoml, /actionType="NavigateAction"/);
-    assert.doesNotMatch(JSON.stringify(result.workflowTask.recognition ?? ''), /secret&value/);
+    assert.doesNotMatch(JSON.stringify(result.workflowTask.detection ?? ''), /secret&value/);
   } finally {
     if (previousHome === undefined) delete process.env.HOME;
     else process.env.HOME = previousHome;

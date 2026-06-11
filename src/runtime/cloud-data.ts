@@ -79,7 +79,7 @@ function unzipFirstTextFile(zip: Buffer): string {
     if (content) return content.toString('utf8');
     offset = dataEnd;
   }
-  throw new Error('Cloud data file is not a recognized zip/XML format');
+  throw new Error('Cloud data file is not a valid zip/XML format');
 }
 
 function toRecord(value: unknown): Record<string, unknown> {

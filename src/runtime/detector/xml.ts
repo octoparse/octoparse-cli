@@ -1,21 +1,21 @@
 import type { BrowserSessionReference } from '../browser-session.js';
-import type { RecognizedCandidate, RecognizedField, RecognizedPaginationType, RecognizedPopupDismissal, RecognizedSearchPlan } from './types.js';
+import type { DetectedCandidate, DetectedField, DetectedPaginationType, DetectedPopupDismissal, DetectedSearchPlan } from './types.js';
 
-export interface GeneratedRecognizedTask {
+export interface GeneratedDetectedTask {
   taskId: string;
   taskName: string;
   xml: string;
   fieldNames: string[];
   workflowSetting?: Record<string, unknown>;
-  recognition: {
+  detection: {
     url: string;
     candidateId: string;
-    candidateType: RecognizedCandidate['type'];
+    candidateType: DetectedCandidate['type'];
     session?: BrowserSessionReference;
-    paginationType?: RecognizedPaginationType;
-    popupDismissals?: RecognizedPopupDismissal[];
-    detailPlan?: RecognizedCandidate['detailPlan'];
-    search?: RecognizedSearchPlan;
+    paginationType?: DetectedPaginationType;
+    popupDismissals?: DetectedPopupDismissal[];
+    detailPlan?: DetectedCandidate['detailPlan'];
+    search?: DetectedSearchPlan;
   };
 }
 
@@ -23,15 +23,15 @@ export function buildTaskFromCandidate(options: {
   url: string;
   taskId: string;
   taskName: string;
-  candidate: RecognizedCandidate;
-  popupDismissals?: RecognizedPopupDismissal[];
+  candidate: DetectedCandidate;
+  popupDismissals?: DetectedPopupDismissal[];
   session?: BrowserSessionReference;
-  searchPlan?: RecognizedSearchPlan;
-}): GeneratedRecognizedTask {
+  searchPlan?: DetectedSearchPlan;
+}): GeneratedDetectedTask {
   const candidate = normalizeCandidateItemXPath(options.candidate);
   const fields = candidate.fields.filter((field) => field.kind === 'text' || field.kind === 'href' || field.kind === 'src');
   const detailPlan = detailRuntimePlan(candidate);
-  const recognitionDetailPlan = candidate.detailPlan
+  const detectionDetailPlan = candidate.detailPlan
     ? { ...candidate.detailPlan, ...(detailPlan ? { status: 'planned' as const } : {}) }
     : undefined;
   const detailFields = detailPlan?.fields.filter((field) => field.kind === 'text' || field.kind === 'href' || field.kind === 'src') ?? [];
@@ -56,20 +56,20 @@ export function buildTaskFromCandidate(options: {
     xml,
     fieldNames,
     ...workflowSettingForCandidate(candidate),
-    recognition: {
+    detection: {
       url: options.url,
       candidateId: candidate.id,
       candidateType: candidate.type,
       ...(options.searchPlan ? { search: options.searchPlan } : {}),
       ...(options.session ? { session: options.session } : {}),
       paginationType: candidate.pagination?.type,
-      ...(recognitionDetailPlan ? { detailPlan: recognitionDetailPlan } : {}),
+      ...(detectionDetailPlan ? { detailPlan: detectionDetailPlan } : {}),
       ...(options.popupDismissals?.length ? { popupDismissals: options.popupDismissals } : {})
     }
   };
 }
 
-function workflowSettingForCandidate(candidate: RecognizedCandidate): { workflowSetting: Record<string, unknown> } | Record<string, never> {
+function workflowSettingForCandidate(candidate: DetectedCandidate): { workflowSetting: Record<string, unknown> } | Record<string, never> {
   const pagination = candidate.pagination;
   if (pagination?.type !== 'scroll' && !pagination?.revealByScroll) return {};
   return {
@@ -80,7 +80,7 @@ function workflowSettingForCandidate(candidate: RecognizedCandidate): { workflow
   };
 }
 
-function normalizeCandidateItemXPath(candidate: RecognizedCandidate): RecognizedCandidate {
+function normalizeCandidateItemXPath(candidate: DetectedCandidate): DetectedCandidate {
   if (candidate.type === 'detail' || candidate.type === 'form') return candidate;
   const itemXPath = candidate.itemXPath || candidate.xpath;
   if (normalizeXPath(itemXPath) !== normalizeXPath(candidate.xpath)) return candidate;
@@ -96,7 +96,7 @@ function normalizeCandidateItemXPath(candidate: RecognizedCandidate): Recognized
   };
 }
 
-function inferItemXPathFromFields(candidate: RecognizedCandidate): string | undefined {
+function inferItemXPathFromFields(candidate: DetectedCandidate): string | undefined {
   const fieldPaths = candidate.fields
     .map((field) => field.xpath)
     .filter((xpath) => xpath && xpath.startsWith(candidate.xpath));
@@ -150,7 +150,7 @@ function navigateActionXml(url: string, options: {
     'x:Name': options.name ?? 'Navigate1',
     Name: '',
     WaitSeconds: '0',
-    Caption: options.caption ?? 'Open recognized URL',
+    Caption: options.caption ?? 'Open detected URL',
     WaitItem: '',
     UseLoopItem: 'false',
     LoopItem: '',
@@ -188,7 +188,7 @@ function navigateActionXml(url: string, options: {
   })}><ns0:NavigateAction.RetryConditions><x:Array Type="{x:Type p7:RetryCondition}" xmlns:p7="clr-namespace:Octopus.ActionInterface.WebSiteInterface;Assembly=Octopus.ActionInterface, Version=7.4.2.11231, Culture=neutral, PublicKeyToken=null" /></ns0:NavigateAction.RetryConditions></ns0:NavigateAction>`;
 }
 
-function searchActionXml(plan: RecognizedSearchPlan): string[] {
+function searchActionXml(plan: DetectedSearchPlan): string[] {
   const lastInputIndex = plan.inputs.length - 1;
   const inputActions = plan.inputs.map((input, index) => enterTextActionXml({
     name: `EnterSearch${index + 1}`,
@@ -202,7 +202,7 @@ function searchActionXml(plan: RecognizedSearchPlan): string[] {
   return [...inputActions, ...clickSubmit, ...searchResultNavigationXml(plan)];
 }
 
-function searchResultNavigationXml(plan: RecognizedSearchPlan): string[] {
+function searchResultNavigationXml(plan: DetectedSearchPlan): string[] {
   if (!shouldNavigateToSearchFinalUrl(plan)) return [];
   return [navigateActionXml(plan.finalUrl, {
     name: 'NavigateSearchResults',
@@ -213,7 +213,7 @@ function searchResultNavigationXml(plan: RecognizedSearchPlan): string[] {
   })];
 }
 
-function shouldNavigateToSearchFinalUrl(plan: RecognizedSearchPlan): boolean {
+function shouldNavigateToSearchFinalUrl(plan: DetectedSearchPlan): boolean {
   const finalUrl = normalizeComparableUrl(plan.finalUrl);
   const startUrl = normalizeComparableUrl(plan.startUrl);
   if (!finalUrl || !/^https?:\/\//i.test(finalUrl)) return false;
@@ -316,7 +316,7 @@ function clickSearchSubmitActionXml(xpath: string, text?: string): string {
   })}><ns0:ClickAction.RetryConditions><x:Array Type="{x:Type p7:RetryCondition}" xmlns:p7="clr-namespace:Octopus.ActionInterface.WebSiteInterface;Assembly=Octopus.ActionInterface, Version=7.4.2.11231, Culture=neutral, PublicKeyToken=null" /></ns0:ClickAction.RetryConditions></ns0:ClickAction>`;
 }
 
-function extractionWithPaginationXml(candidate: RecognizedCandidate, fields: RecognizedField[]): string {
+function extractionWithPaginationXml(candidate: DetectedCandidate, fields: DetectedField[]): string {
   const listLoop = loopActionXml(candidate, fields, 'LoopItems', 'ExtractItems');
   const pagination = candidate.pagination;
   if (!pagination) return listLoop;
@@ -327,13 +327,13 @@ function extractionWithPaginationXml(candidate: RecognizedCandidate, fields: Rec
   return fixedPaginationLoopXml(candidate, listLoop);
 }
 
-function loopActionXml(candidate: RecognizedCandidate, fields: RecognizedField[], loopName = 'Loop1', extractName = 'Extract1'): string {
+function loopActionXml(candidate: DetectedCandidate, fields: DetectedField[], loopName = 'Loop1', extractName = 'Extract1'): string {
   const bodyXml = detailRuntimeBodyXml(candidate, fields, extractName);
   return `<ns0:LoopAction ${attrs({
     'x:Name': loopName,
     Name: '',
     WaitSeconds: '2',
-    Caption: 'Loop recognized items',
+    Caption: 'Loop detected items',
     WaitItem: '',
     UseLoopItem: 'false',
     LoopItem: '',
@@ -371,7 +371,7 @@ function loopActionXml(candidate: RecognizedCandidate, fields: RecognizedField[]
   })}>${bodyXml}</ns0:LoopAction>`;
 }
 
-function detailRuntimePlan(candidate: RecognizedCandidate): NonNullable<RecognizedCandidate['detailPlan']> | undefined {
+function detailRuntimePlan(candidate: DetectedCandidate): NonNullable<DetectedCandidate['detailPlan']> | undefined {
   const plan = candidate.detailPlan;
   if (!plan || plan.mode === 'list_only') return undefined;
   if (!plan.fields.length) return undefined;
@@ -381,7 +381,7 @@ function detailRuntimePlan(candidate: RecognizedCandidate): NonNullable<Recogniz
   return urlField ? plan : undefined;
 }
 
-function outputFieldsForDetailMode(mode: string, listFields: RecognizedField[], detailFields: RecognizedField[]): RecognizedField[] {
+function outputFieldsForDetailMode(mode: string, listFields: DetectedField[], detailFields: DetectedField[]): DetectedField[] {
   if (mode === 'detail_only') {
     const urlField = listFields.find((field) => field.name === 'url' && field.kind === 'href')
       ?? listFields.find((field) => field.kind === 'href');
@@ -390,7 +390,7 @@ function outputFieldsForDetailMode(mode: string, listFields: RecognizedField[], 
   return [...listFields, ...detailFields];
 }
 
-function detailRuntimeBodyXml(candidate: RecognizedCandidate, fields: RecognizedField[], extractName: string): string {
+function detailRuntimeBodyXml(candidate: DetectedCandidate, fields: DetectedField[], extractName: string): string {
   const plan = detailRuntimePlan(candidate);
   if (!plan) return extractActionXml(fields, { useLoopItem: true, name: extractName, pageIndex: '0' });
 
@@ -400,7 +400,7 @@ function detailRuntimeBodyXml(candidate: RecognizedCandidate, fields: Recognized
     parts.push(extractActionXml(fields, {
       useLoopItem: true,
       name: extractName,
-      caption: 'Extract recognized list data',
+      caption: 'Extract detected list data',
       pageIndex: '0'
     }));
   }
@@ -408,14 +408,14 @@ function detailRuntimeBodyXml(candidate: RecognizedCandidate, fields: Recognized
   parts.push(extractActionXml(detailFields, {
     useLoopItem: true,
     name: 'ExtractDetail',
-    caption: 'Extract recognized detail data',
+    caption: 'Extract detected detail data',
     pageIndex: '1',
     forceAbsoluteXPath: true
   }));
   return parts.join('');
 }
 
-function clickDetailActionXml(candidate: RecognizedCandidate, urlFieldName: string): string {
+function clickDetailActionXml(candidate: DetectedCandidate, urlFieldName: string): string {
   const urlField = candidate.fields.find((field) => field.name === urlFieldName && field.kind === 'href')
     ?? candidate.fields.find((field) => field.name === 'url' && field.kind === 'href')
     ?? candidate.fields.find((field) => field.kind === 'href');
@@ -460,13 +460,13 @@ function clickDetailActionXml(candidate: RecognizedCandidate, urlFieldName: stri
   })}><ns0:ClickAction.RetryConditions><x:Array Type="{x:Type p7:RetryCondition}" xmlns:p7="clr-namespace:Octopus.ActionInterface.WebSiteInterface;Assembly=Octopus.ActionInterface, Version=7.4.2.11231, Culture=neutral, PublicKeyToken=null" /></ns0:ClickAction.RetryConditions></ns0:ClickAction>`;
 }
 
-function detailClickXPath(field: RecognizedField | undefined): string {
+function detailClickXPath(field: DetectedField | undefined): string {
   if (!field) return '';
   const relativeXPath = field.relativeXPath || relativeXPathFromItem(field.xpath);
   return normalizeEngineRelativeXPath(relativeXPath || field.xpath);
 }
 
-function fixedPaginationLoopXml(candidate: RecognizedCandidate, listLoopXml: string): string {
+function fixedPaginationLoopXml(candidate: DetectedCandidate, listLoopXml: string): string {
   const pagination = candidate.pagination;
   if (!pagination || pagination.type === 'scroll') return listLoopXml;
   const isLoadMore = pagination.type === 'load_more';
@@ -515,7 +515,7 @@ function fixedPaginationLoopXml(candidate: RecognizedCandidate, listLoopXml: str
   })}>${listLoopXml}${clickPaginationActionXml(candidate)}</ns0:LoopAction>`;
 }
 
-function scrollRevealedLoadMoreLoopXml(candidate: RecognizedCandidate, listLoopXml: string): string {
+function scrollRevealedLoadMoreLoopXml(candidate: DetectedCandidate, listLoopXml: string): string {
   return `<ns0:LoopAction ${attrs({
     'x:Name': 'LoopScrollAndLoadMore',
     Name: '',
@@ -558,7 +558,7 @@ function scrollRevealedLoadMoreLoopXml(candidate: RecognizedCandidate, listLoopX
   })}>${listLoopXml}${scrollStepActionXml()}${optionalLoadMoreLoopXml(candidate)}</ns0:LoopAction>`;
 }
 
-function optionalLoadMoreLoopXml(candidate: RecognizedCandidate): string {
+function optionalLoadMoreLoopXml(candidate: DetectedCandidate): string {
   const pagination = candidate.pagination;
   if (!pagination || pagination.type !== 'load_more' || !pagination.xpath) return '';
   return `<ns0:LoopAction ${attrs({
@@ -639,7 +639,7 @@ function loadMoreEndTextExclusionXPath(): string {
   ].join(' and ');
 }
 
-function scrollStepLoopActionXml(candidate: RecognizedCandidate, listLoopXml: string): string {
+function scrollStepLoopActionXml(candidate: DetectedCandidate, listLoopXml: string): string {
   return `<ns0:LoopAction ${attrs({
     'x:Name': 'LoopScroll',
     Name: '',
@@ -786,7 +786,7 @@ function scrollStepActionXml(): string {
   })}><ns0:ClickAction.RetryConditions><x:Array Type="{x:Type p7:RetryCondition}" xmlns:p7="clr-namespace:Octopus.ActionInterface.WebSiteInterface;Assembly=Octopus.ActionInterface, Version=7.4.2.11231, Culture=neutral, PublicKeyToken=null" /></ns0:ClickAction.RetryConditions></ns0:ClickAction>`;
 }
 
-function clickPaginationActionXml(candidate: RecognizedCandidate, options: { optional?: boolean } = {}): string {
+function clickPaginationActionXml(candidate: DetectedCandidate, options: { optional?: boolean } = {}): string {
   const pagination = candidate.pagination;
   if (!pagination || pagination.type === 'scroll') return '';
   const isLoadMore = pagination.type === 'load_more';
@@ -872,7 +872,7 @@ function clickGenericLoadMoreActionXml(): string {
   })}><ns0:ClickAction.RetryConditions><x:Array Type="{x:Type p7:RetryCondition}" xmlns:p7="clr-namespace:Octopus.ActionInterface.WebSiteInterface;Assembly=Octopus.ActionInterface, Version=7.4.2.11231, Culture=neutral, PublicKeyToken=null" /></ns0:ClickAction.RetryConditions></ns0:ClickAction>`;
 }
 
-function popupDismissalActionXml(items: RecognizedPopupDismissal[]): string[] {
+function popupDismissalActionXml(items: DetectedPopupDismissal[]): string[] {
   return items
     .filter((item) => item.action === 'click' && item.xpath && item.type !== 'captcha' && item.type !== 'paywall')
     .slice(0, 2)
@@ -916,7 +916,7 @@ function popupDismissalActionXml(items: RecognizedPopupDismissal[]): string[] {
     })}><ns0:ClickAction.RetryConditions><x:Array Type="{x:Type p7:RetryCondition}" xmlns:p7="clr-namespace:Octopus.ActionInterface.WebSiteInterface;Assembly=Octopus.ActionInterface, Version=7.4.2.11231, Culture=neutral, PublicKeyToken=null" /></ns0:ClickAction.RetryConditions></ns0:ClickAction>`);
 }
 
-function extractActionXml(fields: RecognizedField[], options: {
+function extractActionXml(fields: DetectedField[], options: {
   useLoopItem: boolean;
   name?: string;
   caption?: string;
@@ -928,7 +928,7 @@ function extractActionXml(fields: RecognizedField[], options: {
     'x:Name': options.name ?? 'Extract1',
     Name: '',
     WaitSeconds: '0',
-    Caption: options.caption ?? 'Extract recognized data',
+    Caption: options.caption ?? 'Extract detected data',
     WaitItem: '',
     UseLoopItem: options.useLoopItem ? 'true' : 'false',
     LoopItem: '',
@@ -943,7 +943,7 @@ function extractActionXml(fields: RecognizedField[], options: {
   })} />`;
 }
 
-function extractTemplateXml(fields: RecognizedField[], options: {
+function extractTemplateXml(fields: DetectedField[], options: {
   useLoopItem: boolean;
   forceAbsoluteXPath?: boolean;
 }): string {
@@ -954,7 +954,7 @@ function extractTemplateXml(fields: RecognizedField[], options: {
   return `<ExtractTemplate xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema"><Items>${items}</Items></ExtractTemplate>`;
 }
 
-function extractItemXml(field: RecognizedField, id: number, options: {
+function extractItemXml(field: DetectedField, id: number, options: {
   useLoopItem: boolean;
   forceAbsoluteXPath?: boolean;
 }): string {
@@ -997,11 +997,11 @@ function extractItemXml(field: RecognizedField, id: number, options: {
   ].join('');
 }
 
-function shouldAppendExtractedText(field: RecognizedField): boolean {
+function shouldAppendExtractedText(field: DetectedField): boolean {
   return field.kind === 'text' && /(^|_)content(_|$)|正文|body|article/i.test(field.name);
 }
 
-function operationsXml(field: RecognizedField): string {
+function operationsXml(field: DetectedField): string {
   const operations = field.operations?.length
     ? field.operations
     : field.kind === 'text' ? [{ type: 'trim' as const, params: ['0'] }] : [];
@@ -1009,7 +1009,7 @@ function operationsXml(field: RecognizedField): string {
   return `<Operations>${operations.map((operation, index) => operationXml(operation, index)).join('')}</Operations>`;
 }
 
-function operationXml(operation: NonNullable<RecognizedField['operations']>[number], index: number): string {
+function operationXml(operation: NonNullable<DetectedField['operations']>[number], index: number): string {
   const formatType = operation.type === 'regex_match' ? 'RegMatch' : operation.type === 'regex_replace' ? 'RegReplace' : 'Trim';
   const params = operation.type === 'regex_match' && operation.params.length === 1
     ? [operation.params[0], 'false']

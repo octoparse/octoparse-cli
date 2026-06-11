@@ -12,7 +12,7 @@ Purpose:
   Print machine-readable CLI capabilities for agents.
   Agents should call this before planning multi-step workflows such as creating
   a scraping task from a URL. The response includes machineContract.recipes with
-  the recommended recognize/plan/preview/apply/validate sequence.
+  the recommended detect/plan/preview/apply/validate sequence.
   For user requests like "use octoparse to create a task for this URL",
   LLM/agent tools should choose machineContract.recipes.createTaskFromUrlWithAgent
   and run the CLI workflow themselves.
@@ -21,7 +21,7 @@ Purpose:
   @octoparse-cli/octoparse-cli is the npm package name; octoparse is the installed binary.
   If a user says "use octoparse to create a task for this URL", agents should
   inspect this command and then execute the recipe without asking the user to
-  explain internal recognize flags.
+  explain internal detect flags.
 
 Authentication:
   Does not require login. Functional commands do.
@@ -98,13 +98,13 @@ Agent notes:
   Local Chrome execution supports macOS x64/arm64, Windows x64, and Linux x64.
   Linux arm64 is not supported because Chrome for Testing has no Linux arm64 browser package.
 `,
-    recognize: `Usage:
-  octoparse recognize <url> --auto [--goal <text>] [--output task.json] [--llm-rank] [--no-dismiss-popups] [--json]
-  octoparse recognize <url> --manual [--goal <text>] [--llm-rank] [--no-dismiss-popups]
-  octoparse recognize <url> --agent --agent-command <cmd> [--goal <text>] [--output task.json] [--yes]
-  octoparse recognize <url> --prepare-agent --json [--goal <text>] [--output context.json]
-  octoparse recognize --preview-agent-plan plan.json --agent-context context.json [--json]
-  octoparse recognize --apply-agent-plan plan.json --agent-context context.json --output task.json [--json]
+    detect: `Usage:
+  octoparse detect <url> --auto [--goal <text>] [--output task.json] [--llm-rank] [--no-dismiss-popups] [--json]
+  octoparse detect <url> --manual [--goal <text>] [--llm-rank] [--no-dismiss-popups]
+  octoparse detect <url> --agent --agent-command <cmd> [--goal <text>] [--output task.json] [--yes]
+  octoparse detect <url> --prepare-agent --json [--goal <text>] [--output context.json]
+  octoparse detect --preview-agent-plan plan.json --agent-context context.json [--json]
+  octoparse detect --apply-agent-plan plan.json --agent-context context.json --output task.json [--json]
 
 Purpose:
   Open the Octoparse extension browser, inspect the page, and list candidate data regions
@@ -112,26 +112,26 @@ Purpose:
 
 Notes:
   Quote URLs that contain '&', '?' or other shell metacharacters, for example:
-  octoparse recognize 'https://example.com/page?a=1&b=2' --manual
+  octoparse detect 'https://example.com/page?a=1&b=2' --manual
   The first pass is deterministic and does not require an LLM. --auto chooses the
   best candidate and generates a task. --manual opens a guided flow for login,
   popup handling, choosing the highlighted data region, optional session save,
   and task-file generation.
-  On Linux servers without DISPLAY/WAYLAND_DISPLAY, non-manual recognition
-  automatically uses Xvfb when installed. Manual recognition needs a visible
+  On Linux servers without DISPLAY/WAYLAND_DISPLAY, non-manual detection
+  automatically uses Xvfb when installed. Manual detection needs a visible
   desktop/VNC display because the user must interact with the browser overlay.
-  Use --query <keyword> or --input <name=value> to search first, then recognize
+  Use --query <keyword> or --input <name=value> to search first, then detect
   and generate a task from the result page. Generated tasks preserve the search
   input XPath and submit action before extracting results.
-  If a search page opens a login/captcha/paywall gate, recognize pauses in
+  If a search page opens a login/captcha/paywall gate, detect pauses in
   interactive/manual mode so the user can complete login in the browser. Use
   --save-session to store same-site cookies; generated tasks inject that session
   before replaying the search.
-  recognize uses the protected SmartProxy runtime by default. It requires a
+  detect uses the protected SmartProxy runtime by default. It requires a
   bundled private @octopus/octopus-protect native module. Protected Smart resources are
   fetched encrypted, decrypted in memory, and never written to task files.
-  Use --legacy-recognizer only for debugging the previous heuristic detector.
-  If --output is omitted when generating a task, a recognized_<host>.json file is created automatically.
+  Use --legacy-detector only for debugging the previous heuristic detector.
+  If --output is omitted when generating a task, a detected_<host>.json file is created automatically.
   Login/cookie/ad overlays are dismissed automatically when a safe close control is found.
   Use --no-dismiss-popups to inspect the page without this cleanup.
   The manual session-save option stores same-site cookies locally and writes only
@@ -142,7 +142,7 @@ Notes:
   machineContract.recipes.createTaskFromUrlWithAgent; users should not need to
   explain the prepare/plan/preview/apply sequence manually.
   If an LLM/agent is helping the user create a scraping task, prefer that recipe
-  over handwritten task JSON. The agent should run recognize --prepare-agent,
+  over handwritten task JSON. The agent should run detect --prepare-agent,
   write a plan from context.json, preview it, apply it, and validate the task.
   Agent workflows generate a full-page screenshot by default and store its path
   in context.screenshot. Pass the user request through --goal so the agent can
@@ -232,12 +232,12 @@ Usage:
   octoparse task list [--page <n>] [--page-size <n>] [--limit <n>] [--keyword <text>] [--json]
   octoparse task inspect <taskId> [--task-file <file.json|file.xml|file.otd>] [--json]
   octoparse task validate <taskId> [--task-file <file.json|file.xml|file.otd>] [--json]
-  octoparse recognize URL --auto [--goal <text>] [--output task.json] [--llm-rank] [--no-dismiss-popups] [--json]
-  octoparse recognize URL --manual [--goal <text>] [--llm-rank] [--no-dismiss-popups]
-  octoparse recognize URL --agent --agent-command <cmd> [--output task.json] [--yes]
-  octoparse recognize URL --prepare-agent --json --goal <text> --output context.json
-  octoparse recognize --preview-agent-plan plan.json --agent-context context.json [--json]
-  octoparse recognize --apply-agent-plan plan.json --agent-context context.json --output task.json
+  octoparse detect URL --auto [--goal <text>] [--output task.json] [--llm-rank] [--no-dismiss-popups] [--json]
+  octoparse detect URL --manual [--goal <text>] [--llm-rank] [--no-dismiss-popups]
+  octoparse detect URL --agent --agent-command <cmd> [--output task.json] [--yes]
+  octoparse detect URL --prepare-agent --json --goal <text> --output context.json
+  octoparse detect --preview-agent-plan plan.json --agent-context context.json [--json]
+  octoparse detect --apply-agent-plan plan.json --agent-context context.json --output task.json
   octoparse run <taskId> [--task-file <file.json|file.xml|file.otd>] [--output <dir>] [--chrome-path <path>] [--headless] [--max-rows <n>] [--detach] [--json|--jsonl]
   octoparse cloud start <taskId> [--json]
   octoparse cloud stop <taskId> [--json]

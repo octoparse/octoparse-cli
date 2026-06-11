@@ -12,7 +12,7 @@ export interface TaskDefinition {
   xml: string;
   xoml: string;
   fieldNames: string[];
-  recognition?: {
+  detection?: {
     session?: {
       name: string;
       origin: string;

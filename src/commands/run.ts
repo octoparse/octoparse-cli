@@ -764,7 +764,7 @@ async function applyTaskBrowserSession(
   options: RunOptions,
   runtimeConsole: ReturnType<typeof maybeSuppressRuntimeConsole>
 ): Promise<void> {
-  const sessionName = task.recognition?.session?.name;
+  const sessionName = task.detection?.session?.name;
   if (!sessionName) return;
   const session = await loadBrowserSession(sessionName);
   const cookieHeader = cookieHeaderFromSession(session);

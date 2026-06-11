@@ -1,4 +1,4 @@
-export type RecognizedCandidateType =
+export type DetectedCandidateType =
   | 'table'
   | 'repeated_card'
   | 'search_results'
@@ -6,7 +6,7 @@ export type RecognizedCandidateType =
   | 'link_collection'
   | 'form';
 
-export interface RecognizedField {
+export interface DetectedField {
   name: string;
   kind: 'text' | 'href' | 'src' | 'value';
   selector: string;
@@ -18,30 +18,30 @@ export interface RecognizedField {
     params: string[];
   }>;
   samples: string[];
-  diagnostics?: RecognizedFieldDiagnostics;
+  diagnostics?: DetectedFieldDiagnostics;
 }
 
-export interface RecognizedBox {
+export interface DetectedBox {
   x: number;
   y: number;
   width: number;
   height: number;
 }
 
-export interface RecognizedFieldDiagnostics {
+export interface DetectedFieldDiagnostics {
   matchCount: number;
   textLength: number;
   paragraphCount: number;
   hasStyleNoise: boolean;
-  boundingBox?: RecognizedBox;
+  boundingBox?: DetectedBox;
   sampleText?: string;
   warnings: string[];
 }
 
-export type RecognizedPaginationType = 'next_page' | 'load_more' | 'scroll';
+export type DetectedPaginationType = 'next_page' | 'load_more' | 'scroll';
 
-export interface RecognizedPagination {
-  type: RecognizedPaginationType;
+export interface DetectedPagination {
+  type: DetectedPaginationType;
   xpath: string;
   text: string;
   confidence: number;
@@ -51,10 +51,10 @@ export interface RecognizedPagination {
   reasons: string[];
 }
 
-export type RecognizedPopupType = 'login' | 'cookie' | 'newsletter' | 'ad' | 'captcha' | 'paywall' | 'unknown';
+export type DetectedPopupType = 'login' | 'cookie' | 'newsletter' | 'ad' | 'captcha' | 'paywall' | 'unknown';
 
-export interface RecognizedPopupDismissal {
-  type: RecognizedPopupType;
+export interface DetectedPopupDismissal {
+  type: DetectedPopupType;
   action: 'click' | 'escape' | 'hide';
   xpath?: string;
   text?: string;
@@ -63,53 +63,53 @@ export interface RecognizedPopupDismissal {
   reasons: string[];
 }
 
-export interface RecognizedCandidate {
+export interface DetectedCandidate {
   id: string;
-  type: RecognizedCandidateType;
+  type: DetectedCandidateType;
   title: string;
   confidence: number;
-  layout?: RecognizedCandidateLayout;
+  layout?: DetectedCandidateLayout;
   selector: string;
   xpath: string;
   itemSelector?: string;
   itemXPath?: string;
   itemCount: number;
-  fields: RecognizedField[];
+  fields: DetectedField[];
   sampleRows: Record<string, string>[];
   reasons: string[];
-  pagination?: RecognizedPagination;
-  detailPlan?: RecognizedDetailPlan;
+  pagination?: DetectedPagination;
+  detailPlan?: DetectedDetailPlan;
   goalScore?: number;
   goalReasons?: string[];
-  diagnostics?: RecognizedCandidateDiagnostics;
+  diagnostics?: DetectedCandidateDiagnostics;
 }
 
-export interface RecognizedCandidateDiagnostics {
+export interface DetectedCandidateDiagnostics {
   matchCount: number;
-  boundingBox?: RecognizedBox;
-  sampleBoxes: RecognizedBox[];
+  boundingBox?: DetectedBox;
+  sampleBoxes: DetectedBox[];
   textLength: number;
   visualCoverage: number;
   warnings: string[];
 }
 
-export type RecognizedDetailMode = 'list_only' | 'list_with_detail' | 'detail_only';
+export type DetectedDetailMode = 'list_only' | 'list_with_detail' | 'detail_only';
 
-export interface RecognizedDetailPlan {
-  mode: RecognizedDetailMode;
+export interface DetectedDetailPlan {
+  mode: DetectedDetailMode;
   urlField: string;
   sampleUrls: string[];
-  fields: RecognizedField[];
+  fields: DetectedField[];
   sampleRows: Record<string, string>[];
   templateCount: number;
   status: 'planned' | 'unsupported_runtime';
   reasons: string[];
 }
 
-export type RecognizedRegionRole = 'main' | 'sidebar' | 'header' | 'footer' | 'nav' | 'ad' | 'unknown';
+export type DetectedRegionRole = 'main' | 'sidebar' | 'header' | 'footer' | 'nav' | 'ad' | 'unknown';
 
-export interface RecognizedCandidateLayout {
-  role: RecognizedRegionRole;
+export interface DetectedCandidateLayout {
+  role: DetectedRegionRole;
   score: number;
   mainScore: number;
   sidebarPenalty: number;
@@ -121,27 +121,27 @@ export interface RecognizedCandidateLayout {
   reasons: string[];
 }
 
-export interface PageRecognitionResult {
+export interface PageDetectionResult {
   url: string;
   finalUrl: string;
   title: string;
   capturedAt: string;
-  candidates: RecognizedCandidate[];
-  searchPlan?: RecognizedSearchPlan;
-  savedSession?: RecognizedSessionReference;
+  candidates: DetectedCandidate[];
+  searchPlan?: DetectedSearchPlan;
+  savedSession?: DetectedSessionReference;
   selectedCandidateId?: string;
   selectedCandidateIds?: string[];
-  llmRankInput?: RecognizedLlmRankInput;
-  popupDismissals?: RecognizedPopupDismissal[];
-  agentScreenshot?: RecognizedAgentScreenshot;
+  llmRankInput?: DetectedLlmRankInput;
+  popupDismissals?: DetectedPopupDismissal[];
+  agentScreenshot?: DetectedAgentScreenshot;
 }
 
-export interface RecognizedAgentScreenshot {
+export interface DetectedAgentScreenshot {
   path: string;
   fullPage: boolean;
 }
 
-export interface RecognizedSessionReference {
+export interface DetectedSessionReference {
   name: string;
   origin: string;
   savedAt: string;
@@ -151,7 +151,7 @@ export interface RecognizedSessionReference {
   hosts?: string[];
 }
 
-export interface RecognizedSearchPlan {
+export interface DetectedSearchPlan {
   startUrl: string;
   finalUrl: string;
   inputs: Array<{
@@ -166,21 +166,21 @@ export interface RecognizedSearchPlan {
   };
 }
 
-export interface RecognizedLlmRankInput {
+export interface DetectedLlmRankInput {
   goal?: string;
   instruction: string;
   candidates: Array<{
     id: string;
-    type: RecognizedCandidateType;
+    type: DetectedCandidateType;
     score: number;
-    layout?: RecognizedCandidateLayout;
+    layout?: DetectedCandidateLayout;
     fields: string[];
     sampleRows: Record<string, string>[];
     reasons: string[];
   }>;
 }
 
-export interface RecognizeOptions {
+export interface DetectOptions {
   url: string;
   input?: Record<string, string>;
   submit?: string;
@@ -193,7 +193,7 @@ export interface RecognizeOptions {
   timeoutMs: number;
   maxCandidates: number;
   llmRank: boolean;
-  legacyRecognizer?: boolean;
+  legacyDetector?: boolean;
   apiBaseUrl?: string;
   dismissPopups: boolean;
   saveSession?: boolean;

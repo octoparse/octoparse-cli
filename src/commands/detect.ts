@@ -6,11 +6,11 @@ import { basename, dirname, extname, join, resolve } from 'node:path';
 import prompts from 'prompts';
 import { firstPositionalArg, hasFlag, parsePositiveInt, valueAfter } from '../cli/args.js';
 import { printEnvelope, printUsageError } from '../cli/output.js';
-import { RecognitionLoginRequiredError, recognizePage } from '../runtime/recognizer/page-recognizer.js';
-import { buildTaskFromCandidate } from '../runtime/recognizer/xml.js';
+import { DetectionLoginRequiredError, detectPage } from '../runtime/detector/page-detector.js';
+import { buildTaskFromCandidate } from '../runtime/detector/xml.js';
 import { createChromeProgressReporter } from '../runtime/chrome-progress.js';
 import { LINUX_ARM64_UNSUPPORTED_CODE, LINUX_ARM64_UNSUPPORTED_MESSAGE, isLocalChromeRuntimeSupported } from '../runtime/platform-support.js';
-import type { PageRecognitionResult, RecognizedAgentScreenshot, RecognizedCandidate, RecognizedDetailPlan, RecognizedField, RecognizedFieldDiagnostics, RecognizedPagination, RecognizedSearchPlan } from '../runtime/recognizer/types.js';
+import type { PageDetectionResult, DetectedAgentScreenshot, DetectedCandidate, DetectedDetailPlan, DetectedField, DetectedFieldDiagnostics, DetectedPagination, DetectedSearchPlan } from '../runtime/detector/types.js';
 import { safeFileName } from '../runtime/naming.js';
 import { EXIT_OK, EXIT_OPERATION_FAILED, EXIT_RUNTIME_FAILED } from '../types.js';
 import { runTask } from './run.js';
@@ -19,16 +19,16 @@ type AgentFieldPlan = string | {
   source?: string;
   name?: string;
   as?: string;
-  kind?: RecognizedField['kind'];
+  kind?: DetectedField['kind'];
   selector?: string;
   xpath?: string;
   relativeXPath?: string;
   samples?: string[];
-  operations?: RecognizedField['operations'];
+  operations?: DetectedField['operations'];
 };
 
-interface RecognizeAgentContext {
-  schemaVersion: 'octopus.recognize.agent-context.v1';
+interface DetectAgentContext {
+  schemaVersion: 'octopus.detect.agent-context.v1';
   instruction: string;
   decisionPolicy: {
     requiredInputs: string[];
@@ -50,51 +50,51 @@ interface RecognizeAgentContext {
   capturedAt: string;
   goal?: string;
   recommendedCandidateId?: string;
-  screenshot?: RecognizedAgentScreenshot;
-  candidates: RecognizedCandidate[];
-  searchPlan?: RecognizedSearchPlan;
-  popupDismissals?: PageRecognitionResult['popupDismissals'];
-  savedSession?: PageRecognitionResult['savedSession'];
+  screenshot?: DetectedAgentScreenshot;
+  candidates: DetectedCandidate[];
+  searchPlan?: DetectedSearchPlan;
+  popupDismissals?: PageDetectionResult['popupDismissals'];
+  savedSession?: PageDetectionResult['savedSession'];
 }
 
 interface AgentPlan {
   schemaVersion?: string;
-  context?: RecognizeAgentContext;
+  context?: DetectAgentContext;
   contextFile?: string;
   candidateId?: string;
   selection?: {
     candidateId?: string;
     fields?: AgentFieldPlan[];
-    pagination?: RecognizedPagination | null | false;
+    pagination?: DetectedPagination | null | false;
     detail?: AgentDetailPlan | null | false;
   };
   fields?: AgentFieldPlan[];
-  pagination?: RecognizedPagination | null | false;
+  pagination?: DetectedPagination | null | false;
   detail?: AgentDetailPlan | null | false;
   taskId?: string;
   taskName?: string;
 }
 
 interface AgentPlanPreview {
-  schemaVersion: 'octopus.recognize.agent-preview.v1';
+  schemaVersion: 'octopus.detect.agent-preview.v1';
   pass: boolean;
   candidateId: string;
   candidate: {
     id: string;
-    type: RecognizedCandidate['type'];
+    type: DetectedCandidate['type'];
     title: string;
     confidence: number;
     itemCount: number;
-    diagnostics?: RecognizedCandidate['diagnostics'];
+    diagnostics?: DetectedCandidate['diagnostics'];
   };
   fields: AgentPreviewField[];
   detail?: {
-    mode: RecognizedDetailPlan['mode'];
+    mode: DetectedDetailPlan['mode'];
     urlField: string;
     sampleUrls: string[];
     fields: AgentPreviewField[];
   };
-  pagination?: RecognizedPagination;
+  pagination?: DetectedPagination;
   warnings: string[];
   recommendedFixes: string[];
 }
@@ -102,28 +102,28 @@ interface AgentPlanPreview {
 interface AgentPreviewField {
   name: string;
   sourceName?: string;
-  kind: RecognizedField['kind'];
+  kind: DetectedField['kind'];
   xpath: string;
   samples: string[];
-  diagnostics?: RecognizedFieldDiagnostics;
+  diagnostics?: DetectedFieldDiagnostics;
   warnings: string[];
 }
 
 interface AgentDetailPlan {
-  mode?: RecognizedDetailPlan['mode'];
+  mode?: DetectedDetailPlan['mode'];
   urlField?: string;
   sampleUrls?: string[];
   fields?: AgentFieldPlan[];
 }
 
-export async function recognizeCommand(args: string[]): Promise<number> {
+export async function detectCommand(args: string[]): Promise<number> {
   const json = hasFlag(args, '--json');
   const quiet = hasFlag(args, '--quiet');
   if (hasFlag(args, '--screenshot') || hasFlag(args, '--agent-screenshot')) {
     return printUsageError(
       json,
-      'recognize already generates a full-page screenshot for Agent/LLM workflows by default; --screenshot and --agent-screenshot are no longer supported.',
-      'Usage: octoparse recognize URL --prepare-agent --json --goal "extraction goal" --output context.json',
+      'detect already generates a full-page screenshot for Agent/LLM workflows by default; --screenshot and --agent-screenshot are no longer supported.',
+      'Usage: octoparse detect URL --prepare-agent --json --goal "extraction goal" --output context.json',
       'USAGE_ERROR'
     );
   }
@@ -158,7 +158,7 @@ export async function recognizeCommand(args: string[]): Promise<number> {
     return printUsageError(
       json,
       'Error: missing URL',
-      'Usage: octoparse recognize URL --auto|--manual [--goal "list"] [--output task.json] [--json]',
+      'Usage: octoparse detect URL --auto|--manual [--goal "list"] [--output task.json] [--json]',
       'USAGE_ERROR'
     );
   }
@@ -168,8 +168,8 @@ export async function recognizeCommand(args: string[]): Promise<number> {
   if (hasFlag(args, '--auto') && hasFlag(args, '--manual')) {
     return printUsageError(
       json,
-      'recognize accepts only one mode: --auto or --manual.',
-      'Usage: octoparse recognize URL --auto|--manual [--goal "list"]',
+      'detect accepts only one mode: --auto or --manual.',
+      'Usage: octoparse detect URL --auto|--manual [--goal "list"]',
       'USAGE_ERROR'
     );
   }
@@ -177,7 +177,7 @@ export async function recognizeCommand(args: string[]): Promise<number> {
     return printUsageError(
       json,
       'Missing Agent command: pass --agent-command or set OCTOPARSE_AGENT_COMMAND.',
-      'Example: octoparse recognize URL --agent --agent-command "node make-plan.mjs" --output task.json',
+      'Example: octoparse detect URL --agent --agent-command "node make-plan.mjs" --output task.json',
       'USAGE_ERROR'
     );
   }
@@ -188,9 +188,9 @@ export async function recognizeCommand(args: string[]): Promise<number> {
       enabled: !json && !quiet && !valueAfter(args, '--chrome-path'),
       write: (message) => originalStderrWrite(message)
     });
-    const result = await recognizePage({
+    const result = await detectPage({
       url,
-      input: parseRecognizeInput(args),
+      input: parseDetectInput(args),
       submit: valueAfter(args, '--submit'),
       goal: valueAfter(args, '--goal'),
       chromePath: valueAfter(args, '--chrome-path'),
@@ -201,7 +201,7 @@ export async function recognizeCommand(args: string[]): Promise<number> {
       timeoutMs: parsePositiveInt(valueAfter(args, '--timeout-ms'), 45_000),
       maxCandidates: parsePositiveInt(valueAfter(args, '--max-candidates'), 8),
       llmRank: hasFlag(args, '--llm-rank'),
-      legacyRecognizer: hasFlag(args, '--legacy-recognizer') || process.env.OCTOPARSE_LEGACY_RECOGNIZER === '1',
+      legacyDetector: hasFlag(args, '--legacy-detector') || process.env.OCTOPARSE_LEGACY_DETECTOR === '1',
       apiBaseUrl: valueAfter(args, '--api-base-url'),
       dismissPopups: !hasFlag(args, '--no-dismiss-popups'),
       saveSession: hasFlag(args, '--save-session'),
@@ -211,7 +211,7 @@ export async function recognizeCommand(args: string[]): Promise<number> {
     });
 
     if (hasFlag(args, '--agent')) {
-      return runInlineAgentRecognize({ args, result, json, quiet });
+      return runInlineAgentDetect({ args, result, json, quiet });
     }
 
     if (hasFlag(args, '--prepare-agent')) {
@@ -238,37 +238,37 @@ export async function recognizeCommand(args: string[]): Promise<number> {
         const message = hasFlag(args, '--interactive') || hasFlag(args, '--manual')
           ? 'No extraction target was selected: click a highlighted data group in the browser, then continue.'
           : 'Task-file generation requires --select candidateId or --auto.';
-        return printUsageError(json, message, 'Example: octoparse recognize https://example.com --manual', 'RECOGNIZE_SELECT_REQUIRED');
+        return printUsageError(json, message, 'Example: octoparse detect https://example.com --manual', 'DETECT_SELECT_REQUIRED');
       }
       const candidate = result.candidates.find((item) => item.id === selectedId);
       if (!candidate) {
         const message = `Candidate not found: ${selectedId}`;
-        if (json) printEnvelope(false, undefined, 'RECOGNIZE_CANDIDATE_NOT_FOUND', message);
+        if (json) printEnvelope(false, undefined, 'DETECT_CANDIDATE_NOT_FOUND', message);
         else console.error(message);
         return EXIT_OPERATION_FAILED;
       }
       if (candidate.type === 'form') {
         const message = 'Form candidates are search/input entry points and cannot be turned directly into extraction tasks. Open the submitted result page, or use --goal/--input to generate a search workflow.';
-        if (json) printEnvelope(false, undefined, 'RECOGNIZE_CANDIDATE_UNSUPPORTED', message);
+        if (json) printEnvelope(false, undefined, 'DETECT_CANDIDATE_UNSUPPORTED', message);
         else console.error(message);
         return EXIT_OPERATION_FAILED;
       }
-      const taskId = valueAfter(args, '--task-id') ?? `recognized_${safeFileName(new URL(result.finalUrl).hostname || 'site')}`;
-      const taskName = valueAfter(args, '--task-name') ?? `Recognized ${new URL(result.finalUrl).hostname || result.finalUrl}`;
+      const taskId = valueAfter(args, '--task-id') ?? `detected_${safeFileName(new URL(result.finalUrl).hostname || 'site')}`;
+      const taskName = valueAfter(args, '--task-name') ?? `Detected ${new URL(result.finalUrl).hostname || result.finalUrl}`;
       const task = buildTaskFromCandidate({ url: result.finalUrl, taskId, taskName, candidate, popupDismissals: result.popupDismissals, session: result.savedSession, searchPlan: result.searchPlan });
-      const file = outputFile ? resolve(outputFile) : resolveAvailableRecognizedTaskFile(taskId);
+      const file = outputFile ? resolve(outputFile) : resolveAvailableDetectedTaskFile(taskId);
       await writeFile(file, `${JSON.stringify(task, null, 2)}\n`, 'utf8');
-      const data = { ...result, generatedTask: { file, taskId, taskName, candidateId: candidate.id, fieldNames: task.fieldNames, pagination: candidate.pagination, session: task.recognition.session } };
+      const data = { ...result, generatedTask: { file, taskId, taskName, candidateId: candidate.id, fieldNames: task.fieldNames, pagination: candidate.pagination, session: task.detection.session } };
       if (json && !quiet) printEnvelope(true, data);
       else if (!quiet) {
-        printRecognizeHuman(result);
+        printDetectHuman(result);
         console.log('');
         console.log(`Generated task: ${file}`);
-        if (task.recognition.session) {
-          console.log(`Saved session: ${task.recognition.session.name} (${task.recognition.session.cookieCount} cookies, cookies-only)`);
+        if (task.detection.session) {
+          console.log(`Saved session: ${task.detection.session.name} (${task.detection.session.cookieCount} cookies, cookies-only)`);
         }
-        if (task.recognition.detailPlan) {
-          console.log(`Detail plan: ${detailModeLabel(task.recognition.detailPlan.mode)} (${task.recognition.detailPlan.fields.map((field) => field.name).join(', ') || 'no fields'})`);
+        if (task.detection.detailPlan) {
+          console.log(`Detail plan: ${detailModeLabel(task.detection.detailPlan.mode)} (${task.detection.detailPlan.fields.map((field) => field.name).join(', ') || 'no fields'})`);
         }
         console.log(`Validate: octoparse task validate ${taskId} --task-file ${file}`);
         console.log(`Run: octoparse run ${taskId} --task-file ${file}`);
@@ -277,24 +277,24 @@ export async function recognizeCommand(args: string[]): Promise<number> {
     }
 
     if (json && !quiet) printEnvelope(true, { ...result, recommendedCandidateId: recommendedCandidate(result.candidates)?.id });
-    else if (!quiet) printRecognizeHuman(result);
+    else if (!quiet) printDetectHuman(result);
     return EXIT_OK;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const code = error instanceof RecognitionLoginRequiredError ? 'LOGIN_SESSION_REQUIRED' : 'RECOGNIZE_FAILED';
+    const code = error instanceof DetectionLoginRequiredError ? 'LOGIN_SESSION_REQUIRED' : 'DETECT_FAILED';
     if (json) printEnvelope(false, undefined, code, message);
-    else console.error(`Recognition failed: ${message}`);
+    else console.error(`Detection failed: ${message}`);
     return EXIT_RUNTIME_FAILED;
   }
 }
 
-export async function runInlineAgentRecognizeForTesting(options: {
+export async function runInlineAgentDetectForTesting(options: {
   args: string[];
-  result: PageRecognitionResult;
+  result: PageDetectionResult;
   json?: boolean;
   quiet?: boolean;
 }): Promise<number> {
-  return runInlineAgentRecognize({
+  return runInlineAgentDetect({
     args: options.args,
     result: options.result,
     json: options.json ?? false,
@@ -302,9 +302,9 @@ export async function runInlineAgentRecognizeForTesting(options: {
   });
 }
 
-async function runInlineAgentRecognize(options: {
+async function runInlineAgentDetect(options: {
   args: string[];
-  result: PageRecognitionResult;
+  result: PageDetectionResult;
   json: boolean;
   quiet: boolean;
 }): Promise<number> {
@@ -313,7 +313,7 @@ async function runInlineAgentRecognize(options: {
     return printUsageError(
       options.json,
       'Missing Agent command: pass --agent-command or set OCTOPARSE_AGENT_COMMAND.',
-      'Example: octoparse recognize URL --agent --agent-command "node make-plan.mjs" --output task.json',
+      'Example: octoparse detect URL --agent --agent-command "node make-plan.mjs" --output task.json',
       'USAGE_ERROR'
     );
   }
@@ -351,11 +351,11 @@ async function runInlineAgentRecognize(options: {
       return EXIT_OPERATION_FAILED;
     }
 
-    const taskId = valueAfter(options.args, '--task-id') ?? plan.taskId ?? `recognized_${safeFileName(new URL(context.finalUrl).hostname || 'site')}`;
-    const taskName = valueAfter(options.args, '--task-name') ?? plan.taskName ?? `Recognized ${new URL(context.finalUrl).hostname || context.finalUrl}`;
+    const taskId = valueAfter(options.args, '--task-id') ?? plan.taskId ?? `detected_${safeFileName(new URL(context.finalUrl).hostname || 'site')}`;
+    const taskName = valueAfter(options.args, '--task-name') ?? plan.taskName ?? `Detected ${new URL(context.finalUrl).hostname || context.finalUrl}`;
     const task = buildTaskFromAgentPlan({ context, plan, taskId, taskName });
     const outputFile = valueAfter(options.args, '--output');
-    const file = outputFile ? resolve(outputFile) : resolveAvailableRecognizedTaskFile(taskId);
+    const file = outputFile ? resolve(outputFile) : resolveAvailableDetectedTaskFile(taskId);
     await writeFile(file, `${JSON.stringify(task, null, 2)}\n`, 'utf8');
 
     const data = {
@@ -363,7 +363,7 @@ async function runInlineAgentRecognize(options: {
         file,
         taskId,
         taskName,
-        candidateId: task.recognition.candidateId,
+        candidateId: task.detection.candidateId,
         fieldNames: task.fieldNames,
         selectionSource: 'inline_agent'
       },
@@ -395,23 +395,23 @@ async function runInlineAgentRecognize(options: {
 
 async function applyAgentPlanCommand(args: string[], json: boolean, quiet: boolean): Promise<number> {
   const planFile = valueAfter(args, '--apply-agent-plan');
-  if (!planFile) return printUsageError(json, 'Missing Agent plan file.', 'Usage: octoparse recognize --apply-agent-plan plan.json --agent-context context.json --output task.json', 'USAGE_ERROR');
+  if (!planFile) return printUsageError(json, 'Missing Agent plan file.', 'Usage: octoparse detect --apply-agent-plan plan.json --agent-context context.json --output task.json', 'USAGE_ERROR');
   try {
     const planPath = resolve(planFile);
     const plan = JSON.parse(await readFile(planPath, 'utf8')) as AgentPlan;
     const context = await resolveAgentContext(plan, valueAfter(args, '--agent-context'), dirname(planPath));
-    const taskId = valueAfter(args, '--task-id') ?? plan.taskId ?? `recognized_${safeFileName(new URL(context.finalUrl).hostname || 'site')}`;
-    const taskName = valueAfter(args, '--task-name') ?? plan.taskName ?? `Recognized ${new URL(context.finalUrl).hostname || context.finalUrl}`;
+    const taskId = valueAfter(args, '--task-id') ?? plan.taskId ?? `detected_${safeFileName(new URL(context.finalUrl).hostname || 'site')}`;
+    const taskName = valueAfter(args, '--task-name') ?? plan.taskName ?? `Detected ${new URL(context.finalUrl).hostname || context.finalUrl}`;
     const task = buildTaskFromAgentPlan({ context, plan, taskId, taskName });
     const outputFile = valueAfter(args, '--output');
-    const file = outputFile ? resolve(outputFile) : resolveAvailableRecognizedTaskFile(taskId);
+    const file = outputFile ? resolve(outputFile) : resolveAvailableDetectedTaskFile(taskId);
     await writeFile(file, `${JSON.stringify(task, null, 2)}\n`, 'utf8');
     const data = {
       generatedTask: {
         file,
         taskId,
         taskName,
-        candidateId: task.recognition.candidateId,
+        candidateId: task.detection.candidateId,
         fieldNames: task.fieldNames,
         selectionSource: 'external_ai'
       }
@@ -475,7 +475,7 @@ async function runAgentCommand(options: {
   return { plan, stdout };
 }
 
-async function confirmAgentPreview(preview: AgentPlanPreview, screenshot: RecognizedAgentScreenshot | undefined, quiet: boolean): Promise<boolean> {
+async function confirmAgentPreview(preview: AgentPlanPreview, screenshot: DetectedAgentScreenshot | undefined, quiet: boolean): Promise<boolean> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) return false;
   if (!quiet) {
     printAgentPlanPreview(preview, screenshot);
@@ -501,7 +501,7 @@ function agentFiles(args: string[], contextFile: string, planFile: string): { co
 
 async function previewAgentPlanCommand(args: string[], json: boolean, quiet: boolean): Promise<number> {
   const planFile = valueAfter(args, '--preview-agent-plan');
-  if (!planFile) return printUsageError(json, 'Missing Agent plan file.', 'Usage: octoparse recognize --preview-agent-plan plan.json --agent-context context.json --json', 'USAGE_ERROR');
+  if (!planFile) return printUsageError(json, 'Missing Agent plan file.', 'Usage: octoparse detect --preview-agent-plan plan.json --agent-context context.json --json', 'USAGE_ERROR');
   try {
     const planPath = resolve(planFile);
     const plan = JSON.parse(await readFile(planPath, 'utf8')) as AgentPlan;
@@ -518,32 +518,32 @@ async function previewAgentPlanCommand(args: string[], json: boolean, quiet: boo
   }
 }
 
-async function resolveAgentContext(plan: AgentPlan, contextFile: string | undefined, planDir: string): Promise<RecognizeAgentContext> {
+async function resolveAgentContext(plan: AgentPlan, contextFile: string | undefined, planDir: string): Promise<DetectAgentContext> {
   if (plan.context) return assertAgentContext(plan.context);
   const file = contextFile ?? plan.contextFile;
   if (!file) throw new Error('Agent plan has no embedded context; pass --agent-context context.json or embed it in plan.context.');
   const resolved = resolve(planDir, file);
-  return assertAgentContext(JSON.parse(await readFile(resolved, 'utf8')) as RecognizeAgentContext);
+  return assertAgentContext(JSON.parse(await readFile(resolved, 'utf8')) as DetectAgentContext);
 }
 
-function assertAgentContext(value: RecognizeAgentContext): RecognizeAgentContext {
-  if (value?.schemaVersion !== 'octopus.recognize.agent-context.v1') throw new Error('Invalid Agent context schemaVersion.');
+function assertAgentContext(value: DetectAgentContext): DetectAgentContext {
+  if (value?.schemaVersion !== 'octopus.detect.agent-context.v1') throw new Error('Invalid Agent context schemaVersion.');
   if (!Array.isArray(value.candidates)) throw new Error('Invalid Agent context: missing candidates.');
   return value;
 }
 
-export function buildAgentContextForTesting(result: PageRecognitionResult, goal?: string): RecognizeAgentContext {
+export function buildAgentContextForTesting(result: PageDetectionResult, goal?: string): DetectAgentContext {
   return buildAgentContext(result, goal);
 }
 
-export function previewAgentPlanForTesting(options: { context: RecognizeAgentContext; plan: AgentPlan }): AgentPlanPreview {
+export function previewAgentPlanForTesting(options: { context: DetectAgentContext; plan: AgentPlan }): AgentPlanPreview {
   return previewAgentPlan(options);
 }
 
-function buildAgentContext(result: PageRecognitionResult, goal?: string): RecognizeAgentContext {
+function buildAgentContext(result: PageDetectionResult, goal?: string): DetectAgentContext {
   const recommended = recommendedCandidate(result.candidates);
   return {
-    schemaVersion: 'octopus.recognize.agent-context.v1',
+    schemaVersion: 'octopus.detect.agent-context.v1',
     instruction: [
       'You are choosing a web scraping task plan from deterministic candidates.',
       'Select candidateId for the primary data region. Optionally filter or rename fields.',
@@ -566,7 +566,7 @@ function buildAgentContext(result: PageRecognitionResult, goal?: string): Recogn
       rankingRule: 'Choose the candidate that best matches the user goal and the visible main content in the full-page screenshot. Text samples alone are insufficient when layout, sidebars, ads, or pagination are ambiguous.',
       recommendedCandidateRule: 'recommendedCandidateId is a deterministic hint, not a final answer. Override it when screenshot/layout/diagnostics/sampleRows show a better match for the user goal.',
       paginationRule: 'Only keep pagination when the candidate has explicit pagination evidence that matches the visible page controls or a real scroll-loading behavior; disable pagination when the screenshot shows a footer pager or no continuation control for the selected region.',
-      searchRule: 'When the user goal describes a search/query keyword, use searchPlan and recognized submit controls from context instead of treating the blank search homepage as the extraction target.'
+      searchRule: 'When the user goal describes a search/query keyword, use searchPlan and detected submit controls from context instead of treating the blank search homepage as the extraction target.'
     },
     resultValidationPolicy: {
       normalPartialDataRule: 'Real list pages often contain heterogeneous records, ads, sponsored cards, topic blocks, recommendation modules, or rows where optional fields are legitimately absent. Isolated missing values are normal partial data, not task failure.',
@@ -599,7 +599,7 @@ function buildAgentContext(result: PageRecognitionResult, goal?: string): Recogn
   };
 }
 
-function previewAgentPlan(options: { context: RecognizeAgentContext; plan: AgentPlan }): AgentPlanPreview {
+function previewAgentPlan(options: { context: DetectAgentContext; plan: AgentPlan }): AgentPlanPreview {
   const candidateId = options.plan.selection?.candidateId ?? options.plan.candidateId;
   if (!candidateId) throw new Error('Agent plan is missing selection.candidateId.');
   const base = options.context.candidates.find((candidate) => candidate.id === candidateId);
@@ -612,7 +612,7 @@ function previewAgentPlan(options: { context: RecognizeAgentContext; plan: Agent
   const detailFields = candidate.detailPlan ? previewFields(candidate.detailPlan.fields, base.detailPlan?.fields ?? []) : [];
   collectAgentPreviewWarnings(warnings, recommendedFixes, candidate, fields, detailFields);
   return {
-    schemaVersion: 'octopus.recognize.agent-preview.v1',
+    schemaVersion: 'octopus.detect.agent-preview.v1',
     candidateId: candidate.id,
     candidate: {
       id: candidate.id,
@@ -638,7 +638,7 @@ function previewAgentPlan(options: { context: RecognizeAgentContext; plan: Agent
   };
 }
 
-function previewFields(fields: RecognizedField[], sourceFields: RecognizedField[]): AgentPreviewField[] {
+function previewFields(fields: DetectedField[], sourceFields: DetectedField[]): AgentPreviewField[] {
   return fields.map((field) => {
     const source = sourceFields.find((item) => item === field || item.name === field.name || item.xpath === field.xpath);
     const diagnostics = field.diagnostics ?? source?.diagnostics;
@@ -657,7 +657,7 @@ function previewFields(fields: RecognizedField[], sourceFields: RecognizedField[
 function collectAgentPreviewWarnings(
   warnings: string[],
   recommendedFixes: string[],
-  candidate: RecognizedCandidate,
+  candidate: DetectedCandidate,
   fields: AgentPreviewField[],
   detailFields: AgentPreviewField[]
 ): void {
@@ -704,7 +704,7 @@ function maxSampleLength(samples: string[]): number {
 }
 
 export function buildTaskFromAgentPlan(options: {
-  context: RecognizeAgentContext;
+  context: DetectAgentContext;
   plan: AgentPlan;
   taskId: string;
   taskName: string;
@@ -726,7 +726,7 @@ export function buildTaskFromAgentPlan(options: {
   });
 }
 
-function applyAgentPlanToCandidate(candidate: RecognizedCandidate, plan: AgentPlan): RecognizedCandidate {
+function applyAgentPlanToCandidate(candidate: DetectedCandidate, plan: AgentPlan): DetectedCandidate {
   const selection = plan.selection ?? {};
   const fieldsPlan = selection.fields ?? plan.fields;
   const detailPlan = selection.detail !== undefined ? selection.detail : plan.detail;
@@ -739,7 +739,7 @@ function applyAgentPlanToCandidate(candidate: RecognizedCandidate, plan: AgentPl
   };
 }
 
-function applyAgentFieldPlan(fields: RecognizedField[], plan: AgentFieldPlan[], fallbackPrefix: string): RecognizedField[] {
+function applyAgentFieldPlan(fields: DetectedField[], plan: AgentFieldPlan[], fallbackPrefix: string): DetectedField[] {
   return plan.map((item, index) => {
     if (typeof item === 'string') {
       const field = fields.find((candidate) => candidate.name === item);
@@ -767,7 +767,7 @@ function applyAgentFieldPlan(fields: RecognizedField[], plan: AgentFieldPlan[], 
   });
 }
 
-function normalizeAgentPagination(value: RecognizedPagination | null | false | undefined): RecognizedPagination | undefined {
+function normalizeAgentPagination(value: DetectedPagination | null | false | undefined): DetectedPagination | undefined {
   if (!value) return undefined;
   return {
     type: value.type,
@@ -781,7 +781,7 @@ function normalizeAgentPagination(value: RecognizedPagination | null | false | u
   };
 }
 
-function normalizeAgentDetailPlan(candidate: RecognizedCandidate, value: AgentDetailPlan | null | false | undefined): RecognizedDetailPlan | undefined {
+function normalizeAgentDetailPlan(candidate: DetectedCandidate, value: AgentDetailPlan | null | false | undefined): DetectedDetailPlan | undefined {
   if (!value || value.mode === 'list_only') return undefined;
   const existing = candidate.detailPlan;
   const mode = value.mode ?? existing?.mode ?? 'list_with_detail';
@@ -802,7 +802,7 @@ function normalizeAgentDetailPlan(candidate: RecognizedCandidate, value: AgentDe
   };
 }
 
-function sampleUrlsForCandidate(candidate: RecognizedCandidate): string[] {
+function sampleUrlsForCandidate(candidate: DetectedCandidate): string[] {
   const urlField = candidate.fields.find((field) => field.name === 'url' && field.kind === 'href')
     ?? candidate.fields.find((field) => field.kind === 'href');
   return Array.from(new Set([
@@ -812,7 +812,7 @@ function sampleUrlsForCandidate(candidate: RecognizedCandidate): string[] {
 }
 
 async function chooseManualTaskOutput(
-  result: Awaited<ReturnType<typeof recognizePage>>,
+  result: Awaited<ReturnType<typeof detectPage>>,
   providedOutputFile: string | undefined
 ): Promise<{ generate: boolean; outputFile?: string } | undefined> {
   const selected = result.selectedCandidateIds?.length || result.selectedCandidateId;
@@ -822,7 +822,7 @@ async function chooseManualTaskOutput(
     name: 'action',
     message: 'Generate an extraction task file?',
     choices: [
-      { title: providedOutputFile ? `Write to ${providedOutputFile}` : 'Write to default file recognized_<host>.json', value: 'default' },
+      { title: providedOutputFile ? `Write to ${providedOutputFile}` : 'Write to default file detected_<host>.json', value: 'default' },
       { title: 'Enter file name', value: 'custom' },
       { title: 'Preview candidates only, do not generate a task', value: 'preview' }
     ],
@@ -841,7 +841,7 @@ async function chooseManualTaskOutput(
   return { generate: true, outputFile: providedOutputFile };
 }
 
-export async function runUrlCommand(url: string | undefined, args: string[]): Promise<number> {
+export async function detectUrlCommand(url: string | undefined, args: string[]): Promise<number> {
   const allArgs = [url ?? '', ...args].filter(Boolean);
   const json = hasFlag(allArgs, '--json') || hasFlag(allArgs, '--jsonl');
   if (hasFlag(args, '--screenshot') || hasFlag(args, '--agent-screenshot')) {
@@ -868,30 +868,30 @@ export async function runUrlCommand(url: string | undefined, args: string[]): Pr
     return printUsageError(
       json,
       'run-url requires --auto or --select <candidateId> to avoid choosing the wrong extraction target.',
-      'First run: octoparse recognize <url>',
-      'RECOGNIZE_SELECT_REQUIRED'
+      'First run: octoparse detect <url>',
+      'DETECT_SELECT_REQUIRED'
     );
   }
 
-  const outputDir = await mkdtemp(join(tmpdir(), 'octoparse-recognized-task-'));
+  const outputDir = await mkdtemp(join(tmpdir(), 'octoparse-detected-task-'));
   const taskFile = join(outputDir, 'task.json');
   const splitArgs = splitRunUrlArgs(args);
-  const recognizeArgs = [
+  const detectArgs = [
     url,
-    ...splitArgs.recognizeArgs,
+    ...splitArgs.detectArgs,
     ...(json ? ['--json'] : []),
     '--quiet',
     '--output',
     taskFile
   ];
-  const recognizeExit = await recognizeCommand(recognizeArgs);
-  if (recognizeExit !== EXIT_OK) return recognizeExit;
+  const detectExit = await detectCommand(detectArgs);
+  if (detectExit !== EXIT_OK) return detectExit;
 
   const task = JSON.parse(await readFile(taskFile, 'utf8')) as { taskId: string };
   return runTask(task.taskId, ['--task-file', taskFile, ...splitArgs.runArgs]);
 }
 
-function parseRecognizeInput(args: string[]): Record<string, string> | undefined {
+function parseDetectInput(args: string[]): Record<string, string> | undefined {
   const input: Record<string, string> = {};
   const query = valueAfter(args, '--query');
   if (query) input.q = query;
@@ -921,14 +921,14 @@ function resolveAgentScreenshotPath(args: string[], url: string): string | undef
   } catch {
     host = safeFileName(url || 'page');
   }
-  return resolve(`recognized_${host}.fullpage.png`);
+  return resolve(`detected_${host}.fullpage.png`);
 }
 
 export function resolveAgentScreenshotPathForTesting(args: string[], url: string): string | undefined {
   return resolveAgentScreenshotPath(args, url);
 }
 
-export function resolveAvailableRecognizedTaskFile(taskId: string): string {
+export function resolveAvailableDetectedTaskFile(taskId: string): string {
   const base = resolve(`${safeFileName(taskId)}.json`);
   if (!existsSync(base)) return base;
   const dir = dirname(base);
@@ -941,8 +941,8 @@ export function resolveAvailableRecognizedTaskFile(taskId: string): string {
   return base;
 }
 
-export function splitRunUrlArgs(args: string[]): { recognizeArgs: string[]; runArgs: string[] } {
-  const recognizeValueFlags = new Set([
+export function splitRunUrlArgs(args: string[]): { detectArgs: string[]; runArgs: string[] } {
+  const detectValueFlags = new Set([
     '--goal',
     '--input',
     '--query',
@@ -957,7 +957,7 @@ export function splitRunUrlArgs(args: string[]): { recognizeArgs: string[]; runA
     '--agent-command',
     '--api-base-url'
   ]);
-  const recognizeBooleanFlags = new Set([
+  const detectBooleanFlags = new Set([
     '--auto',
     '--agent',
     '--yes',
@@ -972,7 +972,7 @@ export function splitRunUrlArgs(args: string[]): { recognizeArgs: string[]; runA
   const runValueFlags = new Set(['--output', '--max-rows', '--extension-timeout-ms']);
   const runBooleanFlags = new Set(['--headless', '--disable-image', '--disable-ad', '--debug-bridge', '--detach', '--json', '--jsonl']);
   const sharedValueFlags = new Set(['--chrome-path', '--timeout-ms']);
-  const recognizeArgs: string[] = [];
+  const detectArgs: string[] = [];
   const runArgs: string[] = [];
 
   const pushValue = (target: string[], flag: string, value: string | undefined) => {
@@ -984,13 +984,13 @@ export function splitRunUrlArgs(args: string[]): { recognizeArgs: string[]; runA
     const arg = args[index];
     const value = args[index + 1];
     if (sharedValueFlags.has(arg)) {
-      pushValue(recognizeArgs, arg, value);
+      pushValue(detectArgs, arg, value);
       pushValue(runArgs, arg, value);
       index += 1;
       continue;
     }
-    if (recognizeValueFlags.has(arg)) {
-      pushValue(recognizeArgs, arg, value);
+    if (detectValueFlags.has(arg)) {
+      pushValue(detectArgs, arg, value);
       index += 1;
       continue;
     }
@@ -999,8 +999,8 @@ export function splitRunUrlArgs(args: string[]): { recognizeArgs: string[]; runA
       index += 1;
       continue;
     }
-    if (recognizeBooleanFlags.has(arg)) {
-      recognizeArgs.push(arg);
+    if (detectBooleanFlags.has(arg)) {
+      detectArgs.push(arg);
       continue;
     }
     if (runBooleanFlags.has(arg)) {
@@ -1009,10 +1009,10 @@ export function splitRunUrlArgs(args: string[]): { recognizeArgs: string[]; runA
     }
     runArgs.push(arg);
   }
-  return { recognizeArgs, runArgs };
+  return { detectArgs, runArgs };
 }
 
-function recommendedCandidate(candidates: Awaited<ReturnType<typeof recognizePage>>['candidates']) {
+function recommendedCandidate(candidates: Awaited<ReturnType<typeof detectPage>>['candidates']) {
   const usable = candidates.filter((candidate) => candidate.type !== 'form');
   const ranked = usable.length ? usable : candidates;
   return ranked
@@ -1020,7 +1020,7 @@ function recommendedCandidate(candidates: Awaited<ReturnType<typeof recognizePag
     .sort((a, b) => (b.goalScore ?? b.confidence) - (a.goalScore ?? a.confidence))[0];
 }
 
-function printRecognizeHuman(result: Awaited<ReturnType<typeof recognizePage>>): void {
+function printDetectHuman(result: Awaited<ReturnType<typeof detectPage>>): void {
   console.log(`URL: ${result.finalUrl}`);
   console.log(`Title: ${result.title || '(untitled)'}`);
   console.log('');
@@ -1049,10 +1049,10 @@ function printRecognizeHuman(result: Awaited<ReturnType<typeof recognizePage>>):
   console.log('');
   console.log('Recommendation:');
   if (recommended.type === 'form') {
-    console.log('  This page appears to be a search/input entry point. Open the result page first, then run recognize on that page.');
+    console.log('  This page appears to be a search/input entry point. Open the result page first, then run detect on that page.');
   } else {
     console.log(`  Start with [${recommended.id}] ${candidateTypeLabel(recommended.type)}.`);
-    console.log(`  Generate task: octoparse recognize ${shellArg(result.finalUrl)} --select ${recommended.id} --output task.json`);
+    console.log(`  Generate task: octoparse detect ${shellArg(result.finalUrl)} --select ${recommended.id} --output task.json`);
     console.log('  Note: task.json is a literal file name; do not type angle brackets.');
   }
   for (const candidate of visibleCandidates) {
@@ -1073,14 +1073,14 @@ function printRecognizeHuman(result: Awaited<ReturnType<typeof recognizePage>>):
     const sample = candidate.sampleRows[0];
     if (sample) console.log(`    sample=${formatSample(sample)}`);
     if (candidate.type === 'form') {
-      console.log('    next: octoparse recognize <url> --input q=keyword');
+      console.log('    next: octoparse detect <url> --input q=keyword');
     } else {
-      console.log(`    generate: octoparse recognize ${shellArg(result.finalUrl)} --select ${candidate.id} --output task.json`);
+      console.log(`    generate: octoparse detect ${shellArg(result.finalUrl)} --select ${candidate.id} --output task.json`);
     }
   }
 }
 
-function printAgentPlanPreview(preview: AgentPlanPreview, screenshot: RecognizedAgentScreenshot | undefined): void {
+function printAgentPlanPreview(preview: AgentPlanPreview, screenshot: DetectedAgentScreenshot | undefined): void {
   console.log(`Agent plan preview: ${preview.candidateId}`);
   console.log(`Result: ${preview.pass ? 'pass' : 'not recommended; fix fields first'}`);
   console.log(`Candidate: ${candidateTypeLabel(preview.candidate.type)}  count=${preview.candidate.itemCount}  confidence=${formatConfidence(preview.candidate.confidence)}`);
@@ -1145,7 +1145,7 @@ function popupTypeLabel(type: string): string {
   return 'unknown';
 }
 
-function candidateHint(candidate: Awaited<ReturnType<typeof recognizePage>>['candidates'][number]): string {
+function candidateHint(candidate: Awaited<ReturnType<typeof detectPage>>['candidates'][number]): string {
   if (candidate.type === 'form') return 'This is an entry point, not a data list; use it for an input keyword and search workflow.';
   if (candidate.type === 'link_collection') return 'This is usually navigation/category/related links; choose it only when you want a link list.';
   if (candidate.type === 'table') return 'Best for extracting table rows.';
