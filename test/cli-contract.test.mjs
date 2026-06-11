@@ -137,6 +137,8 @@ test('capabilities is available before authentication and documents API key cont
   assert.equal(payload.data.machineContract.agentEntrypoint.agentInvocationPolicy.doNotFallbackToHandwrittenTaskJson, true);
   assert.ok(payload.data.machineContract.agentEntrypoint.intentAliases.some((item) => /create scraping task/i.test(item)));
   assert.ok(payload.data.commands.find((item) => item.command === 'run <taskId>')?.authRequired);
+  assert.equal(payload.data.commands.some((item) => item.command.includes('run-url')), false);
+  assert.equal(payload.data.browserRuntime.linuxArm64.affectedCommands.includes('run-url'), false);
   assert.equal(payload.data.machineContract.stable, true);
   assert.equal(payload.data.machineContract.json.usageErrorsUseEnvelope, true);
   assert.equal(payload.data.commands.find((item) => item.command === 'recognize <url>')?.agentWorkflow, 'machineContract.recipes.createTaskFromUrlWithAgent');
@@ -812,6 +814,7 @@ test('root and run help clearly state authentication requirement', async () => {
   assert.equal(root.code, 0);
   assert.match(root.stdout, /OAuth or API key credentials are required for all functional commands/);
   assert.match(root.stdout, /octoparse\.com\/console\/account-center\/api-keys/);
+  assert.doesNotMatch(root.stdout, /run-url/);
 
   const auth = await runCli(['auth', '--help']);
   assert.equal(auth.code, 0);

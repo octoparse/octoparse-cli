@@ -45,7 +45,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
         supported: false,
         reason: localChromePlatformNote(),
         errorCode: LINUX_ARM64_UNSUPPORTED_CODE,
-        affectedCommands: ['doctor without --chrome-path', 'browser doctor without --chrome-path', 'recognize', 'run-url', 'run']
+        affectedCommands: ['doctor without --chrome-path', 'browser doctor without --chrome-path', 'recognize', 'run']
       }
     },
     machineContract: {
@@ -258,7 +258,6 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
       { command: 'task list', risk: 'low', json: true, authRequired: true },
       { command: 'task inspect/validate', risk: 'low', json: true, authRequired: true },
       { command: 'recognize <url>', risk: 'medium', json: true, authRequired: true, agentWorkflow: 'machineContract.recipes.createTaskFromUrlWithAgent' },
-      { command: 'run-url <url>', risk: 'medium', json: true, jsonl: true, authRequired: true },
       { command: 'run <taskId>', risk: 'medium', json: true, jsonl: true, authRequired: true },
       { command: 'cloud start/stop <taskId>', risk: 'medium', json: true, authRequired: true },
       { command: 'cloud status/history <taskId>', risk: 'low', json: true, authRequired: true },

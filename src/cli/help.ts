@@ -157,17 +157,6 @@ Notes:
   the context/plan for audit. Low-level --prepare-agent/--preview-agent-plan/
   --apply-agent-plan commands remain available for automation and debugging.
 `,
-    'run-url': `Usage:
-  octoparse run-url <url> --auto|--select <candidateId> [--goal <text>] [--input <name=value>] [--max-rows <n>] [--json|--jsonl]
-
-Purpose:
-  Recognize a URL, generate a temporary task file, then run it locally.
-
-Notes:
-  Use --auto for the recommended candidate or --select <candidateId> after inspecting
-  octoparse recognize output. run-url requires credentials because it creates and
-  runs a local task through the protected runtime.
-`,
     cloud: `Usage:
   octoparse cloud start <taskId> [--json]
   octoparse cloud stop <taskId> [--json]
@@ -249,7 +238,6 @@ Usage:
   octoparse recognize URL --prepare-agent --json --goal <text> --output context.json
   octoparse recognize --preview-agent-plan plan.json --agent-context context.json [--json]
   octoparse recognize --apply-agent-plan plan.json --agent-context context.json --output task.json
-  octoparse run-url <url> --auto|--select <candidateId> [--goal <text>] [--input <name=value>] [--max-rows <n>] [--json|--jsonl]
   octoparse run <taskId> [--task-file <file.json|file.xml|file.otd>] [--output <dir>] [--chrome-path <path>] [--headless] [--max-rows <n>] [--detach] [--json|--jsonl]
   octoparse cloud start <taskId> [--json]
   octoparse cloud stop <taskId> [--json]
