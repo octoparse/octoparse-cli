@@ -61,6 +61,7 @@ interface AgentPlan {
   schemaVersion?: string;
   context?: DetectAgentContext;
   contextFile?: string;
+  visualReview?: AgentVisualReview;
   candidateId?: string;
   selection?: {
     candidateId?: string;
@@ -75,6 +76,13 @@ interface AgentPlan {
   taskName?: string;
 }
 
+interface AgentVisualReview {
+  reviewed?: boolean;
+  screenshotPath?: string;
+  selectedCandidateId?: string;
+  evidence?: string[];
+}
+
 interface AgentPlanPreview {
   schemaVersion: 'octopus.detect.agent-preview.v1';
   pass: boolean;
@@ -87,6 +95,7 @@ interface AgentPlanPreview {
     itemCount: number;
     diagnostics?: DetectedCandidate['diagnostics'];
   };
+  visualReview?: AgentVisualReview;
   fields: AgentPreviewField[];
   detail?: {
     mode: DetectedDetailPlan['mode'];
@@ -647,6 +656,8 @@ function buildAgentContext(result: PageDetectionResult, goal?: string): DetectAg
       'Select candidateId for the primary data region. Optionally filter or rename fields.',
       'For detail scraping, return detail.mode=list_with_detail or detail_only, urlField, and detail fields.',
       'Always use the user goal, full-page screenshot, candidate bounding boxes, diagnostics, and sample rows together when judging candidates.',
+      'Before writing the plan, open context.screenshot.path with a vision-capable tool and verify the selected candidate and fields against the visible page.',
+      'Include visualReview.reviewed=true, visualReview.screenshotPath, visualReview.selectedCandidateId, and visualReview.evidence in the plan when context.screenshot.path is present.',
       'Use diagnostics.matchCount, textLength, paragraphCount, hasStyleNoise, boundingBox, sampleRows, and screenshot to avoid narrow, noisy, or sidebar XPath.',
       'Before applying a task, run --preview-agent-plan and revise fields whose warnings say content is short, CSS noise exists, or XPath matches multiple elements.',
       'Do not invent XPath when an existing candidate field can be reused. Ignore ads, sidebars, navigation, and boilerplate.'
@@ -708,6 +719,7 @@ function previewAgentPlan(options: { context: DetectAgentContext; plan: AgentPla
   const recommendedFixes: string[] = [];
   const fields = previewFields(candidate.fields, base.fields);
   const detailFields = candidate.detailPlan ? previewFields(candidate.detailPlan.fields, base.detailPlan?.fields ?? []) : [];
+  collectAgentVisualReviewWarnings(warnings, recommendedFixes, options.context, options.plan, candidate.id);
   collectAgentPreviewWarnings(warnings, recommendedFixes, candidate, fields, detailFields);
   return {
     schemaVersion: 'octopus.detect.agent-preview.v1',
@@ -720,6 +732,7 @@ function previewAgentPlan(options: { context: DetectAgentContext; plan: AgentPla
       itemCount: candidate.itemCount,
       ...(candidate.diagnostics ? { diagnostics: candidate.diagnostics } : {})
     },
+    ...(options.plan.visualReview ? { visualReview: options.plan.visualReview } : {}),
     fields,
     ...(candidate.detailPlan ? {
       detail: {
@@ -732,7 +745,7 @@ function previewAgentPlan(options: { context: DetectAgentContext; plan: AgentPla
     ...(candidate.pagination ? { pagination: candidate.pagination } : {}),
     warnings: Array.from(new Set(warnings)),
     recommendedFixes: Array.from(new Set(recommendedFixes)),
-    pass: !hasBlockingAgentPreviewRisk(fields, detailFields)
+    pass: !hasBlockingAgentPreviewRisk(fields, detailFields) && !hasBlockingVisualReviewRisk(options.context, options.plan, candidate.id)
   };
 }
 
@@ -765,6 +778,34 @@ function isAcceptableLoopFieldWarning(warning: string, field: DetectedField): bo
     && /runtime may use the first element/i.test(warning);
 }
 
+function collectAgentVisualReviewWarnings(
+  warnings: string[],
+  recommendedFixes: string[],
+  context: DetectAgentContext,
+  plan: AgentPlan,
+  selectedCandidateId: string
+): void {
+  if (!context.screenshot?.path) return;
+  const review = plan.visualReview;
+  if (!review?.reviewed) {
+    warnings.push('visualReview: plan does not confirm that context.screenshot.path was opened and reviewed before choosing fields');
+    recommendedFixes.push('Open context.screenshot.path before writing the plan, visually confirm the candidate region and field positions, then record reviewed=true and evidence in plan.visualReview.');
+    return;
+  }
+  if (review.screenshotPath && review.screenshotPath !== context.screenshot.path) {
+    warnings.push(`visualReview: screenshotPath does not match context.screenshot.path (${context.screenshot.path})`);
+    recommendedFixes.push('Set plan.visualReview.screenshotPath to context.screenshot.path to avoid reusing an old screenshot or the wrong page.');
+  }
+  if (review.selectedCandidateId && review.selectedCandidateId !== selectedCandidateId) {
+    warnings.push(`visualReview: selectedCandidateId ${review.selectedCandidateId} does not match selection.candidateId ${selectedCandidateId}`);
+    recommendedFixes.push('Confirm the actual target region in the full-page screenshot and keep visualReview.selectedCandidateId aligned with selection.candidateId.');
+  }
+  if (!review.evidence?.length) {
+    warnings.push('visualReview: evidence is missing; the plan should state what was visually verified');
+    recommendedFixes.push('Add plan.visualReview.evidence describing screenshot evidence for the main list location, key field positions, detail/pagination controls, or excluded ads/sidebars.');
+  }
+}
+
 function collectAgentPreviewWarnings(
   warnings: string[],
   recommendedFixes: string[],
@@ -793,6 +834,15 @@ function collectAgentPreviewWarnings(
     warnings.push('plan has list URL fields but no detail plan');
     recommendedFixes.push('If the target includes detail-page body text, add detail.mode=list_with_detail, urlField=url, and detail.fields.');
   }
+}
+
+function hasBlockingVisualReviewRisk(context: DetectAgentContext, plan: AgentPlan, selectedCandidateId: string): boolean {
+  if (!context.screenshot?.path) return false;
+  const review = plan.visualReview;
+  return !review?.reviewed
+    || !review.evidence?.length
+    || Boolean(review.screenshotPath && review.screenshotPath !== context.screenshot.path)
+    || Boolean(review.selectedCandidateId && review.selectedCandidateId !== selectedCandidateId);
 }
 
 function hasBlockingAgentPreviewRisk(fields: AgentPreviewField[], detailFields: AgentPreviewField[]): boolean {
@@ -1209,6 +1259,12 @@ function printAgentPlanPreview(preview: AgentPlanPreview, screenshot: DetectedAg
   console.log(`Result: ${preview.pass ? 'pass' : 'not recommended; fix fields first'}`);
   console.log(`Candidate: ${candidateTypeLabel(preview.candidate.type)}  count=${preview.candidate.itemCount}  confidence=${formatConfidence(preview.candidate.confidence)}`);
   if (screenshot) console.log(`Screenshot: ${screenshot.path}`);
+  if (preview.visualReview) {
+    console.log(`Visual review: ${preview.visualReview.reviewed ? 'confirmed' : 'not confirmed'}`);
+    if (preview.visualReview.evidence?.length) {
+      for (const item of preview.visualReview.evidence) console.log(`  - ${item}`);
+    }
+  }
   console.log(`List fields: ${preview.fields.map((field) => field.name).join(', ') || '(none)'}`);
   if (preview.detail) {
     console.log(`Detail: ${detailModeLabel(preview.detail.mode)}  urlField=${preview.detail.urlField}`);

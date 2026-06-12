@@ -146,7 +146,9 @@ Notes:
   over handwritten task JSON. For the shortest path, use --agent with a trusted
   --agent-command; add --run-sample <n> to generate the task and immediately run
   a small local sample in the same JSON response. For audit or repair, use the
-  low-level prepare/preview/apply commands.
+  low-level prepare/preview/apply commands. Agents must open
+  context.screenshot.path before writing the plan and include visualReview
+  evidence when a screenshot is present.
   Do not treat --auto examples as the default LLM/agent workflow; --auto skips
   agent planning and is only for direct CLI automatic selection.
   Agent workflows generate a full-page screenshot by default and store its path
@@ -163,6 +165,9 @@ Notes:
   JSON response without printing a second top-level JSON document. Use
   --keep-agent-files to retain the context/plan for audit. Low-level --prepare-agent/--preview-agent-plan/
   --apply-agent-plan commands remain available for automation and debugging.
+  Plans generated from a context with screenshot.path must include
+  visualReview.reviewed=true and visualReview.evidence; preview fails when the
+  agent has not recorded visual verification.
 `,
     cloud: `Usage:
   octoparse cloud start <taskId> [--json]
@@ -305,7 +310,9 @@ Agent contract:
   For LLM/agent task creation, run capabilities --json. Prefer detect --agent
   with a trusted --agent-command for the shortest create-task path; add
   --run-sample <n> when the user wants immediate sample rows. Use prepare,
-  preview, apply, and validate as the lower-level auditable workflow.
+  preview, apply, and validate as the lower-level auditable workflow. Agents
+  must open context.screenshot.path and record visualReview evidence before
+  writing plan.json.
   Do not treat --auto examples as the default LLM/agent workflow; --auto is only
   for direct CLI automatic selection.
   --json   return one stable JSON envelope: {"ok":true,"data":...} or {"ok":false,"error":...}

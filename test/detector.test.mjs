@@ -3482,6 +3482,72 @@ test('previewAgentPlanForTesting does not warn for loop-relative list field matc
   assert.doesNotMatch(preview.recommendedFixes.join('\n'), /XPath matches multiple elements/);
 });
 
+test('previewAgentPlanForTesting requires visual review when screenshot is available', () => {
+  const context = buildAgentContextForTesting({
+    url: 'https://example.com/list',
+    finalUrl: 'https://example.com/list',
+    title: 'Example',
+    capturedAt: '2026-05-28T00:00:00.000Z',
+    agentScreenshot: {
+      path: '/tmp/context.fullpage.png',
+      fullPage: true
+    },
+    candidates: [
+      {
+        id: 'search_results_1',
+        type: 'search_results',
+        title: 'Search/list results',
+        confidence: 0.8,
+        selector: 'main',
+        xpath: '/html/body/main',
+        itemSelector: 'article',
+        itemXPath: '/html/body/main/article',
+        itemCount: 10,
+        fields: [
+          { name: 'title', kind: 'text', selector: 'a', xpath: '/html/body/main/article/a', relativeXPath: './a', samples: ['Alpha'] },
+          { name: 'url', kind: 'href', selector: 'a', xpath: '/html/body/main/article/a', relativeXPath: './a', samples: ['https://example.com/a'] }
+        ],
+        sampleRows: [{ title: 'Alpha', url: 'https://example.com/a' }],
+        reasons: ['test']
+      }
+    ]
+  });
+
+  const withoutReview = previewAgentPlanForTesting({
+    context,
+    plan: {
+      selection: {
+        candidateId: 'search_results_1',
+        fields: ['title', 'url']
+      }
+    }
+  });
+  assert.equal(withoutReview.pass, false);
+  assert.match(withoutReview.warnings.join('\n'), /visualReview/);
+  assert.match(withoutReview.recommendedFixes.join('\n'), /screenshot/);
+
+  const withReview = previewAgentPlanForTesting({
+    context,
+    plan: {
+      visualReview: {
+        reviewed: true,
+        screenshotPath: '/tmp/context.fullpage.png',
+        selectedCandidateId: 'search_results_1',
+        evidence: [
+          'The selected candidate is the visible main list.',
+          'The title and url fields align with the visible card title links.'
+        ]
+      },
+      selection: {
+        candidateId: 'search_results_1',
+        fields: ['title', 'url']
+      }
+    }
+  });
+  assert.equal(withReview.pass, true);
+  assert.equal(withReview.visualReview.reviewed, true);
+});
+
 test('buildTaskFromAgentPlan applies external agent field choices and detail plan', () => {
   const context = buildAgentContextForTesting({
     url: 'https://example.com/list',
@@ -3593,6 +3659,15 @@ const context = JSON.parse(await readFile(process.env.OCTOPARSE_AGENT_CONTEXT, '
 await writeFile(${JSON.stringify(seenWorkDirFile)}, dirname(process.env.OCTOPARSE_AGENT_CONTEXT));
 const plan = {
   schemaVersion: 'octopus.detect.agent-plan.v1',
+  visualReview: {
+    reviewed: true,
+    screenshotPath: context.screenshot.path,
+    selectedCandidateId: context.recommendedCandidateId,
+    evidence: [
+      'The selected candidate is the visible main list.',
+      'The headline and url fields align with visible title links.'
+    ]
+  },
   selection: {
     candidateId: context.recommendedCandidateId,
     fields: [
@@ -3615,6 +3690,10 @@ await writeFile(process.env.OCTOPARSE_AGENT_PLAN, JSON.stringify(plan, null, 2))
         finalUrl: 'https://example.com/list',
         title: 'Example',
         capturedAt: '2026-05-28T00:00:00.000Z',
+        agentScreenshot: {
+          path: join(dir, 'context.fullpage.png'),
+          fullPage: true
+        },
         candidates: [
           {
             id: 'search_results_1',
@@ -3667,6 +3746,15 @@ import { readFile, writeFile } from 'node:fs/promises';
 const context = JSON.parse(await readFile(process.env.OCTOPARSE_AGENT_CONTEXT, 'utf8'));
 await writeFile(process.env.OCTOPARSE_AGENT_PLAN, JSON.stringify({
   schemaVersion: 'octopus.detect.agent-plan.v1',
+  visualReview: {
+    reviewed: true,
+    screenshotPath: context.screenshot.path,
+    selectedCandidateId: context.recommendedCandidateId,
+    evidence: [
+      'The selected candidate is the visible main list.',
+      'The title and url fields align with visible card title links.'
+    ]
+  },
   selection: {
     candidateId: context.recommendedCandidateId,
     fields: ['title', 'url'],
@@ -3753,6 +3841,10 @@ await writeFile(process.env.OCTOPARSE_AGENT_PLAN, JSON.stringify({
         finalUrl: 'https://example.com/list',
         title: 'Example',
         capturedAt: '2026-05-28T00:00:00.000Z',
+        agentScreenshot: {
+          path: join(dir, 'context.fullpage.png'),
+          fullPage: true
+        },
         candidates: [
           {
             id: 'search_results_1',

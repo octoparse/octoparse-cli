@@ -183,6 +183,8 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
             'Do not ask the user to hand-write JSON. The agent writes plan.json after reading context.json.',
             'For the shortest path, call detect --agent --agent-command <trusted runner> --yes --run-sample <n> --json. This wraps prepare, plan, preview, apply, and sample run into one JSON envelope.',
             'Pass the user natural-language task description through --goal so context.goal captures the real intent.',
+            'Before writing plan.json, open context.screenshot.path with a vision-capable tool. Use the full-page screenshot to visually verify the selected candidate region, fields, detail links, and pagination controls.',
+            'When context.screenshot.path is present, include visualReview.reviewed=true, visualReview.screenshotPath, visualReview.selectedCandidateId, and visualReview.evidence in the plan. Preview fails without this visual evidence.',
             'Use context.decisionPolicy and context.screenshot.path as mandatory judging inputs for candidates, layout, sidebars, ads, and pagination.',
             'Use context.resultValidationPolicy after running data: isolated missing fields in ads/topic cards/heterogeneous rows are normal partial data and must not trigger task recreation loops.',
             'If the user intent includes search/query/keyword, extract the keyword and pass it through --query or --input instead of detecting the blank search homepage.',
@@ -196,6 +198,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
             output: 'One JSON envelope containing generatedTask, preview, optional agentFiles, and sampleRun. sampleRun.envelope.data includes the local run summary when the sample run succeeds.',
             notes: [
               '--agent-command executes a local shell command; only pass a trusted runner.',
+              'The trusted runner must open context.screenshot.path before writing OCTOPARSE_AGENT_PLAN and include visualReview evidence in the plan.',
               'Use --keep-agent-files when an audit bundle needs context.json and plan.json.',
               'Use --run-output <dir> to choose where sample run artifacts are written.',
               'If sampleRun.exitCode is non-zero, inspect sampleRun.envelope or stderr and then fall back to the low-level workflow for repair.'
@@ -209,17 +212,28 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
             },
             {
               step: 'writePlan',
-              action: 'Read context.json, choose the primary candidate, select/rename fields, and write plan.json using schema octopus.detect.agent-plan.v1.',
+              action: 'Read context.json, open context.screenshot.path with a vision-capable tool, choose the primary candidate, select/rename fields, record visualReview evidence, and write plan.json using schema octopus.detect.agent-plan.v1.',
               guidance: [
+                'Opening context.screenshot.path is mandatory when present. Do not write plan.json from JSON samples alone.',
                 'Follow context.decisionPolicy: use context.goal and context.screenshot.path together with candidate bounding boxes, sampleRows, fields, pagination, and diagnostics; do not rely on text samples alone.',
                 'Prefer context.recommendedCandidateId unless diagnostics/sampleRows show it is sidebar, navigation, ads, or wrong for the user goal.',
                 'Use existing field names through strings or { "source": "<field>", "as": "<newName>" }; do not invent XPath when an existing field works.',
                 'If using details, set selection.detail.mode=list_with_detail, urlField, and detail.fields.',
-                'Set selection.pagination to the candidate pagination, null/false to disable pagination, or omit to keep the candidate default.'
+                'Set selection.pagination to the candidate pagination, null/false to disable pagination, or omit to keep the candidate default.',
+                'Set visualReview.reviewed=true and describe screenshot evidence for the selected region and fields before preview/apply.'
               ],
               minimalPlan: {
                 schemaVersion: 'octopus.detect.agent-plan.v1',
                 contextFile: '<context.json>',
+                visualReview: {
+                  reviewed: true,
+                  screenshotPath: '<context.screenshot.path>',
+                  selectedCandidateId: '<candidate id>',
+                  evidence: [
+                    'The selected candidate is the visible main result list, not sidebar/navigation/ads.',
+                    'Selected fields align with visible titles/links/prices requested by the user.'
+                  ]
+                },
                 selection: {
                   candidateId: '<candidate id>',
                   fields: ['<field name>', { source: '<field name>', as: '<new name>' }],
