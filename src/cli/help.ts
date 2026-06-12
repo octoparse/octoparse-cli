@@ -99,12 +99,12 @@ Agent notes:
   Linux arm64 is not supported because Chrome for Testing has no Linux arm64 browser package.
 `,
     detect: `Usage:
-  octoparse detect <url> --auto [--goal <text>] [--output task.json] [--llm-rank] [--no-dismiss-popups] [--json]
-  octoparse detect <url> --manual [--goal <text>] [--llm-rank] [--no-dismiss-popups]
-  octoparse detect <url> --agent --agent-command <cmd> [--goal <text>] [--output task.json] [--yes]
   octoparse detect <url> --prepare-agent --json [--goal <text>] [--output context.json]
   octoparse detect --preview-agent-plan plan.json --agent-context context.json [--json]
   octoparse detect --apply-agent-plan plan.json --agent-context context.json --output task.json [--json]
+  octoparse detect <url> --agent --agent-command <cmd> [--goal <text>] [--output task.json] [--yes]
+  octoparse detect <url> --auto [--goal <text>] [--output task.json] [--llm-rank] [--no-dismiss-popups] [--json]
+  octoparse detect <url> --manual [--goal <text>] [--llm-rank] [--no-dismiss-popups]
 
 Purpose:
   Open the Octoparse extension browser, inspect the page, and list candidate data regions
@@ -113,8 +113,9 @@ Purpose:
 Notes:
   Quote URLs that contain '&', '?' or other shell metacharacters, for example:
   octoparse detect 'https://example.com/page?a=1&b=2' --manual
-  The first pass is deterministic and does not require an LLM. --auto chooses the
-  best candidate and generates a task. --manual opens a guided flow for login,
+  The first pass is deterministic and does not require an LLM. For direct
+  CLI-only use, --auto chooses the best candidate and generates a task.
+  --manual opens a guided flow for login,
   popup handling, choosing the highlighted data region, optional session save,
   and task-file generation.
   On Linux servers without DISPLAY/WAYLAND_DISPLAY, non-manual detection
@@ -144,6 +145,8 @@ Notes:
   If an LLM/agent is helping the user create a scraping task, prefer that recipe
   over handwritten task JSON. The agent should run detect --prepare-agent,
   write a plan from context.json, preview it, apply it, and validate the task.
+  Do not treat --auto examples as the default LLM/agent workflow; --auto skips
+  agent planning and is only for direct CLI automatic selection.
   Agent workflows generate a full-page screenshot by default and store its path
   in context.screenshot. Pass the user request through --goal so the agent can
   judge candidates against both the natural-language intent and the screenshot.
@@ -232,12 +235,12 @@ Usage:
   octoparse task list [--page <n>] [--page-size <n>] [--limit <n>] [--keyword <text>] [--json]
   octoparse task inspect <taskId> [--task-file <file.json|file.xml|file.otd>] [--json]
   octoparse task validate <taskId> [--task-file <file.json|file.xml|file.otd>] [--json]
-  octoparse detect URL --auto [--goal <text>] [--output task.json] [--llm-rank] [--no-dismiss-popups] [--json]
-  octoparse detect URL --manual [--goal <text>] [--llm-rank] [--no-dismiss-popups]
-  octoparse detect URL --agent --agent-command <cmd> [--output task.json] [--yes]
   octoparse detect URL --prepare-agent --json --goal <text> --output context.json
   octoparse detect --preview-agent-plan plan.json --agent-context context.json [--json]
   octoparse detect --apply-agent-plan plan.json --agent-context context.json --output task.json
+  octoparse detect URL --agent --agent-command <cmd> [--output task.json] [--yes]
+  octoparse detect URL --auto [--goal <text>] [--output task.json] [--llm-rank] [--no-dismiss-popups] [--json]
+  octoparse detect URL --manual [--goal <text>] [--llm-rank] [--no-dismiss-popups]
   octoparse run <taskId> [--task-file <file.json|file.xml|file.otd>] [--output <dir>] [--chrome-path <path>] [--headless] [--max-rows <n>] [--detach] [--json|--jsonl]
   octoparse cloud start <taskId> [--json]
   octoparse cloud stop <taskId> [--json]
@@ -295,6 +298,9 @@ Run diagnostics:
   --debug-bridge              include extension bridge command/response logs
 
 Agent contract:
+  For LLM/agent task creation, run capabilities --json and use detect --prepare-agent,
+  preview, apply, and validate. Do not treat --auto examples as the default
+  LLM/agent workflow; --auto is only for direct CLI automatic selection.
   --json   return one stable JSON envelope: {"ok":true,"data":...} or {"ok":false,"error":...}
   --jsonl  stream long-running run events as one JSON object per line
   stdout   reserved for requested data/output; diagnostics and failures go to stderr in human mode

@@ -96,7 +96,7 @@ Linux x64. Linux arm64 is not supported by the local CLI runtime because Chrome
 for Testing does not currently provide a Linux arm64 browser package; use a
 supported local platform or cloud extraction there.
 
-Create a local task from a URL:
+Create a local task from a URL directly with CLI-only selection:
 
 ```bash
 octoparse detect 'https://example.com/list' --auto --output task.json
@@ -115,7 +115,8 @@ run `octoparse capabilities --json` first and follow
 `machineContract.recipes.createTaskFromUrlWithAgent`. That recipe tells the
 agent to prepare deterministic context, write a plan, preview it, apply it, and
 validate the generated task instead of asking the user to explain internal
-detect flags or hand-write JSON. Agent workflows generate a full-page
+detect flags, using `--auto` as the default path, or hand-writing JSON.
+Agent workflows generate a full-page
 screenshot by default and store it in `context.screenshot`; pass the user's
 natural-language request with `--goal` so the agent can judge candidates against
 both the visual page and the stated intent. The context also includes

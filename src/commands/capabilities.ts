@@ -54,13 +54,15 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
       agentEntrypoint: {
         firstCommand: 'octoparse capabilities --json',
         packageFirstCommand: 'npx @octoparse-cli/octoparse-cli capabilities --json',
-        rule: 'When a user asks an LLM/agent to use octoparse or @octoparse-cli/octoparse-cli for a scraping task, inspect this capabilities payload first and follow machineContract.recipes instead of asking the user to describe CLI flags.',
+        rule: 'When a user asks an LLM/agent to use octoparse or @octoparse-cli/octoparse-cli for a scraping task, inspect this capabilities payload first and follow machineContract.recipes instead of guessing a detect mode from help examples.',
         agentInvocationPolicy: {
           shouldUseCliForUserTaskCreationRequests: true,
           preferredRecipe: 'machineContract.recipes.createTaskFromUrlWithAgent',
+          defaultTaskCreationModeForAgents: 'prepare-agent-plan-preview-apply',
+          doNotUseAutoForAgentTaskCreationRequests: true,
           doNotFallbackToHandwrittenTaskJson: true,
           doNotAskUserForInternalFlags: true,
-          routingRule: 'If the user asks an LLM/agent to create, build, generate, or validate a scraping/extraction task from a URL using octoparse, call capabilities --json, then run the preferred recipe. Use manual detect only when the user explicitly asks to choose elements themselves or when login/verification requires user action.'
+          routingRule: 'If the user asks an LLM/agent to create, build, generate, or validate a scraping/extraction task from a URL using octoparse, call capabilities --json, then run the preferred recipe. Do not use detect --auto as the default agent path; --auto is only for direct CLI-only task generation when the user explicitly asks for automatic CLI selection. Use manual detect only when the user explicitly asks to choose elements themselves or when login/verification requires user action.'
         },
         intentAliases: [
           'create scraping task from url',
@@ -156,7 +158,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
       },
       recipes: {
         createTaskFromUrlWithAgent: {
-          intent: 'When the user asks an LLM/agent to create a scraping or extraction task from a URL with octoparse, use this workflow unless the user explicitly asks for manual selection.',
+          intent: 'When the user asks an LLM/agent to create a scraping or extraction task from a URL with octoparse, use this workflow unless the user explicitly asks for manual selection. This is the default agent path; detect --auto is not the default for LLM/agent task creation.',
           summary: 'Use protected SmartProxy detection to emit deterministic candidates, write an agent plan, preview it, apply it, then validate the task.',
           agentShouldChooseThisRecipeWhen: [
             'The user asks the assistant/agent to create, build, generate, or validate a task from a URL.',
@@ -164,9 +166,8 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
             'The user provides a URL plus a target goal such as search results, list data, detail pages, titles, prices, articles, or links.'
           ],
           searchWorkflow: {
-            trigger: 'If the user asks to search/query/find a keyword on an entry page, pass --query <keyword> or --input <name=value> to detect before preparing/applying a task.',
+            trigger: 'If the user asks to search/query/find a keyword on an entry page, pass --query <keyword> or --input <name=value> to the prepare-agent step before preparing/applying a task.',
             examples: [
-              'octoparse detect https://www.google.com/ --auto --query "Bruce Lee" --output task.json',
               'octoparse detect https://www.google.com/ --prepare-agent --query "Bruce Lee" --json --goal "Search Bruce Lee and extract result titles and links" --output context.json'
             ],
             taskBehavior: 'Generated tasks preserve the detected search input XPath and submit action before extracting the result page.'
@@ -183,6 +184,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
             'Use context.decisionPolicy and context.screenshot.path as mandatory judging inputs for candidates, layout, sidebars, ads, and pagination.',
             'Use context.resultValidationPolicy after running data: isolated missing fields in ads/topic cards/heterogeneous rows are normal partial data and must not trigger task recreation loops.',
             'If the user intent includes search/query/keyword, extract the keyword and pass it through --query or --input instead of detecting the blank search homepage.',
+            'Do not use detect --auto for LLM/agent task creation unless the user explicitly asks for direct CLI automatic selection without agent planning.',
             'Use the URL and optional user goal as the task intent, then inspect candidates and sample rows before choosing fields.',
             'Show the user the generated task file path and validation result after applying the plan.'
           ],
@@ -239,6 +241,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
           },
           nonGoals: [
             'Do not ask the user to hand-write plan.json.',
+            'Do not use detect --auto as the default path for LLM/agent task creation.',
             'Do not directly write full task JSON unless applying a previewed plan through the CLI.',
             'Do not use --legacy-detector unless debugging the old heuristic detector.'
           ]
