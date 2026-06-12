@@ -3282,7 +3282,19 @@ test('buildAgentContextForTesting exposes deterministic candidates for external 
     finalUrl: 'https://example.com/list',
     title: 'Example',
     capturedAt: '2026-05-28T00:00:00.000Z',
-    agentScreenshot: { path: '/tmp/example.full.png', fullPage: true },
+    agentScreenshot: {
+      path: '/tmp/example.full.png',
+      fullPage: true,
+      annotatedPath: '/tmp/example.full.annotated.png',
+      candidateScreenshots: [
+        {
+          candidateId: 'search_results_1',
+          path: '/tmp/example.search_results_1.crop.png',
+          rank: 1,
+          boundingBox: { x: 10, y: 20, width: 300, height: 200 }
+        }
+      ]
+    },
     candidates: [
       {
         id: 'search_results_1',
@@ -3322,8 +3334,16 @@ test('buildAgentContextForTesting exposes deterministic candidates for external 
   assert.equal(context.goal, '采新闻列表');
   assert.equal(context.recommendedCandidateId, 'search_results_1');
   assert.equal(context.screenshot.path, '/tmp/example.full.png');
+  assert.equal(context.screenshot.annotatedPath, '/tmp/example.full.annotated.png');
+  assert.equal(context.visualArtifacts.annotatedScreenshotPath, '/tmp/example.full.annotated.png');
+  assert.equal(context.visualArtifacts.candidateScreenshots[0].path, '/tmp/example.search_results_1.crop.png');
+  assert.equal(context.decisionSummary.recommendedCandidateId, 'search_results_1');
+  assert.equal(context.decisionSummary.candidates[0].candidateId, 'search_results_1');
+  assert.equal(context.decisionSummary.candidates[0].visual.candidateScreenshotPath, '/tmp/example.search_results_1.crop.png');
+  assert.ok(context.decisionSummary.useTheseVisualInputs.some((item) => item.includes('annotatedScreenshotPath')));
   assert.ok(context.decisionPolicy.requiredInputs.includes('context.goal'));
-  assert.ok(context.decisionPolicy.requiredInputs.includes('context.screenshot.path'));
+  assert.ok(context.decisionPolicy.requiredInputs.includes('context.decisionSummary'));
+  assert.ok(context.decisionPolicy.requiredInputs.includes('context.visualArtifacts.candidateScreenshots'));
   assert.match(context.decisionPolicy.rankingRule, /full-page screenshot/);
   assert.match(context.decisionPolicy.recommendedCandidateRule, /not a final answer/);
   assert.match(context.decisionPolicy.paginationRule, /explicit pagination evidence/);
@@ -3490,7 +3510,16 @@ test('previewAgentPlanForTesting requires visual review when screenshot is avail
     capturedAt: '2026-05-28T00:00:00.000Z',
     agentScreenshot: {
       path: '/tmp/context.fullpage.png',
-      fullPage: true
+      fullPage: true,
+      annotatedPath: '/tmp/context.fullpage.annotated.png',
+      candidateScreenshots: [
+        {
+          candidateId: 'search_results_1',
+          path: '/tmp/context.search_results_1.crop.png',
+          rank: 1,
+          boundingBox: { x: 0, y: 0, width: 600, height: 400 }
+        }
+      ]
     },
     candidates: [
       {
@@ -3532,11 +3561,19 @@ test('previewAgentPlanForTesting requires visual review when screenshot is avail
       visualReview: {
         reviewed: true,
         screenshotPath: '/tmp/context.fullpage.png',
+        annotatedScreenshotPath: '/tmp/context.fullpage.annotated.png',
+        candidateScreenshotPath: '/tmp/context.search_results_1.crop.png',
         selectedCandidateId: 'search_results_1',
         evidence: [
           'The selected candidate is the visible main list.',
           'The title and url fields align with the visible card title links.'
-        ]
+        ],
+        checks: {
+          mainRegionVerified: true,
+          fieldsVerified: true,
+          paginationVerified: true,
+          excludedRegions: ['sidebar', 'ads']
+        }
       },
       selection: {
         candidateId: 'search_results_1',
@@ -3662,11 +3699,19 @@ const plan = {
   visualReview: {
     reviewed: true,
     screenshotPath: context.screenshot.path,
+    annotatedScreenshotPath: context.screenshot.annotatedPath,
+    candidateScreenshotPath: context.visualArtifacts?.candidateScreenshots?.find((item) => item.candidateId === context.recommendedCandidateId)?.path,
     selectedCandidateId: context.recommendedCandidateId,
     evidence: [
       'The selected candidate is the visible main list.',
       'The headline and url fields align with visible title links.'
-    ]
+    ],
+    checks: {
+      mainRegionVerified: true,
+      fieldsVerified: true,
+      paginationVerified: true,
+      excludedRegions: ['sidebar', 'navigation', 'ads']
+    }
   },
   selection: {
     candidateId: context.recommendedCandidateId,
@@ -3692,7 +3737,16 @@ await writeFile(process.env.OCTOPARSE_AGENT_PLAN, JSON.stringify(plan, null, 2))
         capturedAt: '2026-05-28T00:00:00.000Z',
         agentScreenshot: {
           path: join(dir, 'context.fullpage.png'),
-          fullPage: true
+          fullPage: true,
+          annotatedPath: join(dir, 'context.fullpage.annotated.png'),
+          candidateScreenshots: [
+            {
+              candidateId: 'search_results_1',
+              path: join(dir, 'context.search_results_1.crop.png'),
+              rank: 1,
+              boundingBox: { x: 0, y: 0, width: 640, height: 420 }
+            }
+          ]
         },
         candidates: [
           {
@@ -3749,11 +3803,19 @@ await writeFile(process.env.OCTOPARSE_AGENT_PLAN, JSON.stringify({
   visualReview: {
     reviewed: true,
     screenshotPath: context.screenshot.path,
+    annotatedScreenshotPath: context.screenshot.annotatedPath,
+    candidateScreenshotPath: context.visualArtifacts?.candidateScreenshots?.find((item) => item.candidateId === context.recommendedCandidateId)?.path,
     selectedCandidateId: context.recommendedCandidateId,
     evidence: [
       'The selected candidate is the visible main list.',
       'The title and url fields align with visible card title links.'
-    ]
+    ],
+    checks: {
+      mainRegionVerified: true,
+      fieldsVerified: true,
+      paginationVerified: true,
+      excludedRegions: ['sidebar', 'navigation', 'ads']
+    }
   },
   selection: {
     candidateId: context.recommendedCandidateId,
@@ -3843,7 +3905,16 @@ await writeFile(process.env.OCTOPARSE_AGENT_PLAN, JSON.stringify({
         capturedAt: '2026-05-28T00:00:00.000Z',
         agentScreenshot: {
           path: join(dir, 'context.fullpage.png'),
-          fullPage: true
+          fullPage: true,
+          annotatedPath: join(dir, 'context.fullpage.annotated.png'),
+          candidateScreenshots: [
+            {
+              candidateId: 'search_results_1',
+              path: join(dir, 'context.search_results_1.crop.png'),
+              rank: 1,
+              boundingBox: { x: 0, y: 0, width: 640, height: 420 }
+            }
+          ]
         },
         candidates: [
           {
@@ -3875,6 +3946,10 @@ await writeFile(process.env.OCTOPARSE_AGENT_PLAN, JSON.stringify({
     assert.equal(payload.data.sampleRun.exitCode, 0);
     assert.equal(payload.data.sampleRun.envelope.ok, true);
     assert.equal(payload.data.sampleRun.envelope.data.total, 1);
+    assert.equal(payload.data.sampleRun.summary.totalRows, 1);
+    assert.equal(payload.data.sampleRun.summary.sampledRows[0].title, 'Alpha');
+    assert.equal(payload.data.sampleRun.summary.fieldFillRates.title, 1);
+    assert.equal(payload.data.sampleRun.summary.missingFieldsByRow.length, 0);
   } finally {
     chdir(previousCwd);
     setEngineHostFactoryForTesting(undefined);

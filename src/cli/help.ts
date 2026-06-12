@@ -147,13 +147,16 @@ Notes:
   --agent-command; add --run-sample <n> to generate the task and immediately run
   a small local sample in the same JSON response. For audit or repair, use the
   low-level prepare/preview/apply commands. Agents must open
-  context.screenshot.path before writing the plan and include visualReview
-  evidence when a screenshot is present.
+  context.visualArtifacts.annotatedScreenshotPath or context.screenshot.path
+  before writing the plan and include visualReview evidence/checks when a
+  screenshot is present.
   Do not treat --auto examples as the default LLM/agent workflow; --auto skips
   agent planning and is only for direct CLI automatic selection.
-  Agent workflows generate a full-page screenshot by default and store its path
-  in context.screenshot. Pass the user request through --goal so the agent can
-  judge candidates against both the natural-language intent and the screenshot.
+  Agent workflows generate a full-page screenshot, an annotated screenshot, and
+  top candidate crop screenshots when boxes are available. Paths are exposed in
+  context.screenshot, context.visualArtifacts, and context.decisionSummary. Pass
+  the user request through --goal so the agent can judge candidates against both
+  the natural-language intent and the screenshot.
   Local Chrome execution supports macOS x64/arm64, Windows x64, and Linux x64.
   Linux arm64 is not supported because Chrome for Testing has no Linux arm64 browser package.
   --agent is a one-shot wrapper for external LLM/agent tools. The CLI writes a
@@ -166,8 +169,9 @@ Notes:
   --keep-agent-files to retain the context/plan for audit. Low-level --prepare-agent/--preview-agent-plan/
   --apply-agent-plan commands remain available for automation and debugging.
   Plans generated from a context with screenshot.path must include
-  visualReview.reviewed=true and visualReview.evidence; preview fails when the
-  agent has not recorded visual verification.
+  visualReview.reviewed=true, visualReview.evidence, and preferably
+  visualReview.checks; preview fails when the agent has not recorded visual
+  verification.
 `,
     cloud: `Usage:
   octoparse cloud start <taskId> [--json]

@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://octoparse.local/schemas/detect-agent-plan-v1.schema.json",
+  "title": "Octoparse Detect Agent Plan v1",
+  "description": "Plan written by a trusted agent runner for octoparse detect --agent.",
+  "type": "object",
+  "required": ["schemaVersion", "visualReview", "selection"],
+  "properties": {
+    "schemaVersion": { "const": "octopus.detect.agent-plan.v1" },
+    "contextFile": { "type": "string" },
+    "taskId": { "type": "string" },
+    "taskName": { "type": "string" },
+    "visualReview": {
+      "type": "object",
+      "required": ["reviewed", "screenshotPath", "selectedCandidateId", "evidence"],
+      "properties": {
+        "reviewed": { "const": true },
+        "screenshotPath": { "type": "string", "minLength": 1 },
+        "annotatedScreenshotPath": { "type": "string", "minLength": 1 },
+        "candidateScreenshotPath": { "type": "string", "minLength": 1 },
+        "selectedCandidateId": { "type": "string", "minLength": 1 },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "checks": {
+          "type": "object",
+          "properties": {
+            "mainRegionVerified": { "type": "boolean" },
+            "fieldsVerified": { "type": "boolean" },
+            "paginationVerified": { "type": "boolean" },
+            "detailLinksVerified": { "type": "boolean" },
+            "excludedRegions": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "candidateId": { "type": "string" },
+    "fields": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/fieldPlan" }
+    },
+    "pagination": {
+      "anyOf": [
+        { "type": "object" },
+        { "type": "null" },
+        { "const": false }
+      ]
+    },
+    "detail": {
+      "anyOf": [
+        { "$ref": "#/$defs/detailPlan" },
+        { "type": "null" },
+        { "const": false }
+      ]
+    },
+    "selection": {
+      "type": "object",
+      "required": ["candidateId"],
+      "properties": {
+        "candidateId": { "type": "string", "minLength": 1 },
+        "fields": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/fieldPlan" }
+        },
+        "pagination": {
+          "anyOf": [
+            { "type": "object" },
+            { "type": "null" },
+            { "const": false }
+          ]
+        },
+        "detail": {
+          "anyOf": [
+            { "$ref": "#/$defs/detailPlan" },
+            { "type": "null" },
+            { "const": false }
+          ]
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "fieldPlan": {
+      "anyOf": [
+        { "type": "string", "minLength": 1 },
+        {
+          "type": "object",
+          "properties": {
+            "source": { "type": "string" },
+            "name": { "type": "string" },
+            "as": { "type": "string" },
+            "kind": {
+              "type": "string",
+              "enum": ["text", "href", "src", "value"]
+            },
+            "selector": { "type": "string" },
+            "xpath": { "type": "string" },
+            "relativeXPath": { "type": "string" },
+            "samples": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "operations": { "type": "array" }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "detailPlan": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["list_only", "list_with_detail", "detail_only"]
+        },
+        "urlField": { "type": "string" },
+        "sampleUrls": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "fields": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/fieldPlan" }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

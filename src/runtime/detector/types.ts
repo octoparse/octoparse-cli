@@ -139,6 +139,15 @@ export interface PageDetectionResult {
 export interface DetectedAgentScreenshot {
   path: string;
   fullPage: boolean;
+  annotatedPath?: string;
+  candidateScreenshots?: DetectedAgentCandidateScreenshot[];
+}
+
+export interface DetectedAgentCandidateScreenshot {
+  candidateId: string;
+  path: string;
+  boundingBox: DetectedBox;
+  rank: number;
 }
 
 export interface DetectedSessionReference {

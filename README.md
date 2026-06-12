@@ -117,10 +117,12 @@ create-task path, adding `--run-sample <n>` when immediate sample rows are
 needed. The lower-level prepare/plan/preview/apply workflow remains available
 for audit and repair instead of asking the user to explain internal detect
 flags, using `--auto` as the default path, or hand-writing JSON.
-Agent workflows generate a full-page
-screenshot by default and store it in `context.screenshot`; pass the user's
-natural-language request with `--goal` so the agent can judge candidates against
-both the visual page and the stated intent. The context also includes
+Agent workflows generate a full-page screenshot, an annotated screenshot, and
+top candidate crop screenshots when boxes are available. These paths are exposed
+through `context.screenshot`, `context.visualArtifacts`, and
+`context.decisionSummary`; pass the user's natural-language request with `--goal`
+so the agent can judge candidates against both the visual page and the stated
+intent. The context also includes
 `resultValidationPolicy`; agents should treat isolated missing fields in ads,
 topic cards, sponsored items, or heterogeneous rows as normal partial data
 instead of repeatedly recreating the task.

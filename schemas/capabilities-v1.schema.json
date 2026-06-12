@@ -131,11 +131,12 @@
             },
             "schemas": {
               "type": "object",
-              "required": ["capabilities", "jsonEnvelope", "runEvent", "detachedBootstrap"],
+              "required": ["capabilities", "jsonEnvelope", "runEvent", "detectAgentPlan", "detachedBootstrap"],
               "properties": {
                 "capabilities": { "type": "string" },
                 "jsonEnvelope": { "type": "string" },
                 "runEvent": { "type": "string" },
+                "detectAgentPlan": { "type": "string" },
                 "detachedBootstrap": { "type": "string" }
               },
               "additionalProperties": true

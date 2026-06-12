@@ -10,7 +10,7 @@ import { DetectionLoginRequiredError, detectPage } from '../runtime/detector/pag
 import { buildTaskFromCandidate } from '../runtime/detector/xml.js';
 import { createChromeProgressReporter } from '../runtime/chrome-progress.js';
 import { LINUX_ARM64_UNSUPPORTED_CODE, LINUX_ARM64_UNSUPPORTED_MESSAGE, isLocalChromeRuntimeSupported } from '../runtime/platform-support.js';
-import type { PageDetectionResult, DetectedAgentScreenshot, DetectedCandidate, DetectedDetailPlan, DetectedField, DetectedFieldDiagnostics, DetectedPagination, DetectedSearchPlan } from '../runtime/detector/types.js';
+import type { PageDetectionResult, DetectedAgentScreenshot, DetectedBox, DetectedCandidate, DetectedDetailPlan, DetectedField, DetectedFieldDiagnostics, DetectedPagination, DetectedSearchPlan } from '../runtime/detector/types.js';
 import { safeFileName } from '../runtime/naming.js';
 import { EXIT_OK, EXIT_OPERATION_FAILED, EXIT_RUNTIME_FAILED } from '../types.js';
 import { runTask } from './run.js';
@@ -30,6 +30,8 @@ type AgentFieldPlan = string | {
 interface DetectAgentContext {
   schemaVersion: 'octopus.detect.agent-context.v1';
   instruction: string;
+  visualArtifacts?: AgentVisualArtifacts;
+  decisionSummary: AgentDecisionSummary;
   decisionPolicy: {
     requiredInputs: string[];
     rankingRule: string;
@@ -79,8 +81,17 @@ interface AgentPlan {
 interface AgentVisualReview {
   reviewed?: boolean;
   screenshotPath?: string;
+  annotatedScreenshotPath?: string;
+  candidateScreenshotPath?: string;
   selectedCandidateId?: string;
   evidence?: string[];
+  checks?: {
+    mainRegionVerified?: boolean;
+    fieldsVerified?: boolean;
+    paginationVerified?: boolean;
+    detailLinksVerified?: boolean;
+    excludedRegions?: string[];
+  };
 }
 
 interface AgentPlanPreview {
@@ -106,6 +117,44 @@ interface AgentPlanPreview {
   pagination?: DetectedPagination;
   warnings: string[];
   recommendedFixes: string[];
+  repairInstruction?: string;
+}
+
+interface AgentVisualArtifacts {
+  fullPageScreenshotPath?: string;
+  annotatedScreenshotPath?: string;
+  candidateScreenshots: Array<{
+    candidateId: string;
+    path: string;
+    rank: number;
+    boundingBox: DetectedBox;
+  }>;
+}
+
+interface AgentDecisionSummary {
+  recommendedCandidateId?: string;
+  useTheseVisualInputs: string[];
+  candidates: AgentCandidateDecisionSummary[];
+  rules: string[];
+}
+
+interface AgentCandidateDecisionSummary {
+  candidateId: string;
+  rank: number;
+  type: DetectedCandidate['type'];
+  title: string;
+  confidence: number;
+  goalScore?: number;
+  role?: string;
+  itemCount: number;
+  fieldNames: string[];
+  sampleRow?: Record<string, string>;
+  visual: {
+    boundingBox?: DetectedBox;
+    candidateScreenshotPath?: string;
+  };
+  strengths: string[];
+  risks: string[];
 }
 
 interface AgentPreviewField {
@@ -118,6 +167,18 @@ interface AgentPreviewField {
   warnings: string[];
   runtimeScope?: 'loop_item' | 'page';
   notes?: string[];
+}
+
+interface AgentSampleRunSummary {
+  outputDir?: string;
+  totalRows?: number;
+  sampledRows: Record<string, unknown>[];
+  fieldFillRates: Record<string, number>;
+  missingFieldsByRow: Array<{
+    rowIndex: number;
+    fields: string[];
+  }>;
+  judgment: string;
 }
 
 interface AgentDetailPlan {
@@ -448,6 +509,7 @@ async function runSampleTask(options: {
   requestedRows: number;
   exitCode: number;
   envelope?: unknown;
+  summary?: AgentSampleRunSummary;
   stdout?: string;
   stderr?: string;
 }> {
@@ -469,13 +531,75 @@ async function runSampleTask(options: {
       envelope = JSON.parse(stdout.split('\n').at(-1) ?? stdout);
     } catch {}
   }
+  const summary = envelope ? await buildSampleRunSummary(envelope).catch(() => undefined) : undefined;
   return {
     requestedRows: options.rows,
     exitCode: captured.code,
     ...(envelope ? { envelope } : {}),
+    ...(summary ? { summary } : {}),
     ...(stdout && !envelope ? { stdout } : {}),
     ...(captured.stderr.trim() ? { stderr: captured.stderr.trim() } : {})
   };
+}
+
+async function buildSampleRunSummary(envelope: unknown): Promise<AgentSampleRunSummary | undefined> {
+  const data = isRecord(envelope) && isRecord(envelope.data) ? envelope.data : undefined;
+  const outputDir = typeof data?.outputDir === 'string' ? data.outputDir : undefined;
+  const totalRows = typeof data?.total === 'number' ? data.total : undefined;
+  if (!outputDir) return undefined;
+  const rows = await readJsonlRows(join(outputDir, 'rows.jsonl'), 5);
+  if (!rows.length) {
+    return {
+      outputDir,
+      ...(totalRows !== undefined ? { totalRows } : {}),
+      sampledRows: [],
+      fieldFillRates: {},
+      missingFieldsByRow: [],
+      judgment: totalRows === 0 ? 'No rows were collected; inspect search, pagination, login, or selected candidate.' : 'Rows artifact is empty or unavailable.'
+    };
+  }
+  const fieldNames = Array.from(new Set(rows.flatMap((row) => Object.keys(row)))).sort();
+  const fieldFillRates = Object.fromEntries(fieldNames.map((field) => {
+    const filled = rows.filter((row) => hasMeaningfulValue(row[field])).length;
+    return [field, Number((filled / rows.length).toFixed(2))];
+  }));
+  const missingFieldsByRow = rows.map((row, index) => ({
+    rowIndex: index + 1,
+    fields: fieldNames.filter((field) => !hasMeaningfulValue(row[field]))
+  })).filter((item) => item.fields.length);
+  return {
+    outputDir,
+    ...(totalRows !== undefined ? { totalRows } : {}),
+    sampledRows: rows,
+    fieldFillRates,
+    missingFieldsByRow,
+    judgment: missingFieldsByRow.length
+      ? 'Sample rows contain missing values. Follow context.resultValidationPolicy before deciding whether this is normal partial data or a structural selector issue.'
+      : 'Sample rows contain values for every observed field.'
+  };
+}
+
+async function readJsonlRows(file: string, limit: number): Promise<Record<string, unknown>[]> {
+  const raw = await readFile(file, 'utf8');
+  const rows: Record<string, unknown>[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    if (!line.trim()) continue;
+    const parsed = JSON.parse(line) as unknown;
+    if (isRecord(parsed)) rows.push(parsed);
+    if (rows.length >= limit) break;
+  }
+  return rows;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasMeaningfulValue(value: unknown): boolean {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  return true;
 }
 
 async function captureProcessOutput(run: () => Promise<number>): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -649,23 +773,30 @@ export function previewAgentPlanForTesting(options: { context: DetectAgentContex
 
 function buildAgentContext(result: PageDetectionResult, goal?: string): DetectAgentContext {
   const recommended = recommendedCandidate(result.candidates);
+  const visualArtifacts = buildAgentVisualArtifacts(result.agentScreenshot);
+  const decisionSummary = buildAgentDecisionSummary(result.candidates, recommended?.id, visualArtifacts);
   return {
     schemaVersion: 'octopus.detect.agent-context.v1',
     instruction: [
       'You are choosing a web scraping task plan from deterministic candidates.',
       'Select candidateId for the primary data region. Optionally filter or rename fields.',
       'For detail scraping, return detail.mode=list_with_detail or detail_only, urlField, and detail fields.',
-      'Always use the user goal, full-page screenshot, candidate bounding boxes, diagnostics, and sample rows together when judging candidates.',
-      'Before writing the plan, open context.screenshot.path with a vision-capable tool and verify the selected candidate and fields against the visible page.',
-      'Include visualReview.reviewed=true, visualReview.screenshotPath, visualReview.selectedCandidateId, and visualReview.evidence in the plan when context.screenshot.path is present.',
+      'Start with decisionSummary, then use visualArtifacts.annotatedScreenshotPath and candidate crop images to match candidateId to the visible page.',
+      'Always use the user goal, annotated/full-page screenshot, candidate bounding boxes, diagnostics, and sample rows together when judging candidates.',
+      'Before writing the plan, open context.visualArtifacts.annotatedScreenshotPath or context.screenshot.annotatedPath with a vision-capable tool and verify the selected candidate and fields against the visible page.',
+      'Include visualReview.reviewed=true, visualReview.screenshotPath, visualReview.selectedCandidateId, visualReview.evidence, and visualReview.checks in the plan when context.screenshot.path is present.',
       'Use diagnostics.matchCount, textLength, paragraphCount, hasStyleNoise, boundingBox, sampleRows, and screenshot to avoid narrow, noisy, or sidebar XPath.',
       'Before applying a task, run --preview-agent-plan and revise fields whose warnings say content is short, CSS noise exists, or XPath matches multiple elements.',
       'Do not invent XPath when an existing candidate field can be reused. Ignore ads, sidebars, navigation, and boilerplate.'
     ].join(' '),
+    ...(visualArtifacts ? { visualArtifacts } : {}),
+    decisionSummary,
     decisionPolicy: {
       requiredInputs: [
         'context.goal',
-        'context.screenshot.path',
+        'context.decisionSummary',
+        'context.visualArtifacts.annotatedScreenshotPath or context.screenshot.path',
+        'context.visualArtifacts.candidateScreenshots',
         'candidate.boundingBox or candidate.layout.boundingBox',
         'candidate.sampleRows',
         'candidate.fields',
@@ -708,6 +839,86 @@ function buildAgentContext(result: PageDetectionResult, goal?: string): DetectAg
   };
 }
 
+function buildAgentVisualArtifacts(screenshot: DetectedAgentScreenshot | undefined): AgentVisualArtifacts | undefined {
+  if (!screenshot) return undefined;
+  const candidateScreenshots = screenshot.candidateScreenshots?.map((item) => ({
+    candidateId: item.candidateId,
+    path: item.path,
+    rank: item.rank,
+    boundingBox: item.boundingBox
+  })) ?? [];
+  return {
+    fullPageScreenshotPath: screenshot.path,
+    ...(screenshot.annotatedPath ? { annotatedScreenshotPath: screenshot.annotatedPath } : {}),
+    candidateScreenshots
+  };
+}
+
+function buildAgentDecisionSummary(
+  candidates: DetectedCandidate[],
+  recommendedCandidateId: string | undefined,
+  visualArtifacts: AgentVisualArtifacts | undefined
+): AgentDecisionSummary {
+  const cropByCandidate = new Map((visualArtifacts?.candidateScreenshots ?? []).map((item) => [item.candidateId, item.path]));
+  const ranked = candidates
+    .filter((candidate) => candidate.type !== 'form')
+    .slice()
+    .sort((a, b) => (b.goalScore ?? b.confidence) - (a.goalScore ?? a.confidence));
+  return {
+    ...(recommendedCandidateId ? { recommendedCandidateId } : {}),
+    useTheseVisualInputs: [
+      ...(visualArtifacts?.annotatedScreenshotPath ? [`annotatedScreenshotPath: ${visualArtifacts.annotatedScreenshotPath}`] : []),
+      ...(visualArtifacts?.fullPageScreenshotPath ? [`fullPageScreenshotPath: ${visualArtifacts.fullPageScreenshotPath}`] : []),
+      ...(visualArtifacts?.candidateScreenshots ?? []).map((item) => `candidate ${item.candidateId} crop: ${item.path}`)
+    ],
+    candidates: ranked.slice(0, 5).map((candidate, index) => ({
+      candidateId: candidate.id,
+      rank: index + 1,
+      type: candidate.type,
+      title: candidate.title,
+      confidence: candidate.confidence,
+      ...(candidate.goalScore !== undefined ? { goalScore: candidate.goalScore } : {}),
+      ...(candidate.layout?.role ? { role: candidate.layout.role } : {}),
+      itemCount: candidate.itemCount,
+      fieldNames: candidate.fields.map((field) => field.name),
+      ...(candidate.sampleRows[0] ? { sampleRow: candidate.sampleRows[0] } : {}),
+      visual: {
+        ...(candidate.diagnostics?.boundingBox ? { boundingBox: candidate.diagnostics.boundingBox } : {}),
+        ...(cropByCandidate.get(candidate.id) ? { candidateScreenshotPath: cropByCandidate.get(candidate.id) } : {})
+      },
+      strengths: candidateStrengths(candidate, recommendedCandidateId),
+      risks: candidateRisks(candidate)
+    })),
+    rules: [
+      'Prefer the visible main content region that matches the user goal, not navigation, sidebar, ads, footer, or unrelated recommendation blocks.',
+      'Use annotatedScreenshotPath to map candidateId labels to the page before choosing selection.candidateId.',
+      'Use candidateScreenshotPath crops for field-level visual verification when available.',
+      'Keep pagination only when visible controls or scroll-loading behavior belong to the selected region.'
+    ]
+  };
+}
+
+function candidateStrengths(candidate: DetectedCandidate, recommendedCandidateId: string | undefined): string[] {
+  const strengths: string[] = [];
+  if (candidate.id === recommendedCandidateId) strengths.push('deterministic recommended candidate');
+  if (candidate.layout?.role === 'main') strengths.push('layout role is main');
+  if ((candidate.goalScore ?? 0) >= 0.7) strengths.push('high goal match score');
+  if (candidate.itemCount >= 3) strengths.push('multiple repeated items detected');
+  if (candidate.pagination) strengths.push(`pagination detected: ${candidate.pagination.type}`);
+  if (candidate.detailPlan) strengths.push(`detail plan available: ${candidate.detailPlan.mode}`);
+  return strengths.length ? strengths : candidate.reasons.slice(0, 3);
+}
+
+function candidateRisks(candidate: DetectedCandidate): string[] {
+  const risks: string[] = [];
+  if (candidate.layout?.role && candidate.layout.role !== 'main') risks.push(`layout role is ${candidate.layout.role}`);
+  if (candidate.diagnostics?.warnings.length) risks.push(...candidate.diagnostics.warnings.map((item) => `candidate ${item}`));
+  if (candidate.itemCount <= 1 && candidate.type !== 'detail') risks.push('low item count for a list candidate');
+  if ((candidate.diagnostics?.visualCoverage ?? 0) < 0.01) risks.push('very small visual coverage; may be a widget or sidebar');
+  if ((candidate.layout?.linkDensity ?? 0) > 0.85) risks.push('high link density; may be navigation or link collection');
+  return risks;
+}
+
 function previewAgentPlan(options: { context: DetectAgentContext; plan: AgentPlan }): AgentPlanPreview {
   const candidateId = options.plan.selection?.candidateId ?? options.plan.candidateId;
   if (!candidateId) throw new Error('Agent plan is missing selection.candidateId.');
@@ -721,6 +932,8 @@ function previewAgentPlan(options: { context: DetectAgentContext; plan: AgentPla
   const detailFields = candidate.detailPlan ? previewFields(candidate.detailPlan.fields, base.detailPlan?.fields ?? []) : [];
   collectAgentVisualReviewWarnings(warnings, recommendedFixes, options.context, options.plan, candidate.id);
   collectAgentPreviewWarnings(warnings, recommendedFixes, candidate, fields, detailFields);
+  const dedupedWarnings = Array.from(new Set(warnings));
+  const dedupedFixes = Array.from(new Set(recommendedFixes));
   return {
     schemaVersion: 'octopus.detect.agent-preview.v1',
     candidateId: candidate.id,
@@ -743,8 +956,9 @@ function previewAgentPlan(options: { context: DetectAgentContext; plan: AgentPla
       }
     } : {}),
     ...(candidate.pagination ? { pagination: candidate.pagination } : {}),
-    warnings: Array.from(new Set(warnings)),
-    recommendedFixes: Array.from(new Set(recommendedFixes)),
+    warnings: dedupedWarnings,
+    recommendedFixes: dedupedFixes,
+    ...(dedupedWarnings.length || dedupedFixes.length ? { repairInstruction: buildAgentRepairInstruction(dedupedWarnings, dedupedFixes) } : {}),
     pass: !hasBlockingAgentPreviewRisk(fields, detailFields) && !hasBlockingVisualReviewRisk(options.context, options.plan, candidate.id)
   };
 }
@@ -796,6 +1010,15 @@ function collectAgentVisualReviewWarnings(
     warnings.push(`visualReview: screenshotPath does not match context.screenshot.path (${context.screenshot.path})`);
     recommendedFixes.push('Set plan.visualReview.screenshotPath to context.screenshot.path to avoid reusing an old screenshot or the wrong page.');
   }
+  if (review.annotatedScreenshotPath && review.annotatedScreenshotPath !== context.screenshot.annotatedPath) {
+    warnings.push(`visualReview: annotatedScreenshotPath does not match context.screenshot.annotatedPath (${context.screenshot.annotatedPath ?? 'not available'})`);
+    recommendedFixes.push('Set plan.visualReview.annotatedScreenshotPath to context.screenshot.annotatedPath, or remove that field.');
+  }
+  const selectedCrop = context.screenshot.candidateScreenshots?.find((item) => item.candidateId === selectedCandidateId);
+  if (review.candidateScreenshotPath && selectedCrop && review.candidateScreenshotPath !== selectedCrop.path) {
+    warnings.push(`visualReview: candidateScreenshotPath does not match the selected candidate crop (${selectedCrop.path})`);
+    recommendedFixes.push('Set plan.visualReview.candidateScreenshotPath to the selected candidate crop screenshot path to avoid reviewing the wrong region.');
+  }
   if (review.selectedCandidateId && review.selectedCandidateId !== selectedCandidateId) {
     warnings.push(`visualReview: selectedCandidateId ${review.selectedCandidateId} does not match selection.candidateId ${selectedCandidateId}`);
     recommendedFixes.push('Confirm the actual target region in the full-page screenshot and keep visualReview.selectedCandidateId aligned with selection.candidateId.');
@@ -804,6 +1027,28 @@ function collectAgentVisualReviewWarnings(
     warnings.push('visualReview: evidence is missing; the plan should state what was visually verified');
     recommendedFixes.push('Add plan.visualReview.evidence describing screenshot evidence for the main list location, key field positions, detail/pagination controls, or excluded ads/sidebars.');
   }
+  if (!review.checks) {
+    warnings.push('visualReview: checks is missing; structured visual confirmations make the plan easier to audit');
+    recommendedFixes.push('Add plan.visualReview.checks with mainRegionVerified, fieldsVerified, paginationVerified/detailLinksVerified, and excludedRegions.');
+  } else {
+    if (review.checks.mainRegionVerified === false) {
+      warnings.push('visualReview: mainRegionVerified is false');
+      recommendedFixes.push('Use the annotated screenshot to confirm selection.candidateId maps to the main target region, then set mainRegionVerified=true.');
+    }
+    if (review.checks.fieldsVerified === false) {
+      warnings.push('visualReview: fieldsVerified is false');
+      recommendedFixes.push('Use the candidate crop to confirm field positions and semantics, then set fieldsVerified=true.');
+    }
+  }
+}
+
+function buildAgentRepairInstruction(warnings: string[], recommendedFixes: string[]): string {
+  return [
+    'Revise the agent plan before applying it.',
+    warnings.length ? `Warnings: ${warnings.slice(0, 5).join(' | ')}` : '',
+    recommendedFixes.length ? `Recommended fixes: ${recommendedFixes.slice(0, 5).join(' | ')}` : '',
+    'Open the annotated screenshot and selected candidate crop, then update selection.candidateId, selection.fields, pagination/detail, and visualReview evidence/checks.'
+  ].filter(Boolean).join(' ');
 }
 
 function collectAgentPreviewWarnings(
@@ -842,6 +1087,8 @@ function hasBlockingVisualReviewRisk(context: DetectAgentContext, plan: AgentPla
   return !review?.reviewed
     || !review.evidence?.length
     || Boolean(review.screenshotPath && review.screenshotPath !== context.screenshot.path)
+    || Boolean(review.annotatedScreenshotPath && review.annotatedScreenshotPath !== context.screenshot.annotatedPath)
+    || Boolean(review.candidateScreenshotPath && context.screenshot.candidateScreenshots?.some((item) => item.candidateId === selectedCandidateId) && review.candidateScreenshotPath !== context.screenshot.candidateScreenshots.find((item) => item.candidateId === selectedCandidateId)?.path)
     || Boolean(review.selectedCandidateId && review.selectedCandidateId !== selectedCandidateId);
 }
 
