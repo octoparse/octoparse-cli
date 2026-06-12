@@ -145,7 +145,8 @@ test('capabilities is available before authentication and documents API key cont
   assert.match(payload.data.machineContract.agentEntrypoint.rule, /@octoparse-cli\/octoparse-cli/);
   assert.equal(payload.data.machineContract.agentEntrypoint.agentInvocationPolicy.shouldUseCliForUserTaskCreationRequests, true);
   assert.equal(payload.data.machineContract.agentEntrypoint.agentInvocationPolicy.preferredRecipe, 'machineContract.recipes.createTaskFromUrlWithAgent');
-  assert.equal(payload.data.machineContract.agentEntrypoint.agentInvocationPolicy.defaultTaskCreationModeForAgents, 'prepare-agent-plan-preview-apply');
+  assert.equal(payload.data.machineContract.agentEntrypoint.agentInvocationPolicy.defaultTaskCreationModeForAgents, 'inline-agent-plan-preview-apply');
+  assert.equal(payload.data.machineContract.agentEntrypoint.agentInvocationPolicy.fastestTaskCreationModeForAgents, 'detect-agent-run-sample');
   assert.equal(payload.data.machineContract.agentEntrypoint.agentInvocationPolicy.doNotUseAutoForAgentTaskCreationRequests, true);
   assert.equal(payload.data.machineContract.agentEntrypoint.agentInvocationPolicy.doNotFallbackToHandwrittenTaskJson, true);
   assert.match(payload.data.machineContract.agentEntrypoint.agentInvocationPolicy.routingRule, /Do not use detect --auto as the default agent path/);
@@ -162,8 +163,12 @@ test('capabilities is available before authentication and documents API key cont
   assert.match(payload.data.machineContract.recipes.createTaskFromUrlWithAgent.agentResponsibilities.join(' '), /screenshot/);
   assert.match(payload.data.machineContract.recipes.createTaskFromUrlWithAgent.agentResponsibilities.join(' '), /decisionPolicy/);
   assert.match(payload.data.machineContract.recipes.createTaskFromUrlWithAgent.agentResponsibilities.join(' '), /resultValidationPolicy/);
+  assert.match(payload.data.machineContract.recipes.createTaskFromUrlWithAgent.agentResponsibilities.join(' '), /--run-sample/);
   assert.match(payload.data.machineContract.recipes.createTaskFromUrlWithAgent.agentResponsibilities.join(' '), /Do not use detect --auto/);
   assert.match(payload.data.machineContract.recipes.createTaskFromUrlWithAgent.agentResponsibilities[0], /Do not ask the user/);
+  assert.match(payload.data.machineContract.recipes.createTaskFromUrlWithAgent.quickWorkflow.command, /--agent/);
+  assert.match(payload.data.machineContract.recipes.createTaskFromUrlWithAgent.quickWorkflow.command, /--run-sample 5/);
+  assert.match(payload.data.machineContract.recipes.createTaskFromUrlWithAgent.quickWorkflow.output, /sampleRun/);
   assert.doesNotMatch(payload.data.machineContract.recipes.createTaskFromUrlWithAgent.searchWorkflow.examples.join('\n'), /--auto/);
   assert.match(payload.data.machineContract.recipes.createTaskFromUrlWithAgent.preferredWorkflow[0].command, /--prepare-agent/);
   assert.match(payload.data.machineContract.recipes.createTaskFromUrlWithAgent.preferredWorkflow[0].command, /--goal/);

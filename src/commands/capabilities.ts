@@ -58,11 +58,12 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
         agentInvocationPolicy: {
           shouldUseCliForUserTaskCreationRequests: true,
           preferredRecipe: 'machineContract.recipes.createTaskFromUrlWithAgent',
-          defaultTaskCreationModeForAgents: 'prepare-agent-plan-preview-apply',
+          defaultTaskCreationModeForAgents: 'inline-agent-plan-preview-apply',
+          fastestTaskCreationModeForAgents: 'detect-agent-run-sample',
           doNotUseAutoForAgentTaskCreationRequests: true,
           doNotFallbackToHandwrittenTaskJson: true,
           doNotAskUserForInternalFlags: true,
-          routingRule: 'If the user asks an LLM/agent to create, build, generate, or validate a scraping/extraction task from a URL using octoparse, call capabilities --json, then run the preferred recipe. Do not use detect --auto as the default agent path; --auto is only for direct CLI-only task generation when the user explicitly asks for automatic CLI selection. Use manual detect only when the user explicitly asks to choose elements themselves or when login/verification requires user action.'
+          routingRule: 'If the user asks an LLM/agent to create, build, generate, run, or validate a scraping/extraction task from a URL using octoparse, call capabilities --json, then use detect --agent with a trusted agent runner. Add --run-sample <n> when the user wants fast evidence rows. Use the lower-level prepare/preview/apply workflow for audit, repair, or custom orchestration. Do not use detect --auto as the default agent path; --auto is only for direct CLI-only task generation when the user explicitly asks for automatic CLI selection. Use manual detect only when the user explicitly asks to choose elements themselves or when login/verification requires user action.'
         },
         intentAliases: [
           'create scraping task from url',
@@ -159,7 +160,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
       recipes: {
         createTaskFromUrlWithAgent: {
           intent: 'When the user asks an LLM/agent to create a scraping or extraction task from a URL with octoparse, use this workflow unless the user explicitly asks for manual selection. This is the default agent path; detect --auto is not the default for LLM/agent task creation.',
-          summary: 'Use protected SmartProxy detection to emit deterministic candidates, write an agent plan, preview it, apply it, then validate the task.',
+          summary: 'Use protected SmartProxy detection to emit deterministic candidates, let a trusted agent runner write a small plan, preview it, apply it, and optionally run sample rows in one command.',
           agentShouldChooseThisRecipeWhen: [
             'The user asks the assistant/agent to create, build, generate, or validate a task from a URL.',
             'The user mentions octoparse, Octoparse CLI, scraping task, extraction task, or local task file.',
@@ -180,14 +181,26 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
           agentResponsibilities: [
             'Do not ask the user to explain --prepare-agent, --preview-agent-plan, or --apply-agent-plan.',
             'Do not ask the user to hand-write JSON. The agent writes plan.json after reading context.json.',
+            'For the shortest path, call detect --agent --agent-command <trusted runner> --yes --run-sample <n> --json. This wraps prepare, plan, preview, apply, and sample run into one JSON envelope.',
             'Pass the user natural-language task description through --goal so context.goal captures the real intent.',
             'Use context.decisionPolicy and context.screenshot.path as mandatory judging inputs for candidates, layout, sidebars, ads, and pagination.',
             'Use context.resultValidationPolicy after running data: isolated missing fields in ads/topic cards/heterogeneous rows are normal partial data and must not trigger task recreation loops.',
             'If the user intent includes search/query/keyword, extract the keyword and pass it through --query or --input instead of detecting the blank search homepage.',
             'Do not use detect --auto for LLM/agent task creation unless the user explicitly asks for direct CLI automatic selection without agent planning.',
             'Use the URL and optional user goal as the task intent, then inspect candidates and sample rows before choosing fields.',
-            'Show the user the generated task file path and validation result after applying the plan.'
+            'Show the user the generated task file path, preview result, and sample run result when available.'
           ],
+          quickWorkflow: {
+            whenToUse: 'Use when the user wants the agent to create a task quickly and a trusted local agent runner is available.',
+            command: 'octoparse detect <url> --agent --agent-command <trusted-agent-runner> --goal <user task description> --output <task.json> --yes --run-sample 5 --json',
+            output: 'One JSON envelope containing generatedTask, preview, optional agentFiles, and sampleRun. sampleRun.envelope.data includes the local run summary when the sample run succeeds.',
+            notes: [
+              '--agent-command executes a local shell command; only pass a trusted runner.',
+              'Use --keep-agent-files when an audit bundle needs context.json and plan.json.',
+              'Use --run-output <dir> to choose where sample run artifacts are written.',
+              'If sampleRun.exitCode is non-zero, inspect sampleRun.envelope or stderr and then fall back to the low-level workflow for repair.'
+            ]
+          },
           preferredWorkflow: [
             {
               step: 'detect',
@@ -236,8 +249,8 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
             }
           ],
           oneShotWrapper: {
-            command: 'octoparse detect <url> --agent --agent-command <cmd> --output <task.json>',
-            note: 'Use this only when a trusted agent runner command is available. --agent-command executes a local shell command. The runner receives OCTOPARSE_AGENT_CONTEXT and must write OCTOPARSE_AGENT_PLAN.'
+            command: 'octoparse detect <url> --agent --agent-command <cmd> --output <task.json> --yes [--run-sample <n>]',
+            note: 'Use this only when a trusted agent runner command is available. --agent-command executes a local shell command. The runner receives OCTOPARSE_AGENT_CONTEXT and must write OCTOPARSE_AGENT_PLAN. --run-sample runs the generated task with --max-rows and embeds the run result in the same JSON envelope.'
           },
           nonGoals: [
             'Do not ask the user to hand-write plan.json.',

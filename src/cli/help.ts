@@ -102,7 +102,7 @@ Agent notes:
   octoparse detect <url> --prepare-agent --json [--goal <text>] [--output context.json]
   octoparse detect --preview-agent-plan plan.json --agent-context context.json [--json]
   octoparse detect --apply-agent-plan plan.json --agent-context context.json --output task.json [--json]
-  octoparse detect <url> --agent --agent-command <cmd> [--goal <text>] [--output task.json] [--yes]
+  octoparse detect <url> --agent --agent-command <cmd> [--goal <text>] [--output task.json] [--yes] [--run-sample <n>]
   octoparse detect <url> --auto [--goal <text>] [--output task.json] [--llm-rank] [--no-dismiss-popups] [--json]
   octoparse detect <url> --manual [--goal <text>] [--llm-rank] [--no-dismiss-popups]
 
@@ -143,8 +143,10 @@ Notes:
   machineContract.recipes.createTaskFromUrlWithAgent; users should not need to
   explain the prepare/plan/preview/apply sequence manually.
   If an LLM/agent is helping the user create a scraping task, prefer that recipe
-  over handwritten task JSON. The agent should run detect --prepare-agent,
-  write a plan from context.json, preview it, apply it, and validate the task.
+  over handwritten task JSON. For the shortest path, use --agent with a trusted
+  --agent-command; add --run-sample <n> to generate the task and immediately run
+  a small local sample in the same JSON response. For audit or repair, use the
+  low-level prepare/preview/apply commands.
   Do not treat --auto examples as the default LLM/agent workflow; --auto skips
   agent planning and is only for direct CLI automatic selection.
   Agent workflows generate a full-page screenshot by default and store its path
@@ -156,8 +158,10 @@ Notes:
   temporary context JSON, runs --agent-command (or OCTOPARSE_AGENT_COMMAND), expects
   a plan JSON at OCTOPARSE_AGENT_PLAN or stdout, previews risk, asks for confirmation
   unless --yes is set, then generates the task. --agent-command executes a local
-  shell command; only pass a trusted agent runner. Use --keep-agent-files to retain
-  the context/plan for audit. Low-level --prepare-agent/--preview-agent-plan/
+  shell command; only pass a trusted agent runner. --run-sample <n> runs the
+  generated task with --max-rows <n> and embeds the run envelope in the detect
+  JSON response without printing a second top-level JSON document. Use
+  --keep-agent-files to retain the context/plan for audit. Low-level --prepare-agent/--preview-agent-plan/
   --apply-agent-plan commands remain available for automation and debugging.
 `,
     cloud: `Usage:
@@ -238,7 +242,7 @@ Usage:
   octoparse detect URL --prepare-agent --json --goal <text> --output context.json
   octoparse detect --preview-agent-plan plan.json --agent-context context.json [--json]
   octoparse detect --apply-agent-plan plan.json --agent-context context.json --output task.json
-  octoparse detect URL --agent --agent-command <cmd> [--output task.json] [--yes]
+  octoparse detect URL --agent --agent-command <cmd> [--output task.json] [--yes] [--run-sample <n>]
   octoparse detect URL --auto [--goal <text>] [--output task.json] [--llm-rank] [--no-dismiss-popups] [--json]
   octoparse detect URL --manual [--goal <text>] [--llm-rank] [--no-dismiss-popups]
   octoparse run <taskId> [--task-file <file.json|file.xml|file.otd>] [--output <dir>] [--chrome-path <path>] [--headless] [--max-rows <n>] [--detach] [--json|--jsonl]
@@ -298,9 +302,12 @@ Run diagnostics:
   --debug-bridge              include extension bridge command/response logs
 
 Agent contract:
-  For LLM/agent task creation, run capabilities --json and use detect --prepare-agent,
-  preview, apply, and validate. Do not treat --auto examples as the default
-  LLM/agent workflow; --auto is only for direct CLI automatic selection.
+  For LLM/agent task creation, run capabilities --json. Prefer detect --agent
+  with a trusted --agent-command for the shortest create-task path; add
+  --run-sample <n> when the user wants immediate sample rows. Use prepare,
+  preview, apply, and validate as the lower-level auditable workflow.
+  Do not treat --auto examples as the default LLM/agent workflow; --auto is only
+  for direct CLI automatic selection.
   --json   return one stable JSON envelope: {"ok":true,"data":...} or {"ok":false,"error":...}
   --jsonl  stream long-running run events as one JSON object per line
   stdout   reserved for requested data/output; diagnostics and failures go to stderr in human mode

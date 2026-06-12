@@ -107,6 +107,8 @@ interface AgentPreviewField {
   samples: string[];
   diagnostics?: DetectedFieldDiagnostics;
   warnings: string[];
+  runtimeScope?: 'loop_item' | 'page';
+  notes?: string[];
 }
 
 interface AgentDetailPlan {
@@ -152,6 +154,8 @@ export async function detectCommand(args: string[]): Promise<number> {
     '--agent-command',
     '--apply-agent-plan',
     '--preview-agent-plan',
+    '--run-sample',
+    '--run-output',
     '--api-base-url'
   ]);
   if (!url) {
@@ -179,6 +183,23 @@ export async function detectCommand(args: string[]): Promise<number> {
       'Missing Agent command: pass --agent-command or set OCTOPARSE_AGENT_COMMAND.',
       'Example: octoparse detect URL --agent --agent-command "node make-plan.mjs" --output task.json',
       'USAGE_ERROR'
+    );
+  }
+  if (hasFlag(args, '--run-sample') && !hasFlag(args, '--agent')) {
+    return printUsageError(
+      json,
+      '--run-sample is only supported for the detect --agent workflow.',
+      'Example: octoparse detect URL --agent --agent-command "node make-plan.mjs" --run-sample 5 --json',
+      'USAGE_ERROR'
+    );
+  }
+  const runSampleError = validateRunSample(args);
+  if (runSampleError) {
+    return printUsageError(
+      json,
+      runSampleError,
+      'Usage: octoparse detect URL --agent --agent-command <cmd> --run-sample <positive integer> [--json]',
+      'RUN_SAMPLE_INVALID'
     );
   }
   try {
@@ -358,6 +379,18 @@ async function runInlineAgentDetect(options: {
     const file = outputFile ? resolve(outputFile) : resolveAvailableDetectedTaskFile(taskId);
     await writeFile(file, `${JSON.stringify(task, null, 2)}\n`, 'utf8');
 
+    const sampleRows = parseOptionalPositiveInt(valueAfter(options.args, '--run-sample'));
+    const sampleRun = sampleRows
+      ? await runSampleTask({
+          taskId,
+          taskFile: file,
+          rows: sampleRows,
+          outputDir: valueAfter(options.args, '--run-output'),
+          chromePath: valueAfter(options.args, '--chrome-path'),
+          headless: hasFlag(options.args, '--headless')
+        })
+      : undefined;
+
     const data = {
       generatedTask: {
         file,
@@ -368,11 +401,13 @@ async function runInlineAgentDetect(options: {
         selectionSource: 'inline_agent'
       },
       preview,
-      agentFiles: agentFiles(options.args, contextFile, planFile)
+      agentFiles: agentFiles(options.args, contextFile, planFile),
+      ...(sampleRun ? { sampleRun } : {})
     };
     if (options.json && !options.quiet) printEnvelope(true, data);
     else if (!options.quiet) {
       console.log(`Generated task: ${file}`);
+      if (sampleRun) console.log(`Sample run: exit=${sampleRun.exitCode} maxRows=${sampleRun.requestedRows}`);
       console.log(`Validate: octoparse task validate ${taskId} --task-file ${file}`);
       console.log(`Run: octoparse run ${taskId} --task-file ${file}`);
       if (hasFlag(options.args, '--keep-agent-files')) {
@@ -390,6 +425,69 @@ async function runInlineAgentDetect(options: {
     if (workDir && !hasFlag(options.args, '--keep-agent-files')) {
       await rm(workDir, { recursive: true, force: true });
     }
+  }
+}
+
+async function runSampleTask(options: {
+  taskId: string;
+  taskFile: string;
+  rows: number;
+  outputDir?: string;
+  chromePath?: string;
+  headless: boolean;
+}): Promise<{
+  requestedRows: number;
+  exitCode: number;
+  envelope?: unknown;
+  stdout?: string;
+  stderr?: string;
+}> {
+  const args = [
+    '--task-file',
+    options.taskFile,
+    '--max-rows',
+    String(options.rows),
+    ...(options.outputDir ? ['--output', options.outputDir] : []),
+    ...(options.chromePath ? ['--chrome-path', options.chromePath] : []),
+    ...(options.headless ? ['--headless'] : []),
+    '--json'
+  ];
+  const captured = await captureProcessOutput(() => runTask(options.taskId, args));
+  const stdout = captured.stdout.trim();
+  let envelope: unknown;
+  if (stdout) {
+    try {
+      envelope = JSON.parse(stdout.split('\n').at(-1) ?? stdout);
+    } catch {}
+  }
+  return {
+    requestedRows: options.rows,
+    exitCode: captured.code,
+    ...(envelope ? { envelope } : {}),
+    ...(stdout && !envelope ? { stdout } : {}),
+    ...(captured.stderr.trim() ? { stderr: captured.stderr.trim() } : {})
+  };
+}
+
+async function captureProcessOutput(run: () => Promise<number>): Promise<{ code: number; stdout: string; stderr: string }> {
+  const originalStdoutWrite = process.stdout.write;
+  const originalStderrWrite = process.stderr.write;
+  let stdout = '';
+  let stderr = '';
+  process.stdout.write = ((chunk: unknown, ..._args: unknown[]) => {
+    stdout += String(chunk);
+    return true;
+  }) as typeof process.stdout.write;
+  process.stderr.write = ((chunk: unknown, ..._args: unknown[]) => {
+    stderr += String(chunk);
+    return true;
+  }) as typeof process.stderr.write;
+  try {
+    const code = await run();
+    return { code, stdout, stderr };
+  } finally {
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
   }
 }
 
@@ -642,6 +740,11 @@ function previewFields(fields: DetectedField[], sourceFields: DetectedField[]): 
   return fields.map((field) => {
     const source = sourceFields.find((item) => item === field || item.name === field.name || item.xpath === field.xpath);
     const diagnostics = field.diagnostics ?? source?.diagnostics;
+    const runtimeScope = field.relativeXPath ? 'loop_item' : 'page';
+    const warnings = (diagnostics?.warnings ?? []).filter((warning) => !isAcceptableLoopFieldWarning(warning, field));
+    const notes = diagnostics?.warnings?.some((warning) => isAcceptableLoopFieldWarning(warning, field))
+      ? ['XPath matches multiple page elements, but the generated runtime uses this field relative to each loop item.']
+      : undefined;
     return {
       name: field.name,
       ...(source && source.name !== field.name ? { sourceName: source.name } : {}),
@@ -649,9 +752,17 @@ function previewFields(fields: DetectedField[], sourceFields: DetectedField[]): 
       xpath: field.xpath,
       samples: field.samples.slice(0, 3),
       ...(diagnostics ? { diagnostics } : {}),
-      warnings: diagnostics?.warnings ?? []
+      warnings,
+      runtimeScope,
+      ...(notes?.length ? { notes } : {})
     };
   });
+}
+
+function isAcceptableLoopFieldWarning(warning: string, field: DetectedField): boolean {
+  return Boolean(field.relativeXPath)
+    && /xpath matched \d+ elements/i.test(warning)
+    && /runtime may use the first element/i.test(warning);
 }
 
 function collectAgentPreviewWarnings(
@@ -674,7 +785,7 @@ function collectAgentPreviewWarnings(
     if (isContentPreviewField(field) && (field.diagnostics?.paragraphCount ?? 2) <= 1) {
       recommendedFixes.push(`${prefix}: paragraph count is low; this may target only one paragraph and should be changed to the complete body container.`);
     }
-    if ((field.diagnostics?.matchCount ?? 1) > 1) {
+    if ((field.diagnostics?.matchCount ?? 1) > 1 && field.runtimeScope !== 'loop_item') {
       recommendedFixes.push(`${prefix}: XPath matches multiple elements; if runtime only reads the first one, use a parent-container XPath or explicitly merge text segments.`);
     }
   }
@@ -889,6 +1000,19 @@ export async function detectUrlCommand(url: string | undefined, args: string[]):
 
   const task = JSON.parse(await readFile(taskFile, 'utf8')) as { taskId: string };
   return runTask(task.taskId, ['--task-file', taskFile, ...splitArgs.runArgs]);
+}
+
+function parseOptionalPositiveInt(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 && String(parsed) === value.trim() ? parsed : undefined;
+}
+
+function validateRunSample(args: string[]): string | null {
+  if (!hasFlag(args, '--run-sample')) return null;
+  const raw = valueAfter(args, '--run-sample');
+  if (!raw || raw.startsWith('-')) return '--run-sample requires a positive integer';
+  return parseOptionalPositiveInt(raw) ? null : '--run-sample requires a positive integer';
 }
 
 function parseDetectInput(args: string[]): Record<string, string> | undefined {

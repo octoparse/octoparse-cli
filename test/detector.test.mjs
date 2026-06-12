@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
 import { chdir, cwd } from 'node:process';
+import { EventEmitter } from 'node:events';
 import { access, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { mock, test } from 'node:test';
 import { buildAgentContextForTesting, buildTaskFromAgentPlan, previewAgentPlanForTesting, detectCommand, detectUrlCommand, resolveAgentScreenshotPathForTesting, resolveAvailableDetectedTaskFile, runInlineAgentDetectForTesting, splitRunUrlArgs } from '../dist/commands/detect.js';
+import { EngineHost } from '../dist/runtime/engine-host.js';
+import { setEngineHostFactoryForTesting } from '../dist/commands/run.js';
 import { browserSessionPath, loadBrowserSession, saveBrowserSession } from '../dist/runtime/browser-session.js';
 import { hasLinuxDisplayEnvironment, requiresVirtualDisplay } from '../dist/runtime/virtual-display.js';
 import { applyGoalScoresForTesting, dedupeEquivalentCandidates, detectInteractivePaginationOptionsForTesting, detectPageObstructionsForTesting, detectPaginationForCandidatesForTesting, detectSearchResultBlocksForTesting, dismissPageObstructionsForTesting, filterDetectedBoilerplateCandidates, findSearchInputCandidatesForTesting, isPlausiblePaginationOptionForTesting, pageLooksLikeSearchResultForTesting, preferredPaginationForTesting, refineCandidateFieldsForTesting, resetManualOverlayHintKeysForTesting, resolveSearchSubmitButtonByGeometryForTesting, resolveSearchSubmitButtonForTesting, scoreSearchResultPageForTesting, selectDetailUrlFieldForTesting, shouldPromptForLoginInterventionForTesting, writeManualOverlayHintOnceForTesting } from '../dist/runtime/detector/page-detector.js';
@@ -134,6 +137,26 @@ test('detect --agent rejects missing agent command before page detection', async
   try {
     const code = await detectCommand(['https://example.com/list', '--agent', '--json', '--quiet']);
     assert.equal(code, 1);
+  } finally {
+    console.log = previousLog;
+  }
+});
+
+test('detect --run-sample is only valid for strict inline agent samples', async () => {
+  const previousLog = console.log;
+  console.log = () => {};
+  try {
+    assert.equal(await detectCommand(['https://example.com/list', '--run-sample', '1', '--json', '--quiet']), 1);
+    assert.equal(await detectCommand([
+      'https://example.com/list',
+      '--agent',
+      '--agent-command',
+      'node unused.mjs',
+      '--run-sample',
+      '1abc',
+      '--json',
+      '--quiet'
+    ]), 1);
   } finally {
     console.log = previousLog;
   }
@@ -3386,6 +3409,79 @@ test('previewAgentPlanForTesting reports risky detail content choices for extern
   assert.match(preview.recommendedFixes.join('\n'), /parent container/);
 });
 
+test('previewAgentPlanForTesting does not warn for loop-relative list field matches', () => {
+  const context = buildAgentContextForTesting({
+    url: 'https://example.com/list',
+    finalUrl: 'https://example.com/list',
+    title: 'Example',
+    capturedAt: '2026-05-28T00:00:00.000Z',
+    candidates: [
+      {
+        id: 'search_results_1',
+        type: 'search_results',
+        title: 'Search/list results',
+        confidence: 0.8,
+        selector: 'main',
+        xpath: '/html/body/main',
+        itemSelector: 'article',
+        itemXPath: '/html/body/main/article',
+        itemCount: 10,
+        fields: [
+          {
+            name: 'title',
+            kind: 'text',
+            selector: 'a',
+            xpath: '/html/body/main/article/a',
+            relativeXPath: './a',
+            samples: ['Alpha'],
+            diagnostics: {
+              matchCount: 10,
+              textLength: 200,
+              paragraphCount: 0,
+              hasStyleNoise: false,
+              sampleText: 'Alpha',
+              warnings: ['xpath matched 10 elements; runtime may use the first element unless XPath targets a container']
+            }
+          },
+          {
+            name: 'url',
+            kind: 'href',
+            selector: 'a',
+            xpath: '/html/body/main/article/a',
+            relativeXPath: './a',
+            samples: ['https://example.com/a'],
+            diagnostics: {
+              matchCount: 10,
+              textLength: 200,
+              paragraphCount: 0,
+              hasStyleNoise: false,
+              sampleText: 'Alpha',
+              warnings: ['xpath matched 10 elements; runtime may use the first element unless XPath targets a container']
+            }
+          }
+        ],
+        sampleRows: [{ title: 'Alpha', url: 'https://example.com/a' }],
+        reasons: ['test']
+      }
+    ]
+  });
+  const preview = previewAgentPlanForTesting({
+    context,
+    plan: {
+      selection: {
+        candidateId: 'search_results_1',
+        fields: ['title', 'url']
+      }
+    }
+  });
+
+  assert.equal(preview.pass, true);
+  assert.equal(preview.fields[0].runtimeScope, 'loop_item');
+  assert.match(preview.fields[0].notes.join('\n'), /relative to each loop item/);
+  assert.doesNotMatch(preview.warnings.join('\n'), /runtime may use the first element/);
+  assert.doesNotMatch(preview.recommendedFixes.join('\n'), /XPath matches multiple elements/);
+});
+
 test('buildTaskFromAgentPlan applies external agent field choices and detail plan', () => {
   const context = buildAgentContextForTesting({
     url: 'https://example.com/list',
@@ -3551,6 +3647,151 @@ await writeFile(process.env.OCTOPARSE_AGENT_PLAN, JSON.stringify(plan, null, 2))
     await assert.rejects(access(seenWorkDir), { code: 'ENOENT' });
   } finally {
     chdir(previousCwd);
+  }
+});
+
+test('runInlineAgentDetectForTesting can embed a sample run in one json envelope', async () => {
+  const previousCwd = cwd();
+  const dir = await mkdtemp(join(tmpdir(), 'detector-inline-agent-sample-'));
+  const agentScript = join(dir, 'agent.mjs');
+  const taskFile = join(dir, 'task.json');
+  const runOutput = join(dir, 'runs');
+  const lines = [];
+  const originalLog = console.log;
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.OCTO_ENGINE_API_KEY;
+  const originalStdoutWrite = process.stdout.write;
+  const originalStderrWrite = process.stderr.write;
+  await writeFile(agentScript, `
+import { readFile, writeFile } from 'node:fs/promises';
+const context = JSON.parse(await readFile(process.env.OCTOPARSE_AGENT_CONTEXT, 'utf8'));
+await writeFile(process.env.OCTOPARSE_AGENT_PLAN, JSON.stringify({
+  schemaVersion: 'octopus.detect.agent-plan.v1',
+  selection: {
+    candidateId: context.recommendedCandidateId,
+    fields: ['title', 'url'],
+    pagination: null
+  }
+}, null, 2));
+`);
+
+  const workflowEvents = {
+    ExtraData: 'extraData',
+    Log: 'log',
+    Stopped: 'stopped',
+    Captcha: 'captcha',
+    GetProxy: 'getProxy',
+    DownloadFile: 'downloadFile',
+    CollectProxyLog: 'collectProxyLog'
+  };
+  class FakeWorkflow extends EventEmitter {
+    async start() {
+      setImmediate(() => {
+        this.emit(workflowEvents.ExtraData, {
+          data: {
+            total: 1,
+            rowData: { title: 'Alpha', url: 'https://example.com/a' }
+          }
+        });
+        setTimeout(() => {
+          this.emit(workflowEvents.Stopped, { data: { status: 'completed' } });
+        }, 20);
+      });
+    }
+
+    stop() {}
+    stopTask() {}
+    pauseTask() {}
+    resumeTask() {}
+    close() {}
+  }
+  class FakeBridgeHub extends EventEmitter {
+    async createSessionBridge() {
+      return {};
+    }
+
+    async waitForSessionConnected() {}
+    close() {}
+  }
+
+  try {
+    chdir(dir);
+    process.env.OCTO_ENGINE_API_KEY = 'runtime-key';
+    globalThis.fetch = async () => new Response(JSON.stringify({ isSuccess: false, error: 'unused' }), {
+      status: 404,
+      headers: { 'content-type': 'application/json' }
+    });
+    setEngineHostFactoryForTesting(() => new EngineHost({
+      default: FakeWorkflow,
+      WorkflowEvents: workflowEvents,
+      resolveChrome: async () => ({ executablePath: process.execPath })
+    }, () => new FakeBridgeHub()));
+    console.log = (...args) => {
+      lines.push(args.map(String).join(' '));
+    };
+    process.stdout.write = ((chunk) => {
+      lines.push(String(chunk).trimEnd());
+      return true;
+    });
+    process.stderr.write = (() => true);
+
+    const code = await runInlineAgentDetectForTesting({
+      args: [
+        '--agent-command',
+        `${process.execPath} ${agentScript}`,
+        '--yes',
+        '--output',
+        taskFile,
+        '--run-sample',
+        '1',
+        '--run-output',
+        runOutput
+      ],
+      json: true,
+      result: {
+        url: 'https://example.com/list',
+        finalUrl: 'https://example.com/list',
+        title: 'Example',
+        capturedAt: '2026-05-28T00:00:00.000Z',
+        candidates: [
+          {
+            id: 'search_results_1',
+            type: 'search_results',
+            title: 'Search/list results',
+            confidence: 0.8,
+            selector: 'main',
+            xpath: '/html[1]/body[1]/main[1]',
+            itemSelector: 'main > div.card:nth-of-type(1)',
+            itemXPath: '/html[1]/body[1]/main[1]/div',
+            itemCount: 1,
+            fields: [
+              { name: 'title', kind: 'text', selector: 'a', xpath: '/html[1]/body[1]/main[1]/div//a[1]', relativeXPath: './a[1]', samples: ['Alpha'] },
+              { name: 'url', kind: 'href', selector: 'a', xpath: '/html[1]/body[1]/main[1]/div//a[1]', relativeXPath: './a[1]', samples: ['https://example.com/a'] }
+            ],
+            sampleRows: [{ title: 'Alpha', url: 'https://example.com/a' }],
+            reasons: ['test']
+          }
+        ]
+      }
+    });
+    assert.equal(code, 0);
+    const jsonLines = lines.filter((line) => line.trim().startsWith('{'));
+    assert.equal(jsonLines.length, 1, lines.join('\n'));
+    const payload = JSON.parse(jsonLines[0]);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.data.sampleRun.requestedRows, 1);
+    assert.equal(payload.data.sampleRun.exitCode, 0);
+    assert.equal(payload.data.sampleRun.envelope.ok, true);
+    assert.equal(payload.data.sampleRun.envelope.data.total, 1);
+  } finally {
+    chdir(previousCwd);
+    setEngineHostFactoryForTesting(undefined);
+    globalThis.fetch = originalFetch;
+    console.log = originalLog;
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
+    if (originalApiKey === undefined) delete process.env.OCTO_ENGINE_API_KEY;
+    else process.env.OCTO_ENGINE_API_KEY = originalApiKey;
   }
 });
 

@@ -101,7 +101,6 @@ Create a local task from a URL directly with CLI-only selection:
 ```bash
 octoparse detect 'https://example.com/list' --auto --output task.json
 octoparse detect 'https://example.com/search' --manual --query keyword --save-session --output task.json
-octoparse run-url 'https://example.com/list' --auto --max-rows 20 --jsonl
 ```
 
 `detect` uses the protected SmartProxy detector by default and requires
@@ -113,9 +112,11 @@ agent runner.
 If an LLM/agent is helping a user create a task with Octoparse CLI, it should
 run `octoparse capabilities --json` first and follow
 `machineContract.recipes.createTaskFromUrlWithAgent`. That recipe tells the
-agent to prepare deterministic context, write a plan, preview it, apply it, and
-validate the generated task instead of asking the user to explain internal
-detect flags, using `--auto` as the default path, or hand-writing JSON.
+agent to use `detect --agent` with a trusted agent runner for the shortest
+create-task path, adding `--run-sample <n>` when immediate sample rows are
+needed. The lower-level prepare/plan/preview/apply workflow remains available
+for audit and repair instead of asking the user to explain internal detect
+flags, using `--auto` as the default path, or hand-writing JSON.
 Agent workflows generate a full-page
 screenshot by default and store it in `context.screenshot`; pass the user's
 natural-language request with `--goal` so the agent can judge candidates against
@@ -171,7 +172,6 @@ octoparse task inspect <taskId>
 # Task creation
 octoparse detect 'https://example.com/list' --auto --output task.json
 octoparse detect 'https://example.com/search' --manual --query keyword --save-session --output task.json
-octoparse run-url 'https://example.com/list' --auto --max-rows 20 --jsonl
 
 # Local extraction
 octoparse run <taskId>
