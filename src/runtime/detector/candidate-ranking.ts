@@ -66,7 +66,7 @@ export function dedupeEquivalentCandidates(candidates: DetectedCandidate[]): Det
 }
 
 export function filterDetectedBoilerplateCandidates(candidates: DetectedCandidate[]): DetectedCandidate[] {
-  return candidates.filter((candidate) => !candidateIsLegalBoilerplate(candidate));
+  return candidates.filter((candidate) => !candidateIsLegalBoilerplate(candidate) && !candidateLooksLikePaginationControls(candidate));
 }
 
 function candidateIsLegalBoilerplate(candidate: Pick<DetectedCandidate, 'sampleRows' | 'fields' | 'reasons' | 'layout' | 'type'>): boolean {
@@ -77,6 +77,41 @@ function candidateIsLegalBoilerplate(candidate: Pick<DetectedCandidate, 'sampleR
     ...candidate.fields.flatMap((field) => field.samples)
   ];
   return values.some((value) => isLegalBoilerplateText(value));
+}
+
+export function candidateLooksLikePaginationControls(candidate: Pick<DetectedCandidate, 'sampleRows' | 'fields' | 'reasons' | 'type' | 'xpath' | 'itemXPath' | 'itemCount'>): boolean {
+  if (candidate.type === 'form' || candidate.type === 'detail') return false;
+  if (candidate.itemCount < 2 || candidate.fields.length > 4) return false;
+  const structural = [
+    candidate.xpath,
+    candidate.itemXPath,
+    candidate.reasons.join(' '),
+    ...candidate.fields.flatMap((field) => [field.name, field.xpath, field.relativeXPath ?? '', field.selector])
+  ].join(' ');
+  const hasPagerStructure = /(pagination|pager|paginator|pagebar|page-nav|pages|el-pagination|ant-pagination|ivu-page)/i.test(structural);
+  if (!hasPagerStructure) return false;
+  const values = [
+    ...candidate.sampleRows.flatMap((row) => Object.values(row)),
+    ...candidate.fields.flatMap((field) => field.samples)
+  ].map((value) => String(value ?? '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+  if (values.length < 2) return false;
+  const pageTokenCount = values.filter((value) => /^(?:\d{1,5}|next|prev|previous|>|›|»|→|<|‹|«|←|下一页|上一页|下页|上页)$/i.test(value)).length;
+  const pageUrlCount = values.filter(isPaginationUrlValue).length;
+  const shortValueCount = values.filter((value) => value.length <= 48).length;
+  const paginationValueRate = (pageTokenCount + pageUrlCount) / values.length;
+  const shortValueRate = shortValueCount / values.length;
+  const pairedPageLinks = pageTokenCount >= 2 && pageUrlCount >= 2;
+  return paginationValueRate >= 0.55 && (shortValueRate >= 0.7 || pairedPageLinks);
+}
+
+function isPaginationUrlValue(value: string): boolean {
+  try {
+    const parsed = new URL(value);
+    return Array.from(parsed.searchParams.keys()).some((key) => /^(?:page|p|page_num|pagenum|paged|offset|start)$/i.test(key))
+      || /\/page\/\d+(?:[/?#]|$)/i.test(parsed.pathname);
+  } catch {
+    return /(?:[?&](?:page|p|page_num|pagenum|paged|offset|start)=\d+|\/page\/\d+(?:[/?#]|$))/i.test(value);
+  }
 }
 
 function candidatesLikelySameDataset(left: DetectedCandidate, right: DetectedCandidate): boolean {
@@ -184,6 +219,7 @@ function candidateDataQualityBoost(candidate: DetectedCandidate): number {
     ? sampleValues.filter(isLabelOnlySample).length / sampleValues.length
     : 1;
   const smartFullColRate = protectedSmartFullColRate(candidate);
+  const taxonomyLike = candidateLooksLikeTaxonomyFilterList(candidate);
   let boost = 0;
   if (hasUsableTitle && hasHref) boost += 0.12;
   if (hasSummary) boost += 0.06;
@@ -191,7 +227,7 @@ function candidateDataQualityBoost(candidate: DetectedCandidate): number {
   if (fillRate >= 0.7) boost += 0.03;
   if (smartFullColRate !== undefined) boost += Math.max(-0.08, Math.min(0.08, (smartFullColRate - 0.55) * 0.2));
   if (fields.some((field) => /reference|citation|referencetext|cs1format|脚注|引用/i.test(field.name))) boost -= 0.14;
-  if (candidateLooksLikeTaxonomyFilterList(candidate)) boost -= 0.18;
+  if (taxonomyLike) boost -= 0.34;
   if (candidateLooksLikeFooterOrNavigation(candidate)) boost -= 0.2;
   if (fields.some((field) => field.name.length > 80)) boost -= 0.08;
   if (firstRowFillRate < 0.35 && fields.length >= 6) boost -= 0.08;
@@ -214,14 +250,31 @@ function candidateLooksLikeFooterOrNavigation(candidate: DetectedCandidate): boo
 }
 
 function candidateLooksLikeTaxonomyFilterList(candidate: DetectedCandidate): boolean {
-  if (candidate.fields.length > 2 || candidate.itemCount < 8) return false;
+  if (candidate.itemCount < 8) return false;
   const hrefs = candidate.fields
     .filter((field) => field.kind === 'href')
     .flatMap((field) => field.samples)
     .map(normalizeSampleValue)
     .filter(Boolean);
   if (hrefs.length < 2) return false;
-  return hrefs.every((value) => /(?:[?&](?:type|category|tag|topic|filter|industry|batch)=|\/(?:type|category|categories|tag|tags|topics?|filters?|industries|batches)\b)/i.test(value));
+  if (hrefs.every(isTaxonomyHrefValue)) return true;
+  const primaryHref = candidate.fields.find((field) => field.kind === 'href' && /^(?:url|链接|标题链接|title_?link|href)$/i.test(field.name))
+    ?? candidate.fields.find((field) => field.kind === 'href');
+  const primaryHrefValues = (primaryHref?.samples ?? []).map(normalizeSampleValue).filter(Boolean);
+  if (primaryHrefValues.length < 2 || !primaryHrefValues.every(isTaxonomyHrefValue)) return false;
+  const title = candidate.fields.find((field) => field.kind === 'text' && /^(?:title|标题)$/.test(field.name));
+  const titleValues = (title?.samples ?? []).map(normalizeSampleValue).filter(Boolean);
+  const shortFacetTitles = titleValues.length >= 2
+    && titleValues.every((value) => value.length <= 48 && !/[.!?。！？]/.test(value));
+  const noPrimaryRecordHref = hrefs
+    .filter((value) => !primaryHrefValues.includes(value))
+    .filter((value) => !isTaxonomyHrefValue(value))
+    .length === 0;
+  return shortFacetTitles && noPrimaryRecordHref;
+}
+
+function isTaxonomyHrefValue(value: string): boolean {
+  return /(?:[?&](?:type|category|tag|topic|filter|industry|batch)=|\/(?:type|category|categories|tag|tags|topics?|filters?|industries|batches)\b)/i.test(value);
 }
 
 function protectedSmartFullColRate(candidate: DetectedCandidate): number | undefined {

@@ -2089,16 +2089,18 @@ function scrollProbeStable(previous: ScrollProbeSnapshot, next: ScrollProbeSnaps
 async function detectCandidates(page: Page, options: DetectOptions, scrollProbe?: ScrollProbeSummary): Promise<DetectedCandidate[]> {
   if (!options.legacyDetector) {
     const protectedSmart = await detectProtectedSmartCandidates(page, { maxCandidates: options.maxCandidates, baseUrl: options.apiBaseUrl });
-    if (!protectedSmart.length) {
-      throw new Error('Protected Smart returned no list candidates. Use --legacy-detector only for debugging the old detector.');
-    }
     const outputLimit = options.interactive ? Math.max(options.maxCandidates, 24) : options.maxCandidates;
     const fallback = await detectFallbackListCandidates(page, Math.max(outputLimit, 12), options.interactive);
+    if (!protectedSmart.length && !fallback.length) {
+      throw new Error('No list candidates were detected. Use --legacy-detector only for debugging the old detector.');
+    }
     const merged = dedupeEquivalentCandidates([...protectedSmart, ...fallback]);
-    const withPagination = await detectPaginationForCandidates(page, merged, scrollProbe);
+    const withAdjacentMetadata = await augmentAdjacentMetadataFields(page, merged).catch(() => merged);
+    const withPagination = await detectPaginationForCandidates(page, withAdjacentMetadata, scrollProbe);
     const withDiagnostics = await attachAgentDiagnostics(page, withPagination).catch(() => withPagination);
     const withLayoutScores = await applyLayoutScores(page, withDiagnostics);
-    const filtered = filterDetectedBoilerplateCandidates(withLayoutScores);
+    const sanitized = sanitizeCandidatePaginationByLayout(withLayoutScores);
+    const filtered = filterDetectedBoilerplateCandidates(sanitized);
     const ranked = options.goal ? applyGoalScores(filtered, options.goal) : rankCandidates(filtered);
     return options.llmRank ? applyLlmRankPreparation(ranked.slice(0, outputLimit), options.goal) : ranked.slice(0, outputLimit);
   }
@@ -2125,8 +2127,10 @@ async function detectCandidates(page: Page, options: DetectOptions, scrollProbe?
   }));
   const withPagination = await detectPaginationForCandidates(page, detected, scrollProbe);
   const withRefinedFields = await refineCandidateFields(page, withPagination);
-  const withLayoutScores = await applyLayoutScores(page, withRefinedFields);
-  const filtered = filterDetectedBoilerplateCandidates(withLayoutScores);
+  const withAdjacentMetadata = await augmentAdjacentMetadataFields(page, withRefinedFields).catch(() => withRefinedFields);
+  const withLayoutScores = await applyLayoutScores(page, withAdjacentMetadata);
+  const sanitized = sanitizeCandidatePaginationByLayout(withLayoutScores);
+  const filtered = filterDetectedBoilerplateCandidates(sanitized);
   const deduped = dedupeEquivalentCandidates(filtered);
   const ranked = options.goal ? applyGoalScores(deduped, options.goal) : rankCandidates(deduped);
   const limited = ranked.slice(0, outputLimit);
@@ -4215,7 +4219,14 @@ async function detectInteractivePaginationOptions(page: Page, candidates: Detect
     function isPageSection(element: Element, listRect: DOMRect | undefined): boolean {
       if (!visible(element)) return false;
       const box = documentRect(element);
-      if (listRect && Math.abs(box.top - listRect.bottom) > 520) return false;
+      if (listRect) {
+        const withinBottomBand = box.top >= listRect.bottom - Math.max(120, listRect.height * 0.05)
+          && box.top <= listRect.bottom + Math.max(720, window.innerHeight * 1.05);
+        const compactPagerNearList = box.top >= listRect.top + Math.min(80, listRect.height * 0.2)
+          && box.top <= listRect.bottom + Math.max(320, window.innerHeight * 0.45)
+          && box.height <= 96;
+        if (!withinBottomBand && !compactPagerNearList) return false;
+      }
       const attrs = attrText(element);
       const numbers = numericDescendants(element);
       const sectionText = text(element);
@@ -4274,6 +4285,44 @@ async function detectInteractivePaginationOptions(page: Page, candidates: Detect
         if (parentText.length - currentText.length > 700) break;
         current = current.parentElement;
       }
+      return output;
+    }
+
+    function findBottomPagerSections(item: ItemInfo, listRect: DOMRect | undefined): Element[] {
+      if (!listRect) return [];
+      const rows = evaluateXPath(item.itemXPath).filter(visible).slice(0, 160);
+      const roots = [commonListContainer(item), evaluateXPath(item.xpath).find(visible), ...rows.map((row) => row.parentElement)]
+        .filter((element): element is Element => Boolean(element));
+      const output: Element[] = [];
+      const push = (element: Element | undefined) => {
+        if (element && !output.includes(element)) output.push(element);
+      };
+      const belowList = (element: Element): boolean => {
+        const box = documentRect(element);
+        return box.top >= listRect.top + Math.min(80, listRect.height * 0.2)
+          && box.top <= listRect.bottom + Math.max(760, window.innerHeight * 1.15)
+          && box.right >= listRect.left - 180
+          && box.left <= listRect.right + 180;
+      };
+
+      for (const root of roots) {
+        let current: Element | null = root;
+        for (let level = 0; current && current !== document.body && level < 7; level += 1, current = current.parentElement) {
+          const siblings = Array.from(current.parentElement?.children ?? []);
+          const startIndex = siblings.indexOf(current) + 1;
+          for (const sibling of siblings.slice(Math.max(0, startIndex), startIndex + 8)) {
+            if (!(sibling instanceof Element) || !belowList(sibling)) continue;
+            if (isPageSection(sibling, listRect)) push(sibling);
+            push(findPageSectionInSubtree(sibling, listRect, true));
+          }
+        }
+      }
+
+      const candidates = Array.from(document.querySelectorAll('nav,ul,ol,div,span'))
+        .filter((element): element is Element => element instanceof Element)
+        .filter((element) => belowList(element))
+        .filter((element) => isPageSection(element, listRect));
+      for (const element of candidates) push(element);
       return output;
     }
 
@@ -4420,7 +4469,7 @@ async function detectInteractivePaginationOptions(page: Page, candidates: Detect
       const rect = listRectFor(item);
       output.push(...scan(item, rect, 'near_list'));
       const listContainer = commonListContainer(item);
-      for (const section of findNearPageSections(listContainer, rect)) {
+      for (const section of [...findNearPageSections(listContainer, rect), ...findBottomPagerSections(item, rect)]) {
         const sectionElements = Array.from(section.querySelectorAll('a,button,input[type="button"],input[type="submit"],span,div,li'))
           .filter(visible)
           .filter((element) => pageButtonLike(element) || pageButtonLike(firstClickable(element)));
@@ -6994,6 +7043,493 @@ async function refineCandidateFields(page: Page, candidates: DetectedCandidate[]
   });
 }
 
+async function augmentAdjacentMetadataFields(page: Page, candidates: DetectedCandidate[]): Promise<DetectedCandidate[]> {
+  const input = candidates
+    .filter((candidate) => candidate.type !== 'detail' && candidate.type !== 'form')
+    .map((candidate) => ({
+      id: candidate.id,
+      xpath: candidate.xpath,
+      itemXPath: candidate.itemXPath || candidate.xpath,
+      sampleRowCount: Math.max(3, Math.min(8, candidate.sampleRows.length || 3)),
+      fields: candidate.fields.map((field) => ({ name: field.name, kind: field.kind }))
+    }));
+  if (!input.length) return candidates;
+
+  const augmentedById = await page.evaluate((items) => {
+    type FieldInfo = {
+      name: string;
+      kind: 'text' | 'href' | 'src';
+      selector: string;
+      xpath: string;
+      relativeSelector?: string;
+      relativeXPath?: string;
+      operations?: Array<{ type: 'trim' | 'regex_match' | 'regex_replace'; params: string[] }>;
+      samples: string[];
+    };
+
+    type CandidateInput = {
+      id: string;
+      xpath: string;
+      itemXPath: string;
+      sampleRowCount: number;
+      fields: Array<{ name: string; kind: string }>;
+    };
+
+    type MetadataEntry = {
+      name: string;
+      kind: 'text' | 'href' | 'src';
+      selector: string;
+      relativeSelector?: string;
+      relativeXPath: string;
+      operations?: FieldInfo['operations'];
+    };
+
+    type MetadataPair = {
+      row: Element;
+      metadata: Element;
+    };
+
+    function text(element: Element | null): string {
+      return ((element as HTMLElement | null)?.innerText || element?.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function directText(element: Element | null): string {
+      if (!element) return '';
+      const parts = Array.from(element.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent || '');
+      return parts.join(' ').replace(/\s+/g, ' ').trim();
+    }
+
+    function readableText(element: Element | null): string {
+      return directText(element) || text(element);
+    }
+
+    function visible(element: Element): boolean {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element as HTMLElement);
+      return rect.width > 4 && rect.height > 4 && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+    }
+
+    function evaluateXPath(path: string): Element[] {
+      if (!path) return [];
+      try {
+        const result = document.evaluate(path.replace(/\[\*\]/g, ''), document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+        const output: Element[] = [];
+        for (let index = 0; index < result.snapshotLength; index += 1) {
+          const node = result.snapshotItem(index);
+          if (node instanceof Element) output.push(node);
+        }
+        return output;
+      } catch {
+        return [];
+      }
+    }
+
+    function xpath(element: Element): string {
+      const parts: string[] = [];
+      let current: Element | null = element;
+      while (current && current.nodeType === Node.ELEMENT_NODE) {
+        const currentTag = current.tagName;
+        const parentElement: Element | null = current.parentElement;
+        const siblings = parentElement ? Array.from(parentElement.children).filter((item: Element) => item.tagName === currentTag) : [];
+        parts.unshift(`${current.tagName.toLowerCase()}[${siblings.indexOf(current) + 1 || 1}]`);
+        current = parentElement;
+      }
+      return `/${parts.join('/')}`;
+    }
+
+    function absoluteFieldXPath(rowXPath: string, relativeXPath: string): string {
+      if (relativeXPath.includes('|')) {
+        return relativeXPath
+          .split(/\s*\|\s*/)
+          .map((part) => absoluteFieldXPath(rowXPath, part.trim()))
+          .filter(Boolean)
+          .join(' | ');
+      }
+      if (relativeXPath === '.') return rowXPath;
+      return `${rowXPath}${relativeXPath.replace(/^\./, '')}`;
+    }
+
+    function applyOperations(value: string, operations?: FieldInfo['operations']): string {
+      let output = value;
+      for (const operation of operations || []) {
+        try {
+          if (operation.type === 'trim') output = output.trim();
+          else if (operation.type === 'regex_match') output = output.match(new RegExp(operation.params[0] || '', 'i'))?.[0] || '';
+          else if (operation.type === 'regex_replace') output = output.replace(new RegExp(operation.params[0] || '', 'gi'), operation.params[1] || '');
+        } catch {
+          return output;
+        }
+      }
+      return output;
+    }
+
+    function fieldValue(row: Element, relativeXPath: string, kind: 'text' | 'href' | 'src', operations?: FieldInfo['operations']): string {
+      let element: Element | null = null;
+      try {
+        const target = relativeXPath && relativeXPath !== '.'
+          ? document.evaluate(relativeXPath, row, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue
+          : row;
+        element = target instanceof Element ? target : null;
+      } catch {
+        element = null;
+      }
+      if (!element) return '';
+      let value = '';
+      if (kind === 'href') value = (element as HTMLAnchorElement).href || (element.closest('a') as HTMLAnchorElement | null)?.href || '';
+      else if (kind === 'src') value = (element as HTMLImageElement).currentSrc || (element as HTMLImageElement).src || '';
+      else value = readableText(element);
+      return applyOperations(value, operations).replace(/\s+/g, ' ').trim();
+    }
+
+    function elementIdentity(element: Element): string {
+      const html = element as HTMLElement;
+      return [
+        element.tagName.toLowerCase(),
+        html.id || '',
+        typeof html.className === 'string' ? html.className : '',
+        html.getAttribute('role') || '',
+        html.getAttribute('aria-label') || '',
+        html.getAttribute('title') || '',
+        html.getAttribute('rel') || '',
+        html.getAttribute('itemprop') || '',
+        html.getAttribute('href') || '',
+        html.getAttribute('data-testid') || '',
+        html.getAttribute('data-test') || '',
+        html.getAttribute('data-qa') || '',
+        html.getAttribute('data-role') || ''
+      ].join(' ');
+    }
+
+    function relativePathWithin(root: Element, target: Element): string {
+      if (root === target) return '';
+      const parts: string[] = [];
+      let current: Element | null = target;
+      while (current && current !== root) {
+        const parent: Element | null = current.parentElement;
+        if (!parent) return '';
+        const tag = current.tagName.toLowerCase();
+        const siblings = Array.from(parent.children).filter((item): item is Element => item instanceof Element && item.tagName === current?.tagName);
+        parts.unshift(`${tag}[${siblings.indexOf(current) + 1 || 1}]`);
+        current = parent;
+      }
+      return current === root && parts.length ? `/${parts.join('/')}` : '';
+    }
+
+    function relativePathFromRowToMetadataTarget(row: Element, metadata: Element, target: Element): string {
+      const parent = row.parentElement;
+      if (!parent || metadata.parentElement !== parent) return '';
+      const siblings = Array.from(parent.children);
+      const rowIndex = siblings.indexOf(row);
+      const metadataIndex = siblings.indexOf(metadata);
+      if (rowIndex < 0 || metadataIndex <= rowIndex) return '';
+      const offset = metadataIndex - rowIndex;
+      const suffix = relativePathWithin(metadata, target);
+      return `./following-sibling::*[${offset}]${suffix}`;
+    }
+
+    const datePatternSource = '(\\d{4}|\\d{2})([-/.年])\\d{1,2}([-/.月])\\d{1,2}(?:日)?(?:\\s+\\d{1,2}:\\d{2}(?::\\d{2})?)?|\\d{1,2}\\s*(?:分钟前|小时前|天前|周前|月前|年前|minutes?\\s*ago|hours?\\s*ago|days?\\s*ago|weeks?\\s*ago|months?\\s*ago|years?\\s*ago)|[今昨前]天(?:\\s+\\d{1,2}:\\d{2}(?::\\d{2})?)?|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\\.?\\s+\\d{1,2},?\\s+\\d{2,4}|\\d{1,2}\\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\\.?\\s+\\d{2,4}';
+    const scorePatternSource = '\\b\\d[\\d,.]*(?:\\s*[kKmM])?\\s*(?:points?|votes?|upvotes?|likes?|score|票|赞)\\b';
+    const commentPatternSource = '\\b(?:\\d[\\d,.]*(?:\\s*[kKmM])?\\s*(?:comments?|replies?|answers?|讨论|评论|回复)|discuss)\\b';
+
+    function dateMatch(value: string): string {
+      return value.match(new RegExp(datePatternSource, 'i'))?.[0] || '';
+    }
+
+    function scoreMatch(value: string): string {
+      return value.match(new RegExp(scorePatternSource, 'i'))?.[0] || '';
+    }
+
+    function commentMatch(value: string): string {
+      return value.match(new RegExp(commentPatternSource, 'i'))?.[0] || '';
+    }
+
+    function isScoreValue(value: string): boolean {
+      return Boolean(scoreMatch(value));
+    }
+
+    function isCommentValue(value: string): boolean {
+      return Boolean(commentMatch(value));
+    }
+
+    function cleanAuthorText(value: string): string {
+      const normalized = value.replace(/\s+/g, ' ').trim();
+      const byMatch = normalized.match(/\bby\s+([^\s|·•,，]+(?:\s+[^\s|·•,，]+){0,2})/i);
+      if (byMatch?.[1]) return byMatch[1].trim();
+      return normalized
+        .replace(/^(?:by|author|user|作者|用户)[:：]?\s*/i, '')
+        .replace(new RegExp(scorePatternSource, 'gi'), '')
+        .replace(new RegExp(commentPatternSource, 'gi'), '')
+        .replace(new RegExp(datePatternSource, 'gi'), '')
+        .replace(/\b(?:hide|reply|share|save|举报)\b/gi, '')
+        .replace(/[|｜·•,，:：-]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    function isAuthorText(value: string): boolean {
+      const clean = cleanAuthorText(value);
+      if (clean.length < 2 || clean.length > 60) return false;
+      if (dateMatch(clean) || scoreMatch(clean) || commentMatch(clean)) return false;
+      if (/^(?:hide|reply|share|save|more|next|previous|login|submit|discuss)$/i.test(clean)) return false;
+      if (/^https?:\/\//i.test(clean)) return false;
+      return /[\p{L}\p{N}_-]/u.test(clean);
+    }
+
+    function candidateValue(element: Element): string {
+      return readableText(element).replace(/\s+/g, ' ').trim();
+    }
+
+    function allVisibleElements(root: Element): Element[] {
+      return [root, ...Array.from(root.querySelectorAll('*'))].filter(visible);
+    }
+
+    function bestTextElement(root: Element, accept: (value: string, element: Element) => boolean, score: (value: string, element: Element) => number): Element | null {
+      return allVisibleElements(root)
+        .map((element) => ({ element, value: candidateValue(element) }))
+        .filter((item) => item.value && item.value.length <= 260 && accept(item.value, item.element))
+        .sort((a, b) => score(b.value, b.element) - score(a.value, a.element) || a.value.length - b.value.length)[0]?.element || null;
+    }
+
+    function findScoreElement(metadata: Element): Element | null {
+      return bestTextElement(
+        metadata,
+        (value) => Boolean(scoreMatch(value)),
+        (value, element) => {
+          const exact = scoreMatch(value) === value.trim() ? 0.7 : 0;
+          const semantic = /score|point|vote|like|upvote|票|赞/i.test(elementIdentity(element)) ? 0.5 : 0;
+          return exact + semantic - Math.max(0, value.length - 40) / 100;
+        }
+      );
+    }
+
+    function findCommentElement(metadata: Element): Element | null {
+      return bestTextElement(
+        metadata,
+        (value) => Boolean(commentMatch(value)),
+        (value, element) => {
+          const exact = commentMatch(value) === value.trim() ? 0.7 : 0;
+          const semantic = /comment|reply|discuss|answer|bubble|message|chat|评论|回复|讨论/i.test(elementIdentity(element)) ? 0.7 : 0;
+          return exact + semantic - Math.max(0, value.length - 50) / 120;
+        }
+      );
+    }
+
+    function findDateElement(metadata: Element): Element | null {
+      return bestTextElement(
+        metadata,
+        (value) => Boolean(dateMatch(value)),
+        (value, element) => {
+          const exact = dateMatch(value) === value.trim() ? 0.7 : 0;
+          const semantic = /date|time|age|posted|publish|created|updated|时间|日期/i.test(elementIdentity(element)) ? 0.6 : 0;
+          return exact + semantic - Math.max(0, value.length - 40) / 100;
+        }
+      );
+    }
+
+    function findAuthorElement(metadata: Element): Element | null {
+      return bestTextElement(
+        metadata,
+        (value, element) => {
+          if (!isAuthorText(value)) return false;
+          const identity = elementIdentity(element);
+          return /author|byline|user|nick|profile|member|hnuser|作者|用户/i.test(identity)
+            || /(?:^|\s)by\s+\S/i.test(text(metadata))
+            || /^a$/i.test(element.tagName) && /user|author|profile|member/i.test((element as HTMLAnchorElement).href || identity);
+        },
+        (value, element) => {
+          const identity = elementIdentity(element);
+          const semantic = /author|byline|user|nick|profile|member|hnuser|作者|用户/i.test(identity) ? 0.9 : 0;
+          const link = /^a$/i.test(element.tagName) ? 0.3 : 0;
+          const clean = cleanAuthorText(value);
+          return semantic + link - Math.max(0, clean.length - 24) / 80;
+        }
+      );
+    }
+
+    function metadataScore(row: Element, metadata: Element): number {
+      const value = text(metadata);
+      if (!value || value.length > 320) return -Infinity;
+      const rowRect = row.getBoundingClientRect();
+      const rect = metadata.getBoundingClientRect();
+      if (rect.top < rowRect.top - 4) return -Infinity;
+      if (rect.top > rowRect.bottom + Math.max(180, rowRect.height * 2.5)) return -Infinity;
+      let score = 0;
+      if (/(^|\s)by\s+\S|author|byline|user|profile|member|作者|用户/i.test(`${value} ${elementIdentity(metadata)}`)) score += 0.35;
+      if (dateMatch(value)) score += 0.25;
+      if (scoreMatch(value)) score += 0.22;
+      if (commentMatch(value)) score += 0.22;
+      if (/meta|subtext|byline|footer|details|stats|score|comment|reply|info|secondary/i.test(elementIdentity(metadata))) score += 0.2;
+      if (rect.height <= Math.max(80, rowRect.height * 2.5)) score += 0.1;
+      return score;
+    }
+
+    function findAdjacentMetadataRow(row: Element, selectedRows: Set<Element>): Element | null {
+      const parent = row.parentElement;
+      if (!parent) return null;
+      const siblings = Array.from(parent.children);
+      const rowIndex = siblings.indexOf(row);
+      if (rowIndex < 0) return null;
+      for (let index = rowIndex + 1; index < siblings.length && index <= rowIndex + 3; index += 1) {
+        const sibling = siblings[index];
+        if (!(sibling instanceof Element) || !visible(sibling)) continue;
+        if (selectedRows.has(sibling)) return null;
+        if (!text(sibling)) continue;
+        const score = metadataScore(row, sibling);
+        if (score >= 0.55) return sibling;
+      }
+      return null;
+    }
+
+    function entryFor(row: Element, metadata: Element, name: string, element: Element | null, operations?: FieldInfo['operations']): MetadataEntry | null {
+      if (!element) return null;
+      const relativeXPath = relativePathFromRowToMetadataTarget(row, metadata, element);
+      if (!relativeXPath) return null;
+      return {
+        name,
+        kind: 'text',
+        selector: element.tagName.toLowerCase(),
+        relativeSelector: element.tagName.toLowerCase(),
+        relativeXPath,
+        operations
+      };
+    }
+
+    function metadataEntriesForPair(pair: MetadataPair): MetadataEntry[] {
+      const entries = [
+        entryFor(pair.row, pair.metadata, 'score', findScoreElement(pair.metadata), [{ type: 'regex_match', params: [scorePatternSource] }]),
+        entryFor(pair.row, pair.metadata, 'author', findAuthorElement(pair.metadata)),
+        entryFor(pair.row, pair.metadata, 'date', findDateElement(pair.metadata), [{ type: 'regex_match', params: [datePatternSource] }]),
+        entryFor(pair.row, pair.metadata, 'comments', findCommentElement(pair.metadata), [{ type: 'regex_match', params: [commentPatternSource] }])
+      ];
+      return entries.filter((entry): entry is MetadataEntry => Boolean(entry));
+    }
+
+    function supportsField(name: string, value: string): boolean {
+      if (!value) return false;
+      if (name === 'score') return isScoreValue(value);
+      if (name === 'comments') return isCommentValue(value);
+      if (name === 'date') return Boolean(dateMatch(value));
+      if (name === 'author') return isAuthorText(value);
+      return Boolean(value);
+    }
+
+    function pathSupportsField(name: string, pair: MetadataPair, path: string, operations?: FieldInfo['operations']): boolean {
+      return supportsField(name, fieldValue(pair.row, path, 'text', operations));
+    }
+
+    function buildRelativeXPath(name: string, pairs: MetadataPair[], entries: MetadataEntry[]): string {
+      const paths = Array.from(new Set(entries.map((entry) => entry.relativeXPath).filter(Boolean)));
+      const uncovered = new Set(pairs.map((_, index) => index));
+      const selected: string[] = [];
+      while (uncovered.size && selected.length < 4) {
+        const best = paths
+          .filter((path) => !selected.includes(path))
+          .map((path) => {
+            const operations = entries.find((entry) => entry.relativeXPath === path)?.operations;
+            return {
+              path,
+              covered: Array.from(uncovered).filter((index) => pathSupportsField(name, pairs[index], path, operations))
+            };
+          })
+          .filter((item) => item.covered.length)
+          .sort((a, b) => b.covered.length - a.covered.length || a.path.length - b.path.length)[0];
+        if (!best) break;
+        selected.push(best.path);
+        best.covered.forEach((index) => uncovered.delete(index));
+      }
+      return selected.length ? selected.join(' | ') : paths[0] || '';
+    }
+
+    function existingFieldHasName(item: CandidateInput, names: string[]): boolean {
+      return item.fields.some((field) => names.some((name) => field.name.toLowerCase() === name.toLowerCase()));
+    }
+
+    function shouldSkipName(item: CandidateInput, name: string): boolean {
+      if (name === 'author') return existingFieldHasName(item, ['author', '作者', 'user', '用户']);
+      if (name === 'date') return existingFieldHasName(item, ['date', 'time', '时间', '日期']);
+      if (name === 'comments') return existingFieldHasName(item, ['comments', 'comment', '评论', '回复', '讨论']);
+      if (name === 'score') return existingFieldHasName(item, ['score', 'points', 'votes', 'likes', '票数', '评分', '赞']);
+      return existingFieldHasName(item, [name]);
+    }
+
+    const result: Record<string, { fields: FieldInfo[]; sampleRows: Record<string, string>[] }> = {};
+    for (const item of items as CandidateInput[]) {
+      const rows = evaluateXPath(item.itemXPath).filter(visible).slice(0, 8);
+      if (rows.length < 3) continue;
+      const selectedRows = new Set<Element>(rows);
+      const pairs = rows
+        .map((row) => ({ row, metadata: findAdjacentMetadataRow(row, selectedRows) }))
+        .filter((pair): pair is MetadataPair => Boolean(pair.metadata));
+      if (pairs.length < Math.max(2, Math.ceil(rows.length * 0.5))) continue;
+
+      const entries = pairs.flatMap(metadataEntriesForPair);
+      const outputFields: FieldInfo[] = [];
+      for (const name of ['score', 'author', 'date', 'comments']) {
+        if (shouldSkipName(item, name)) continue;
+        const nameEntries = entries.filter((entry) => entry.name === name);
+        if (!nameEntries.length) continue;
+        const relativeXPath = buildRelativeXPath(name, pairs, nameEntries);
+        if (!relativeXPath) continue;
+        const template = nameEntries.find((entry) => relativeXPath.includes(entry.relativeXPath)) || nameEntries[0];
+        const samples = pairs
+          .map((pair) => fieldValue(pair.row, relativeXPath, 'text', template.operations))
+          .filter((value) => supportsField(name, value))
+          .slice(0, 3);
+        const minSamples = pairs.length >= 3 ? 2 : 1;
+        if (samples.length < minSamples) continue;
+        outputFields.push({
+          name,
+          kind: 'text',
+          selector: template.selector,
+          xpath: absoluteFieldXPath(item.itemXPath, relativeXPath),
+          relativeSelector: template.relativeSelector,
+          relativeXPath,
+          ...(template.operations ? { operations: template.operations } : {}),
+          samples
+        });
+      }
+      if (!outputFields.length) continue;
+      const pairByRow = new Map<Element, MetadataPair>(pairs.map((pair) => [pair.row, pair]));
+      const sampleLimit = Math.max(1, Math.min(rows.length, item.sampleRowCount || 3));
+      const sampleRows = rows.slice(0, sampleLimit).map((rowElement) => {
+        const pair = pairByRow.get(rowElement);
+        const row: Record<string, string> = {};
+        if (!pair) return row;
+        for (const field of outputFields) {
+          const value = fieldValue(pair.row, field.relativeXPath || '.', field.kind, field.operations);
+          if (supportsField(field.name, value)) row[field.name] = value;
+        }
+        return row;
+      });
+      result[item.id] = { fields: outputFields, sampleRows };
+    }
+    return result;
+  }, input) as Record<string, { fields: DetectedField[]; sampleRows: Record<string, string>[] }>;
+
+  return candidates.map((candidate) => {
+    const augmented = augmentedById[candidate.id];
+    if (!augmented?.fields.length) return candidate;
+    const existing = new Set(candidate.fields.map((field) => `${field.name.toLowerCase()}:${field.kind}`));
+    const fields = [
+      ...candidate.fields,
+      ...augmented.fields.filter((field) => !existing.has(`${field.name.toLowerCase()}:${field.kind}`))
+    ];
+    const sampleRows = candidate.sampleRows.length
+      ? candidate.sampleRows.map((row, index) => ({ ...row, ...(augmented.sampleRows[index] ?? {}) }))
+      : augmented.sampleRows;
+    return {
+      ...candidate,
+      fields,
+      sampleRows,
+      reasons: candidate.reasons.some((reason) => /adjacent metadata/i.test(reason))
+        ? candidate.reasons
+        : [...candidate.reasons, 'Fields augmented from adjacent metadata rows']
+    };
+  });
+}
+
 async function detectDetails(page: Page): Promise<RawCandidate[]> {
   const detail = await page.evaluate(() => {
     function text(element: Element | null): string {
@@ -9259,6 +9795,10 @@ export async function detectPaginationForCandidatesForTesting(page: Page, candid
   return detectPaginationForCandidates(page, candidates, scrollProbe);
 }
 
+export function sanitizeCandidatePaginationByLayoutForTesting(candidates: DetectedCandidate[]): DetectedCandidate[] {
+  return sanitizeCandidatePaginationByLayout(candidates);
+}
+
 export async function detectInteractivePaginationOptionsForTesting(page: Page, candidates: DetectedCandidate[], scrollProbe?: ScrollProbeSummary): Promise<DetectedPagination[]> {
   return detectInteractivePaginationOptions(page, candidates, scrollProbe);
 }
@@ -9290,6 +9830,10 @@ export async function dismissPageObstructionsForTesting(page: Page, options: { i
 
 export async function refineCandidateFieldsForTesting(page: Page, candidates: DetectedCandidate[]): Promise<DetectedCandidate[]> {
   return refineCandidateFields(page, candidates);
+}
+
+export async function augmentAdjacentMetadataFieldsForTesting(page: Page, candidates: DetectedCandidate[]): Promise<DetectedCandidate[]> {
+  return augmentAdjacentMetadataFields(page, candidates);
 }
 
 export async function findSearchInputCandidatesForTesting(page: Page, name: string): Promise<SearchInputCandidate[]> {
@@ -9838,12 +10382,22 @@ async function detectPaginationForCandidates(page: Page, candidates: DetectedCan
     return result;
   }, input) as Record<string, DetectedPagination>;
 
+  const fallbackPaginationById = await detectCandidateScopedPaginationFallbacks(
+    page,
+    candidates.filter((candidate) => !paginationById[candidate.id] || !isPlausiblePaginationOption(paginationById[candidate.id])),
+    scrollProbe
+  );
   const probePaginationById = scrollProbePaginationForCandidates(candidates, scrollProbe);
   return candidates.map((candidate) => {
     const existingPagination = candidate.pagination && !scrollProbeRulesOutScroll(candidate, scrollProbe)
       ? candidate.pagination
       : undefined;
-    const paginationSources: Array<DetectedPagination | undefined> = [existingPagination, paginationById[candidate.id], probePaginationById[candidate.id]];
+    const paginationSources: Array<DetectedPagination | undefined> = [
+      existingPagination,
+      paginationAllowedForCandidate(candidate, paginationById[candidate.id]) ? paginationById[candidate.id] : undefined,
+      fallbackPaginationById[candidate.id],
+      probePaginationById[candidate.id]
+    ];
     const pagination = paginationSources
       .filter((item): item is DetectedPagination => item ? isPlausiblePaginationOption(item) : false)
       .reduce<DetectedPagination | undefined>((selected, item) => preferredPagination(selected, item), undefined);
@@ -9853,6 +10407,57 @@ async function detectPaginationForCandidates(page: Page, candidates: DetectedCan
       ...(pagination ? { pagination } : {})
     };
   });
+}
+
+function paginationAllowedForCandidate(candidate: DetectedCandidate, pagination: DetectedPagination | undefined): boolean {
+  if (!pagination) return false;
+  if (pagination.scope !== 'global') return true;
+  if (pagination.type === 'scroll') return candidateEligibleForGlobalScrollPagination(candidate);
+  return candidateEligibleForGlobalControlPagination(candidate);
+}
+
+function sanitizeCandidatePaginationByLayout(candidates: DetectedCandidate[]): DetectedCandidate[] {
+  return candidates.map((candidate) => {
+    if (!candidate.pagination || paginationAllowedForCandidate(candidate, candidate.pagination)) return candidate;
+    const { pagination: _discardedPagination, ...withoutPagination } = candidate;
+    return withoutPagination;
+  });
+}
+
+async function detectCandidateScopedPaginationFallbacks(page: Page, candidates: DetectedCandidate[], scrollProbe?: ScrollProbeSummary): Promise<Record<string, DetectedPagination>> {
+  const result: Record<string, DetectedPagination> = {};
+  for (const candidate of candidates) {
+    if (candidate.type === 'detail' || candidate.type === 'form') continue;
+    const options = await detectInteractivePaginationOptions(page, [candidate], scrollProbe).catch(() => []);
+    const selected = options.find(isCandidateScopedPaginationFallback);
+    if (selected) {
+      result[candidate.id] = {
+        ...selected,
+        reasons: selected.reasons.some((reason) => /candidate-scoped fallback/i.test(reason))
+          ? selected.reasons
+          : [...selected.reasons, 'candidate-scoped fallback pagination scan']
+      };
+    }
+  }
+  return result;
+}
+
+function isCandidateScopedPaginationFallback(pagination: DetectedPagination): boolean {
+  return pagination.scope === 'near_list'
+    && pagination.type !== 'scroll'
+    && pagination.confidence >= 0.72
+    && isPlausiblePaginationOption(pagination);
+}
+
+function candidateEligibleForGlobalControlPagination(candidate: DetectedCandidate): boolean {
+  if (candidate.itemCount < 8) return false;
+  const role = candidate.layout?.role;
+  if (role && role !== 'main' && role !== 'unknown') return false;
+  if (candidate.layout) {
+    if (candidate.layout.sidebarPenalty >= 0.28 || candidate.layout.boilerplatePenalty >= 0.34) return false;
+    if (candidate.layout.visualCoverage < 0.12 && candidate.itemCount < 20) return false;
+  }
+  return candidateHasRecordSignal(candidate) || candidate.itemCount >= 20;
 }
 
 function scrollProbeRulesOutScroll(candidate: Pick<DetectedCandidate, 'itemCount' | 'pagination'>, scrollProbe?: ScrollProbeSummary): boolean {
@@ -9874,6 +10479,7 @@ function scrollProbePaginationForCandidates(candidates: DetectedCandidate[], scr
   const sawListItemGrowth = grewArticleLikeCount >= 2;
   for (const candidate of candidates) {
     if (candidate.type === 'detail' || candidate.type === 'form') continue;
+    if (!candidateEligibleForGlobalScrollPagination(candidate)) continue;
     const listLike = candidate.type === 'repeated_card' || candidate.type === 'search_results' || candidate.type === 'link_collection';
     const enoughItems = candidate.itemCount >= 8 || scrollProbe.maxArticleLikeCount >= 8;
     if (!listLike || !enoughItems) continue;
@@ -9927,6 +10533,22 @@ function scrollProbePaginationForCandidates(candidates: DetectedCandidate[], scr
     };
   }
   return result;
+}
+
+function candidateEligibleForGlobalScrollPagination(candidate: DetectedCandidate): boolean {
+  if (candidate.itemCount < 8) return false;
+  const role = candidate.layout?.role;
+  if (role && role !== 'main' && role !== 'unknown') return false;
+  if (candidate.layout) {
+    if (candidate.layout.sidebarPenalty >= 0.28 || candidate.layout.boilerplatePenalty >= 0.34) return false;
+    if (candidate.layout.visualCoverage < 0.12 && candidate.itemCount < 20) return false;
+  }
+  return candidateHasRecordSignal(candidate) || candidate.itemCount >= 20;
+}
+
+function candidateHasRecordSignal(candidate: DetectedCandidate): boolean {
+  const fieldNames = candidate.fields.map((field) => field.name).join(' ');
+  return /title|标题|url|链接|image|图片|date|time|时间|summary|description|描述|价格|price|company|公司|位置|location|author|作者|标签|tag/i.test(fieldNames);
 }
 
 function scrollProbeLooksLikeStaticLargeList(candidate: Pick<DetectedCandidate, 'itemCount'>, scrollProbe: ScrollProbeSummary): boolean {

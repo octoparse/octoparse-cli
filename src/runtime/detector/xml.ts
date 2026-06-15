@@ -1051,6 +1051,7 @@ function normalizeEngineRelativeXPath(xpath: string): string {
       .join(' | ');
   }
   if (trimmed.startsWith('.//')) return `/descendant-or-self::${trimmed.slice(3)}`;
+  if (/^\.(?:\/)?(?:following|preceding)-sibling::/i.test(trimmed)) return trimmed.replace(/^\.(?:\/)?/, '');
   if (trimmed.startsWith('./')) return `/${trimmed.slice(2)}`;
   if (trimmed.startsWith('//')) return trimmed;
   if (trimmed.startsWith('/')) return trimmed;

@@ -10,7 +10,7 @@ import { EngineHost } from '../dist/runtime/engine-host.js';
 import { setEngineHostFactoryForTesting } from '../dist/commands/run.js';
 import { browserSessionPath, loadBrowserSession, saveBrowserSession } from '../dist/runtime/browser-session.js';
 import { hasLinuxDisplayEnvironment, requiresVirtualDisplay } from '../dist/runtime/virtual-display.js';
-import { applyGoalScoresForTesting, dedupeEquivalentCandidates, detectInteractivePaginationOptionsForTesting, detectPageObstructionsForTesting, detectPaginationForCandidatesForTesting, detectSearchResultBlocksForTesting, dismissPageObstructionsForTesting, filterDetectedBoilerplateCandidates, findSearchInputCandidatesForTesting, isPlausiblePaginationOptionForTesting, pageLooksLikeSearchResultForTesting, preferredPaginationForTesting, refineCandidateFieldsForTesting, resetManualOverlayHintKeysForTesting, resolveSearchSubmitButtonByGeometryForTesting, resolveSearchSubmitButtonForTesting, scoreSearchResultPageForTesting, selectDetailUrlFieldForTesting, shouldPromptForLoginInterventionForTesting, writeManualOverlayHintOnceForTesting } from '../dist/runtime/detector/page-detector.js';
+import { applyGoalScoresForTesting, augmentAdjacentMetadataFieldsForTesting, dedupeEquivalentCandidates, detectInteractivePaginationOptionsForTesting, detectPageObstructionsForTesting, detectPaginationForCandidatesForTesting, detectSearchResultBlocksForTesting, dismissPageObstructionsForTesting, filterDetectedBoilerplateCandidates, findSearchInputCandidatesForTesting, isPlausiblePaginationOptionForTesting, pageLooksLikeSearchResultForTesting, preferredPaginationForTesting, refineCandidateFieldsForTesting, resetManualOverlayHintKeysForTesting, resolveSearchSubmitButtonByGeometryForTesting, resolveSearchSubmitButtonForTesting, sanitizeCandidatePaginationByLayoutForTesting, scoreSearchResultPageForTesting, selectDetailUrlFieldForTesting, shouldPromptForLoginInterventionForTesting, writeManualOverlayHintOnceForTesting } from '../dist/runtime/detector/page-detector.js';
 import { protectedSmartResultToCandidatesForTesting } from '../dist/runtime/detector/protected-smart.js';
 import { buildTaskFromCandidate } from '../dist/runtime/detector/xml.js';
 
@@ -1181,6 +1181,130 @@ test('goal ranking keeps rich records above taxonomy filter links', () => {
   assert.equal(ranked[0].id, 'protected_smart_1');
 });
 
+test('goal ranking keeps job records above refined category link candidates', () => {
+  const categoryCandidate = {
+    id: 'fallback_search_results_1',
+    type: 'search_results',
+    title: 'Refined category links',
+    confidence: 0.99,
+    selector: '',
+    xpath: '/html/body/main/ol/li',
+    itemSelector: '',
+    itemXPath: '/html/body/main/ol/li',
+    itemCount: 24,
+    fields: [
+      { name: 'title', kind: 'text', selector: '', xpath: '/html/body/main/ol/li/span[3]/a', relativeXPath: './span[3]/a[1]', samples: ['Developer / Engineer', 'Researcher / Scientist', 'Manager / Executive'] },
+      { name: 'url', kind: 'href', selector: '', xpath: '/html/body/main/ol/li/span[3]/a', relativeXPath: './span[3]/a[1]', samples: ['https://www.python.org/jobs/category/developer-engineer/', 'https://www.python.org/jobs/category/researcher-scientist/', 'https://www.python.org/jobs/category/manager-executive/'] },
+      { name: 'date', kind: 'text', selector: '', xpath: '/html/body/main/ol/li/time', relativeXPath: './span[2]/time[1]', samples: ['08 June 2026', '03 June 2026', '02 June 2026'] },
+      { name: 'author', kind: 'text', selector: '', xpath: '/html/body/main/ol/li/span[4]', relativeXPath: './span[4]', samples: ['AI/ML', 'Back end', 'Database'] }
+    ],
+    sampleRows: [
+      {
+        title: 'Developer / Engineer',
+        url: 'https://www.python.org/jobs/category/developer-engineer/',
+        date: '08 June 2026',
+        author: 'AI/ML'
+      }
+    ],
+    reasons: ['Sibling elements share the same DOM shape', 'Fields refined from repeated item structure'],
+    layout: {
+      role: 'main',
+      score: 0.82,
+      mainScore: 0.9,
+      sidebarPenalty: 0,
+      boilerplatePenalty: 0.12,
+      visualCoverage: 0.91,
+      textDensity: 0.1,
+      linkDensity: 0.68,
+      centerDistance: 0.2,
+      reasons: []
+    }
+  };
+  const jobCandidate = {
+    id: 'protected_smart_1',
+    type: 'search_results',
+    title: 'Protected Smart job records',
+    confidence: 0.99,
+    selector: '',
+    xpath: '/html/body/main/ol/li',
+    itemSelector: '',
+    itemXPath: '/html/body/main/ol/li',
+    itemCount: 25,
+    fields: [
+      { name: '标题链接', kind: 'href', selector: '', xpath: '/html/body/main/ol/li/a', relativeXPath: './a', samples: ['https://www.python.org/jobs/8089/', 'https://www.python.org/jobs/8088/'] },
+      { name: '描述', kind: 'text', selector: '', xpath: '/html/body/main/ol/li/a', relativeXPath: './a', samples: ['Founding ML/Data Scientist (Remote, UK)', 'Tech Lead (Python) | Remote - LATAM | Full-time'] },
+      { name: '位置', kind: 'text', selector: '', xpath: '/html/body/main/ol/li/span', relativeXPath: './span', samples: ['Remote - London UK, United Kingdom', 'LATAM, LATAM, LATAM'] },
+      { name: '类型_链接', kind: 'href', selector: '', xpath: '/html/body/main/ol/li/em/a', relativeXPath: './em/a', samples: ['https://www.python.org/jobs/type/back-end/', 'https://www.python.org/jobs/type/database/'] },
+      { name: '时间', kind: 'text', selector: '', xpath: '/html/body/main/ol/li/time', relativeXPath: './time', samples: ['03 June 2026', '02 June 2026'] }
+    ],
+    sampleRows: [
+      {
+        '标题链接': 'https://www.python.org/jobs/8089/',
+        '描述': 'Founding ML/Data Scientist (Remote, UK)',
+        '位置': 'Remote - London UK, United Kingdom',
+        '类型_链接': 'https://www.python.org/jobs/type/back-end/',
+        '时间': '03 June 2026'
+      }
+    ],
+    reasons: ['Detected by protected SmartProxy resource', 'fullColRate=0.65'],
+    layout: {
+      ...categoryCandidate.layout,
+      score: 0.84,
+      mainScore: 0.91
+    }
+  };
+
+  const ranked = applyGoalScoresForTesting([categoryCandidate, jobCandidate], '采集招聘职位列表');
+
+  assert.equal(ranked[0].id, 'protected_smart_1');
+});
+
+test('filterDetectedBoilerplateCandidates removes standalone pagination controls', () => {
+  const records = {
+    id: 'protected_smart_1',
+    type: 'table',
+    title: 'Team table',
+    confidence: 0.98,
+    selector: '',
+    xpath: '/html/body/main/table/tbody/tr',
+    itemSelector: '',
+    itemXPath: '/html/body/main/table/tbody/tr',
+    itemCount: 25,
+    fields: [
+      { name: 'team', kind: 'text', selector: '', xpath: '/html/body/main/table/tbody/tr/td[1]', relativeXPath: './td[1]', samples: ['Boston Bruins', 'Buffalo Sabres'] },
+      { name: 'year', kind: 'text', selector: '', xpath: '/html/body/main/table/tbody/tr/td[2]', relativeXPath: './td[2]', samples: ['1990', '1990'] },
+      { name: 'wins', kind: 'text', selector: '', xpath: '/html/body/main/table/tbody/tr/td[3]', relativeXPath: './td[3]', samples: ['44', '31'] }
+    ],
+    sampleRows: [{ team: 'Boston Bruins', year: '1990', wins: '44' }],
+    reasons: ['Detected by protected SmartProxy resource']
+  };
+  const pager = {
+    id: 'protected_smart_2',
+    type: 'search_results',
+    title: 'Pagination links',
+    confidence: 0.98,
+    selector: '',
+    xpath: '//ul[contains(@class,"pagination")]/li',
+    itemSelector: '',
+    itemXPath: '//ul[contains(@class,"pagination")]/li',
+    itemCount: 24,
+    fields: [
+      { name: '来源链接', kind: 'href', selector: '', xpath: '//ul[contains(@class,"pagination")]/li/a', relativeXPath: './a', samples: ['https://example.com/list?page_num=1', 'https://example.com/list?page_num=2', 'https://example.com/list?page_num=3'] },
+      { name: '编号', kind: 'text', selector: '', xpath: '//ul[contains(@class,"pagination")]/li/a', relativeXPath: './a', samples: ['1', '2', '3'] }
+    ],
+    sampleRows: [
+      { '来源链接': 'https://example.com/list?page_num=1', '编号': '1' },
+      { '来源链接': 'https://example.com/list?page_num=2', '编号': '2' },
+      { '来源链接': 'https://example.com/list?page_num=3', '编号': '3' }
+    ],
+    reasons: ['Detected by protected SmartProxy resource']
+  };
+
+  const filtered = filterDetectedBoilerplateCandidates([pager, records]);
+
+  assert.deepEqual(filtered.map((candidate) => candidate.id), ['protected_smart_1']);
+});
+
 test('goal ranking keeps real search results above footer/header navigation', () => {
   const ranked = applyGoalScoresForTesting([
     {
@@ -1499,6 +1623,87 @@ test('detectPaginationForCandidates uses scroll only when the scroll probe sees 
   assert.match(withPagination.pagination.reasons.join(' '), /list-like item count grew/);
 });
 
+test('detectPaginationForCandidates does not attach global scroll to sidebar or ad widgets', async () => {
+  const main = {
+    id: 'search_results_1',
+    type: 'search_results',
+    title: 'Job rows',
+    confidence: 0.9,
+    selector: '#jobs',
+    xpath: '/html/body/main/section',
+    itemSelector: 'article.job',
+    itemXPath: '/html/body/main/section/article',
+    itemCount: 32,
+    fields: [
+      { name: '标题', kind: 'text', selector: 'h3', xpath: '/html/body/main/section/article/h3', relativeXPath: './h3', samples: ['Engineer'] },
+      { name: '标题链接', kind: 'href', selector: 'a', xpath: '/html/body/main/section/article/a', relativeXPath: './a', samples: ['https://example.com/jobs/1'] }
+    ],
+    sampleRows: [{ '标题': 'Engineer', '标题链接': 'https://example.com/jobs/1' }],
+    reasons: ['test'],
+    layout: {
+      role: 'main',
+      score: 0.86,
+      mainScore: 0.88,
+      sidebarPenalty: 0,
+      boilerplatePenalty: 0,
+      visualCoverage: 0.74,
+      textDensity: 0.4,
+      linkDensity: 0.3,
+      centerDistance: 0.12,
+      reasons: []
+    }
+  };
+  const ad = {
+    ...main,
+    id: 'protected_smart_ad',
+    title: 'Ad tags',
+    itemCount: 3,
+    fields: [
+      { name: '标题', kind: 'text', selector: 'a', xpath: '/html/body/aside/a', relativeXPath: './a', samples: ['Design', 'Sys Admin', 'VFX'] },
+      { name: '标签链接', kind: 'href', selector: 'a', xpath: '/html/body/aside/a', relativeXPath: './a', samples: ['https://example.com/tags/design'] }
+    ],
+    sampleRows: [{ '标题': 'Design', '标签链接': 'https://example.com/tags/design' }],
+    layout: {
+      role: 'ad',
+      score: 0.2,
+      mainScore: 0.2,
+      sidebarPenalty: 0.6,
+      boilerplatePenalty: 0.2,
+      visualCoverage: 0.04,
+      textDensity: 0.2,
+      linkDensity: 0.9,
+      centerDistance: 0.8,
+      reasons: []
+    }
+  };
+  const page = fakePaginationPage({
+    bodyHeight: 5200,
+    viewportHeight: 900,
+    itemXPath: main.itemXPath,
+    rows: Array.from({ length: main.itemCount }, (_, index) => ({
+      text: `Job ${index + 1}`,
+      rect: { left: 80, top: 100 + index * 90, right: 720, bottom: 160 + index * 90 },
+      children: []
+    }))
+  });
+
+  const [mainWithPagination, adWithPagination] = await detectPaginationForCandidatesForTesting(page, [main, ad], {
+    snapshots: [],
+    sawActiveLoadMore: false,
+    sawGrowth: true,
+    maxArticleLikeCount: 64,
+    maxContentHeight: 15000,
+    maxPageHeight: 7800,
+    grewArticleLikeCount: 32,
+    grewContentHeight: 7000,
+    grewPageHeight: 2400,
+    reachedBottom: false
+  });
+
+  assert.equal(mainWithPagination.pagination.type, 'scroll');
+  assert.equal(adWithPagination.pagination, undefined);
+});
+
 test('detectPaginationForCandidates does not infer scroll for already-complete large static lists', async () => {
   const candidate = {
     id: 'search_results_1',
@@ -1696,6 +1901,206 @@ test('detectPaginationForCandidates keeps reliable external numeric next paginat
   assert.match(withPagination.pagination.text, /2|下一页/);
 });
 
+test('detectPaginationForCandidates does not attach global next pager to sidebar candidates', async () => {
+  const main = {
+    id: 'search_results_1',
+    type: 'search_results',
+    title: 'Primary rows',
+    confidence: 0.9,
+    selector: '#results',
+    xpath: '/html/body/main/section',
+    itemSelector: 'article.result',
+    itemXPath: '/html/body/main/section/article',
+    itemCount: 25,
+    fields: [
+      { name: 'title', kind: 'text', selector: 'h3', xpath: '/html/body/main/section/article/h3', relativeXPath: './h3', samples: ['Alpha'] },
+      { name: 'url', kind: 'href', selector: 'a', xpath: '/html/body/main/section/article/a', relativeXPath: './a', samples: ['https://example.com/a'] }
+    ],
+    sampleRows: [{ title: 'Alpha', url: 'https://example.com/a' }],
+    reasons: ['test'],
+    layout: {
+      role: 'main',
+      score: 0.8,
+      mainScore: 0.8,
+      sidebarPenalty: 0,
+      boilerplatePenalty: 0,
+      visualCoverage: 0.6,
+      textDensity: 0.4,
+      linkDensity: 0.4,
+      centerDistance: 0.1,
+      reasons: []
+    }
+  };
+  const sidebar = {
+    ...main,
+    id: 'protected_smart_sidebar',
+    title: 'Sidebar links',
+    xpath: '/html/body/aside/ul/li',
+    itemXPath: '/html/body/aside/ul/li',
+    itemCount: 12,
+    sampleRows: [{ title: 'how-to document', url: 'https://example.com/howto' }],
+    layout: {
+      role: 'sidebar',
+      score: 0.35,
+      mainScore: 0.35,
+      sidebarPenalty: 0.52,
+      boilerplatePenalty: 0.05,
+      visualCoverage: 0.08,
+      textDensity: 0.2,
+      linkDensity: 0.9,
+      centerDistance: 0.74,
+      reasons: []
+    }
+  };
+  const rows = Array.from({ length: main.itemCount }, (_, index) => ({
+    text: `Result ${index + 1}`,
+    rect: { left: 80, top: 100 + index * 80, right: 720, bottom: 160 + index * 80 },
+    children: []
+  }));
+  const page = fakePaginationPage({
+    bodyHeight: 2600,
+    viewportHeight: 900,
+    itemXPath: main.itemXPath,
+    rows,
+    external: [
+      { text: '1', attrs: { className: 'page active', ariaCurrent: 'page' }, rect: { left: 300, top: 2220, right: 330, bottom: 2250 } },
+      { text: '2', attrs: { className: 'page' }, rect: { left: 340, top: 2220, right: 370, bottom: 2250 } },
+      { text: 'Next', attrs: { className: 'page next' }, rect: { left: 380, top: 2220, right: 450, bottom: 2250 } }
+    ]
+  });
+
+  const [mainWithPagination, sidebarWithPagination] = await detectPaginationForCandidatesForTesting(page, [main, sidebar]);
+
+  assert.equal(mainWithPagination.pagination.type, 'next_page');
+  assert.equal(sidebarWithPagination.pagination, undefined);
+});
+
+test('sanitizeCandidatePaginationByLayout removes global pagination from non-main candidates', () => {
+  const pagination = {
+    type: 'next_page',
+    xpath: '//a[normalize-space(.)="Next"]',
+    text: 'Next',
+    confidence: 0.94,
+    isAjax: false,
+    scope: 'global',
+    reasons: ['numeric pager sequence']
+  };
+  const main = {
+    id: 'main',
+    type: 'search_results',
+    title: 'Main list',
+    confidence: 0.9,
+    selector: '#main',
+    xpath: '/html/body/main/section',
+    itemSelector: 'article',
+    itemXPath: '/html/body/main/section/article',
+    itemCount: 25,
+    fields: [{ name: 'title', kind: 'text', selector: 'h3', xpath: '/html/body/main/section/article/h3', relativeXPath: './h3', samples: ['Alpha'] }],
+    sampleRows: [{ title: 'Alpha' }],
+    reasons: ['test'],
+    pagination: { ...pagination, scope: 'near_list' },
+    layout: {
+      role: 'main',
+      score: 0.8,
+      mainScore: 0.8,
+      sidebarPenalty: 0,
+      boilerplatePenalty: 0,
+      visualCoverage: 0.6,
+      textDensity: 0.4,
+      linkDensity: 0.4,
+      centerDistance: 0.1,
+      reasons: []
+    }
+  };
+  const sidebar = {
+    ...main,
+    id: 'sidebar',
+    title: 'Sidebar images',
+    itemCount: 16,
+    fields: [{ name: '图片', kind: 'src', selector: 'img', xpath: '/html/body/aside/img', relativeXPath: './img', samples: ['https://example.com/logo.png'] }],
+    sampleRows: [{ '图片': 'https://example.com/logo.png' }],
+    pagination,
+    layout: {
+      role: 'sidebar',
+      score: 0.35,
+      mainScore: 0.35,
+      sidebarPenalty: 0.52,
+      boilerplatePenalty: 0.05,
+      visualCoverage: 0.08,
+      textDensity: 0.2,
+      linkDensity: 0.9,
+      centerDistance: 0.74,
+      reasons: []
+    }
+  };
+  const footer = {
+    ...sidebar,
+    id: 'footer',
+    title: 'Footer links',
+    layout: {
+      ...sidebar.layout,
+      role: 'footer',
+      sidebarPenalty: 0,
+      boilerplatePenalty: 0.62
+    }
+  };
+
+  const [mainOut, sidebarOut, footerOut] = sanitizeCandidatePaginationByLayoutForTesting([main, sidebar, footer]);
+
+  assert.equal(mainOut.pagination.type, 'next_page');
+  assert.equal(sidebarOut.pagination, undefined);
+  assert.equal(footerOut.pagination, undefined);
+});
+
+test('detectPaginationForCandidates falls back to candidate-scoped bottom pager scan', async () => {
+  const candidate = {
+    id: 'protected_smart_1',
+    type: 'table',
+    title: 'Team table',
+    confidence: 0.9,
+    selector: '#teams',
+    xpath: '/html/body/main/table/tbody/tr',
+    itemSelector: 'tr.team',
+    itemXPath: '/html/body/main/table/tbody/tr',
+    itemCount: 25,
+    fields: [
+      { name: 'team', kind: 'text', selector: 'td.name', xpath: '/html/body/main/table/tbody/tr/td[1]', relativeXPath: './td[1]', samples: ['Boston Bruins'] },
+      { name: 'year', kind: 'text', selector: 'td.year', xpath: '/html/body/main/table/tbody/tr/td[2]', relativeXPath: './td[2]', samples: ['1990'] }
+    ],
+    sampleRows: [{ team: 'Boston Bruins', year: '1990' }],
+    reasons: ['test']
+  };
+  const rows = Array.from({ length: candidate.itemCount }, (_, index) => ({
+    tag: 'tr',
+    text: `Team ${index + 1} 1990`,
+    attrs: { className: 'team' },
+    rect: { left: 390, top: 500 + index * 37, right: 1530, bottom: 532 + index * 37 },
+    children: []
+  }));
+  const page = fakePaginationPage({
+    bodyHeight: 1800,
+    viewportHeight: 1200,
+    itemXPath: candidate.itemXPath,
+    rows,
+    external: [
+      ...Array.from({ length: 24 }, (_, index) => ({
+        tag: 'a',
+        text: String(index + 1),
+        attrs: { href: `https://example.com/forms/?page_num=${index + 1}`, className: index === 0 ? 'page active' : 'page' },
+        rect: { left: 405 + index * 36, top: 1460, right: 438 + index * 36, bottom: 1494 }
+      })),
+      { tag: 'a', text: '»', attrs: { href: 'https://example.com/forms/?page_num=2', className: 'page next', 'aria-label': 'Next' }, rect: { left: 405, top: 1494, right: 438, bottom: 1528 } }
+    ]
+  });
+
+  const [withPagination] = await detectPaginationForCandidatesForTesting(page, [candidate]);
+
+  assert.equal(withPagination.pagination.type, 'next_page');
+  assert.equal(withPagination.pagination.scope, 'near_list');
+  assert.match(withPagination.pagination.text, /»|2/);
+  assert.match(withPagination.pagination.reasons.join(' '), /candidate-scoped fallback pagination scan/);
+});
+
 test('detectPaginationForCandidates prefers bottom numeric pager over scroll fallback on long lists', async () => {
   const candidate = {
     id: 'search_results_1',
@@ -1784,6 +2189,54 @@ test('detectPaginationForCandidates finds cnblogs-style bottom pager after the p
   assert.equal(withPagination.pagination.type, 'next_page');
   assert.equal(withPagination.pagination.text, '>');
   assert.match(withPagination.pagination.reasons.join(' '), /numeric pager sequence|pager arrow after numeric pages/);
+});
+
+test('detectPaginationForCandidates finds compact sibling bottom numeric pager', async () => {
+  const candidate = {
+    id: 'search_results_1',
+    type: 'search_results',
+    title: 'Book results',
+    confidence: 0.9,
+    selector: '#results',
+    xpath: '/html/body/section',
+    itemSelector: 'article.book',
+    itemXPath: '/html/body/section/article',
+    itemCount: 20,
+    fields: [
+      { name: 'title', kind: 'text', selector: 'h3', xpath: '/html/body/section/article/h3', relativeXPath: './h3', samples: ['The Hobbit'] },
+      { name: 'url', kind: 'href', selector: 'a', xpath: '/html/body/section/article/a', relativeXPath: './a', samples: ['https://example.com/books/1'] },
+      { name: 'summary', kind: 'text', selector: 'p', xpath: '/html/body/section/article/p', relativeXPath: './p', samples: ['4.3 rating, 3809 want to read'] }
+    ],
+    sampleRows: [{ title: 'The Hobbit', url: 'https://example.com/books/1', summary: '4.3 rating, 3809 want to read' }],
+    reasons: ['test']
+  };
+  const rows = Array.from({ length: candidate.itemCount }, (_, index) => ({
+    text: `Book ${index + 1}`,
+    rect: { left: 170, top: 140 + index * 112, right: 760, bottom: 226 + index * 112 },
+    children: []
+  }));
+  const page = fakePaginationPage({
+    bodyHeight: 3300,
+    viewportHeight: 900,
+    itemXPath: candidate.itemXPath,
+    rows,
+    external: [
+      { text: '1', attrs: { className: 'current', ariaCurrent: 'page' }, rect: { left: 540, top: 2460, right: 558, bottom: 2482 } },
+      { text: '2', attrs: {}, rect: { left: 576, top: 2460, right: 594, bottom: 2482 } },
+      { text: '3', attrs: {}, rect: { left: 612, top: 2460, right: 630, bottom: 2482 } },
+      { text: '4', attrs: {}, rect: { left: 648, top: 2460, right: 666, bottom: 2482 } },
+      { text: '...', attrs: {}, rect: { left: 684, top: 2460, right: 710, bottom: 2482 } },
+      { text: '93', attrs: {}, rect: { left: 728, top: 2460, right: 752, bottom: 2482 } },
+      { text: '>', attrs: { href: 'https://example.com/search?page=2' }, rect: { left: 772, top: 2460, right: 790, bottom: 2482 } }
+    ]
+  });
+
+  const [withPagination] = await detectPaginationForCandidatesForTesting(page, [candidate]);
+
+  assert.equal(withPagination.pagination.type, 'next_page');
+  assert.equal(withPagination.pagination.scope, 'near_list');
+  assert.match(withPagination.pagination.text, /^(2|>)$/);
+  assert.match(withPagination.pagination.reasons.join(' '), /numeric pager sequence|pager arrow after numeric pages|candidate-scoped fallback/);
 });
 
 test('manual pagination options include cnblogs-style numeric pager arrow', async () => {
@@ -3007,6 +3460,106 @@ test('refineCandidateFieldsForTesting names icon-only engagement metrics by icon
   assert.equal(refined.fields.find((field) => field.name === 'shares')?.relativeXPath, './span[5]/span[1]');
 });
 
+test('augmentAdjacentMetadataFieldsForTesting adds split-row forum metadata', async () => {
+  const candidate = {
+    id: 'protected_smart_1',
+    type: 'search_results',
+    title: 'Split row stories',
+    confidence: 0.98,
+    selector: '',
+    xpath: '//table/tbody/tr[contains(@class,"item")]',
+    itemSelector: '',
+    itemXPath: '//table/tbody/tr[contains(@class,"item")]',
+    itemCount: 3,
+    fields: [
+      { name: '编号', kind: 'text', selector: '', xpath: '//table/tbody/tr/td[1]/span', relativeXPath: './td[1]/span[1]', samples: ['1.', '2.', '3.'] },
+      { name: '标题链接', kind: 'href', selector: '', xpath: '//table/tbody/tr/td[2]/a', relativeXPath: './td[2]/a[1]', samples: ['https://example.com/1'] },
+      { name: '标题', kind: 'text', selector: '', xpath: '//table/tbody/tr/td[2]/a', relativeXPath: './td[2]/a[1]', samples: ['Alpha launch'] }
+    ],
+    sampleRows: [
+      { '编号': '1.', '标题链接': 'https://example.com/1', '标题': 'Alpha launch' },
+      { '编号': '2.', '标题链接': 'https://example.com/2', '标题': 'Beta release' },
+      { '编号': '3.', '标题链接': 'https://example.com/3', '标题': 'Gamma notes' }
+    ],
+    reasons: ['Detected by protected SmartProxy resource']
+  };
+  const page = fakeRefinePage({
+    itemXPath: candidate.itemXPath,
+    itemRowIndexes: [0, 2, 4],
+    rows: [
+      storyTitleRow(0, '1.', 'Alpha launch', 'https://example.com/1'),
+      storyMetadataRow(0, '468 points', 'alice', '8 hours ago', '175 comments'),
+      storyTitleRow(1, '2.', 'Beta release', 'https://example.com/2'),
+      storyMetadataRow(1, '132 points', 'bob', '4 hours ago', '25 comments'),
+      storyTitleRow(2, '3.', 'Gamma notes', 'https://example.com/3'),
+      storyMetadataRow(2, '147 points', 'carol', '59 minutes ago', '29 comments')
+    ]
+  });
+
+  const [augmented] = await augmentAdjacentMetadataFieldsForTesting(page, [candidate]);
+
+  assert.deepEqual(augmented.fields.slice(-4).map((field) => field.name), ['score', 'author', 'date', 'comments']);
+  assert.equal(augmented.fields.find((field) => field.name === 'score')?.relativeXPath, './following-sibling::*[1]/td[2]/span[1]');
+  assert.equal(augmented.fields.find((field) => field.name === 'author')?.relativeXPath, './following-sibling::*[1]/td[2]/a[1]');
+  assert.equal(augmented.fields.find((field) => field.name === 'date')?.relativeXPath, './following-sibling::*[1]/td[2]/span[2]');
+  assert.equal(augmented.fields.find((field) => field.name === 'comments')?.relativeXPath, './following-sibling::*[1]/td[2]/a[2]');
+  assert.deepEqual(augmented.sampleRows[0], {
+    '编号': '1.',
+    '标题链接': 'https://example.com/1',
+    '标题': 'Alpha launch',
+    score: '468 points',
+    author: 'alice',
+    date: '8 hours ago',
+    comments: '175 comments'
+  });
+});
+
+test('augmentAdjacentMetadataFieldsForTesting keeps partial metadata rows aligned', async () => {
+  const candidate = {
+    id: 'protected_smart_1',
+    type: 'search_results',
+    title: 'Split row stories',
+    confidence: 0.98,
+    selector: '',
+    xpath: '//table/tbody/tr[contains(@class,"item")]',
+    itemSelector: '',
+    itemXPath: '//table/tbody/tr[contains(@class,"item")]',
+    itemCount: 4,
+    fields: [
+      { name: '编号', kind: 'text', selector: '', xpath: '//table/tbody/tr/td[1]/span', relativeXPath: './td[1]/span[1]', samples: ['1.', '2.', '3.'] },
+      { name: '标题链接', kind: 'href', selector: '', xpath: '//table/tbody/tr/td[2]/a', relativeXPath: './td[2]/a[1]', samples: ['https://example.com/1'] },
+      { name: '标题', kind: 'text', selector: '', xpath: '//table/tbody/tr/td[2]/a', relativeXPath: './td[2]/a[1]', samples: ['Alpha launch'] }
+    ],
+    sampleRows: [
+      { '编号': '1.', '标题链接': 'https://example.com/1', '标题': 'Alpha launch' },
+      { '编号': '2.', '标题链接': 'https://example.com/2', '标题': 'Beta release' },
+      { '编号': '3.', '标题链接': 'https://example.com/3', '标题': 'Gamma notes' },
+      { '编号': '4.', '标题链接': 'https://example.com/4', '标题': 'Delta notes' }
+    ],
+    reasons: ['Detected by protected SmartProxy resource']
+  };
+  const page = fakeRefinePage({
+    itemXPath: candidate.itemXPath,
+    itemRowIndexes: [0, 1, 3, 5],
+    rows: [
+      storyTitleRow(0, '1.', 'Alpha launch', 'https://example.com/1'),
+      storyTitleRow(1, '2.', 'Beta release', 'https://example.com/2'),
+      storyMetadataRow(1, '132 points', 'bob', '4 hours ago', '25 comments'),
+      storyTitleRow(2, '3.', 'Gamma notes', 'https://example.com/3'),
+      storyMetadataRow(2, '147 points', 'carol', '59 minutes ago', '29 comments'),
+      storyTitleRow(3, '4.', 'Delta notes', 'https://example.com/4'),
+      storyMetadataRow(3, '91 points', 'dana', '31 minutes ago', '11 comments')
+    ]
+  });
+
+  const [augmented] = await augmentAdjacentMetadataFieldsForTesting(page, [candidate]);
+
+  assert.equal(augmented.sampleRows[0].score, undefined);
+  assert.equal(augmented.sampleRows[1].score, '132 points');
+  assert.equal(augmented.sampleRows[1].author, 'bob');
+  assert.equal(augmented.sampleRows[2].author, 'carol');
+});
+
 test('buildTaskFromCandidate creates a local task JSON payload accepted by task provider shape', () => {
   const task = buildTaskFromCandidate({
     url: 'https://example.com/list',
@@ -3057,6 +3610,36 @@ test('buildTaskFromCandidate creates a local task JSON payload accepted by task 
   assert.match(task.xml, /ExtractHref/);
   assert.match(task.xml, /&lt;RelativeXpath&gt;\/a\[1\]&lt;\/RelativeXpath&gt;/);
   assert.doesNotMatch(task.xml, /&lt;RelativeXpath&gt;\.\/a\[1\]&lt;\/RelativeXpath&gt;/);
+});
+
+test('buildTaskFromCandidate preserves sibling-axis relative extraction fields', () => {
+  const task = buildTaskFromCandidate({
+    url: 'https://example.com/news',
+    taskId: 'detected_split_rows',
+    taskName: 'Detected Split Rows',
+    candidate: {
+      id: 'protected_smart_1',
+      type: 'search_results',
+      title: 'Split rows',
+      confidence: 0.9,
+      selector: '',
+      xpath: '//table/tbody/tr[contains(@class,"item")]',
+      itemSelector: '',
+      itemXPath: '//table/tbody/tr[contains(@class,"item")]',
+      itemCount: 3,
+      fields: [
+        { name: 'title', kind: 'text', selector: 'a', xpath: '//table/tbody/tr/td[2]/a', relativeXPath: './td[2]/a[1]', samples: ['Alpha'] },
+        { name: 'score', kind: 'text', selector: 'span', xpath: '//table/tbody/tr/following-sibling::*[1]/td[2]/span[1]', relativeXPath: './following-sibling::*[1]/td[2]/span[1]', samples: ['468 points'] }
+      ],
+      sampleRows: [{ title: 'Alpha', score: '468 points' }],
+      reasons: ['test']
+    }
+  });
+
+  assert.deepEqual(task.fieldNames, ['title', 'score']);
+  assert.match(task.xml, /&lt;Name&gt;score&lt;\/Name&gt;/);
+  assert.match(task.xml, /&lt;RelativeXpath&gt;following-sibling::\*\[1\]\/td\[2\]\/span\[1\]&lt;\/RelativeXpath&gt;/);
+  assert.doesNotMatch(task.xml, /&lt;RelativeXpath&gt;\/following-sibling::/);
 });
 
 test('buildTaskFromCandidate preserves search input and submit actions before extraction', () => {
@@ -4739,7 +5322,55 @@ function metricNode(iconClass, value, left, top) {
   };
 }
 
-function fakeRefinePage({ itemXPath, rows }) {
+function storyTitleRow(index, rank, title, href) {
+  const top = 100 + index * 90;
+  return {
+    tag: 'tr',
+    text: '',
+    attrs: { className: 'item' },
+    rect: { left: 60, top, right: 760, bottom: top + 34 },
+    children: [
+      {
+        tag: 'td',
+        text: '',
+        rect: { left: 60, top, right: 110, bottom: top + 34 },
+        children: [{ tag: 'span', text: rank, rect: { left: 70, top: top + 8, right: 96, bottom: top + 26 } }]
+      },
+      {
+        tag: 'td',
+        text: '',
+        rect: { left: 120, top, right: 760, bottom: top + 34 },
+        children: [{ tag: 'a', text: title, attrs: { href, className: 'title' }, rect: { left: 130, top: top + 8, right: 430, bottom: top + 26 } }]
+      }
+    ]
+  };
+}
+
+function storyMetadataRow(index, score, author, age, comments) {
+  const top = 134 + index * 90;
+  return {
+    tag: 'tr',
+    text: '',
+    attrs: { className: 'subtext' },
+    rect: { left: 60, top, right: 760, bottom: top + 28 },
+    children: [
+      { tag: 'td', text: '', rect: { left: 60, top, right: 110, bottom: top + 28 } },
+      {
+        tag: 'td',
+        text: '',
+        rect: { left: 120, top, right: 760, bottom: top + 28 },
+        children: [
+          { tag: 'span', text: score, attrs: { className: 'score' }, rect: { left: 130, top: top + 5, right: 205, bottom: top + 22 } },
+          { tag: 'a', text: author, attrs: { href: `https://example.com/user/${author}`, className: 'hnuser' }, rect: { left: 230, top: top + 5, right: 280, bottom: top + 22 } },
+          { tag: 'span', text: age, attrs: { className: 'age' }, rect: { left: 300, top: top + 5, right: 390, bottom: top + 22 } },
+          { tag: 'a', text: comments, attrs: { href: `https://example.com/item?id=${index + 1}`, className: 'comments' }, rect: { left: 430, top: top + 5, right: 540, bottom: top + 22 } }
+        ]
+      }
+    ]
+  };
+}
+
+function fakeRefinePage({ itemXPath, rows, itemRowIndexes }) {
   return {
     async evaluate(fn, input) {
       const previousWindow = globalThis.window;
@@ -4838,6 +5469,7 @@ function fakeRefinePage({ itemXPath, rows }) {
       }
       const flatten = (items) => items.flatMap((item) => [item, ...flatten(item.children)]);
       const rowElements = rows.map((row) => new FakeElement(row));
+      const itemRows = Array.isArray(itemRowIndexes) ? itemRowIndexes.map((index) => rowElements[index]).filter(Boolean) : rowElements;
       const body = new FakeElement({
         tag: 'body',
         rect: { left: 0, top: 0, right: 1200, bottom: 2000 },
@@ -4866,7 +5498,7 @@ function fakeRefinePage({ itemXPath, rows }) {
         evaluate(path, context) {
           const root = context && context !== document ? context : body;
           const snapshot = path === itemXPath
-            ? rowElements
+            ? itemRows
             : evaluateSimplePath(path, root);
           return {
             snapshotLength: snapshot.length,
@@ -4938,6 +5570,16 @@ function evaluateSimplePath(path, context) {
   if (!path) return [];
   if (path === '.') return [context];
   const relative = path.replace(/^\.\//, '').replace(/^\.\/\//, '').replace(/^\/html\[1\]\/body\[1\]\//, '');
+  const siblingMatch = relative.match(/^following-sibling::\*\[(\d+)\](?:\/(.+))?$/);
+  if (siblingMatch) {
+    const parent = context.parentElement;
+    if (!parent) return [];
+    const siblings = parent.children || [];
+    const index = siblings.indexOf(context);
+    const target = siblings[index + Number(siblingMatch[1])];
+    if (!target) return [];
+    return siblingMatch[2] ? evaluateSimplePath(siblingMatch[2], target) : [target];
+  }
   if (relative.includes('//')) {
     const tagMatch = relative.match(/\/\/([a-zA-Z][\w-]*)(?:\[(\d+)\])?$/);
     if (!tagMatch) return [];
