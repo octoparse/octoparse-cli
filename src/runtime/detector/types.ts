@@ -60,6 +60,7 @@ export interface DetectedPopupDismissal {
   text?: string;
   confidence: number;
   removed: boolean;
+  confirmedByUser?: boolean;
   reasons: string[];
 }
 

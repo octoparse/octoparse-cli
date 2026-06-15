@@ -874,7 +874,7 @@ function clickGenericLoadMoreActionXml(): string {
 
 function popupDismissalActionXml(items: DetectedPopupDismissal[]): string[] {
   return items
-    .filter((item) => item.action === 'click' && item.xpath && item.type !== 'captcha' && item.type !== 'paywall')
+    .filter((item) => item.action === 'click' && item.xpath && item.type !== 'captcha' && (item.type !== 'paywall' || item.confirmedByUser))
     .slice(0, 2)
     .map((item, index) => `<ns0:ClickAction ${attrs({
       'x:Name': `DismissPopup${index + 1}`,

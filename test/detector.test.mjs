@@ -3810,6 +3810,73 @@ test('buildTaskFromCandidate inserts safe popup dismissal clicks after navigatio
   assert.equal(task.detection.popupDismissals.length, 2);
 });
 
+test('buildTaskFromCandidate only emits paywall dismissal clicks after manual confirmation', () => {
+  const candidate = {
+    id: 'search_results_1',
+    type: 'search_results',
+    title: 'Search/list results',
+    confidence: 0.8,
+    selector: 'main',
+    xpath: '/html[1]/body[1]/main[1]',
+    itemSelector: 'main > div.card:nth-of-type(1)',
+    itemXPath: '/html[1]/body[1]/main[1]/div',
+    itemCount: 3,
+    fields: [
+      {
+        name: 'title',
+        kind: 'text',
+        selector: 'a',
+        xpath: '/html[1]/body[1]/main[1]/div//a[1]',
+        relativeXPath: './a[1]',
+        samples: ['Alpha']
+      }
+    ],
+    sampleRows: [{ title: 'Alpha' }],
+    reasons: ['test']
+  };
+
+  const unconfirmed = buildTaskFromCandidate({
+    url: 'https://example.com/list',
+    taskId: 'detected_popup_unconfirmed',
+    taskName: 'Detected Popup Unconfirmed',
+    candidate,
+    popupDismissals: [
+      {
+        type: 'paywall',
+        action: 'click',
+        xpath: '/html[1]/body[1]/div[2]/button[1]',
+        text: '×',
+        confidence: 0.9,
+        removed: true,
+        reasons: ['auto detected paywall']
+      }
+    ]
+  });
+
+  const confirmed = buildTaskFromCandidate({
+    url: 'https://example.com/list',
+    taskId: 'detected_popup_confirmed',
+    taskName: 'Detected Popup Confirmed',
+    candidate,
+    popupDismissals: [
+      {
+        type: 'paywall',
+        action: 'click',
+        xpath: '/html[1]/body[1]/div[2]/button[1]',
+        text: '×',
+        confidence: 0.9,
+        removed: true,
+        confirmedByUser: true,
+        reasons: ['confirmed by manual popup prompt']
+      }
+    ]
+  });
+
+  assert.doesNotMatch(unconfirmed.xml, /Dismiss paywall popup/);
+  assert.match(confirmed.xml, /x:Name="DismissPopup1"/);
+  assert.match(confirmed.xml, /Caption="Dismiss paywall popup"/);
+});
+
 test('buildTaskFromCandidate stores only a browser session reference', () => {
   const task = buildTaskFromCandidate({
     url: 'https://example.com/list',
