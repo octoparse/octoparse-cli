@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,6 +11,8 @@ import { DetectionLoginRequiredError, detectPage } from '../runtime/detector/pag
 import { buildTaskFromCandidate } from '../runtime/detector/xml.js';
 import { createChromeProgressReporter } from '../runtime/chrome-progress.js';
 import { LINUX_ARM64_UNSUPPORTED_CODE, LINUX_ARM64_UNSUPPORTED_MESSAGE, isLocalChromeRuntimeSupported } from '../runtime/platform-support.js';
+import { resolveAuth } from '../runtime/auth.js';
+import { saveDetectedTaskToCloud, type CloudSavableTask } from '../runtime/task-cloud-save.js';
 import type { PageDetectionResult, DetectedAgentScreenshot, DetectedBox, DetectedCandidate, DetectedDetailPlan, DetectedField, DetectedFieldDiagnostics, DetectedPagination, DetectedSearchPlan } from '../runtime/detector/types.js';
 import { safeFileName } from '../runtime/naming.js';
 import { EXIT_OK, EXIT_OPERATION_FAILED, EXIT_RUNTIME_FAILED } from '../types.js';
@@ -188,6 +191,8 @@ interface AgentDetailPlan {
   fields?: AgentFieldPlan[];
 }
 
+const SKIP_DETECT_CLOUD_SAVE_ENV = 'OCTOPARSE_DETECT_SKIP_CLOUD_SAVE';
+
 export async function detectCommand(args: string[]): Promise<number> {
   const json = hasFlag(args, '--json');
   const quiet = hasFlag(args, '--quiet');
@@ -344,11 +349,11 @@ export async function detectCommand(args: string[]): Promise<number> {
         else console.error(message);
         return EXIT_OPERATION_FAILED;
       }
-      const taskId = valueAfter(args, '--task-id') ?? `detected_${safeFileName(new URL(result.finalUrl).hostname || 'site')}`;
-      const taskName = valueAfter(args, '--task-name') ?? `Detected ${new URL(result.finalUrl).hostname || result.finalUrl}`;
+      const taskId = valueAfter(args, '--task-id') ?? randomUUID();
+      const taskName = valueAfter(args, '--task-name') ?? result.finalUrl;
       const task = buildTaskFromCandidate({ url: result.finalUrl, taskId, taskName, candidate, popupDismissals: result.popupDismissals, session: result.savedSession, searchPlan: result.searchPlan });
       const file = outputFile ? resolve(outputFile) : resolveAvailableDetectedTaskFile(taskId);
-      await writeFile(file, `${JSON.stringify(task, null, 2)}\n`, 'utf8');
+      await persistGeneratedTask({ task, file, args });
       const data = { ...result, generatedTask: { file, taskId, taskName, candidateId: candidate.id, fieldNames: task.fieldNames, pagination: candidate.pagination, session: task.detection.session } };
       if (json && !quiet) printEnvelope(true, data);
       else if (!quiet) {
@@ -442,12 +447,12 @@ async function runInlineAgentDetect(options: {
       return EXIT_OPERATION_FAILED;
     }
 
-    const taskId = valueAfter(options.args, '--task-id') ?? plan.taskId ?? `detected_${safeFileName(new URL(context.finalUrl).hostname || 'site')}`;
-    const taskName = valueAfter(options.args, '--task-name') ?? plan.taskName ?? `Detected ${new URL(context.finalUrl).hostname || context.finalUrl}`;
+    const taskId = valueAfter(options.args, '--task-id') ?? plan.taskId ?? randomUUID();
+    const taskName = valueAfter(options.args, '--task-name') ?? plan.taskName ?? context.finalUrl;
     const task = buildTaskFromAgentPlan({ context, plan, taskId, taskName });
     const outputFile = valueAfter(options.args, '--output');
     const file = outputFile ? resolve(outputFile) : resolveAvailableDetectedTaskFile(taskId);
-    await writeFile(file, `${JSON.stringify(task, null, 2)}\n`, 'utf8');
+    await persistGeneratedTask({ task, file, args: options.args });
 
     const sampleRows = parseOptionalPositiveInt(valueAfter(options.args, '--run-sample'));
     const sampleRun = sampleRows
@@ -631,12 +636,12 @@ async function applyAgentPlanCommand(args: string[], json: boolean, quiet: boole
     const planPath = resolve(planFile);
     const plan = JSON.parse(await readFile(planPath, 'utf8')) as AgentPlan;
     const context = await resolveAgentContext(plan, valueAfter(args, '--agent-context'), dirname(planPath));
-    const taskId = valueAfter(args, '--task-id') ?? plan.taskId ?? `detected_${safeFileName(new URL(context.finalUrl).hostname || 'site')}`;
-    const taskName = valueAfter(args, '--task-name') ?? plan.taskName ?? `Detected ${new URL(context.finalUrl).hostname || context.finalUrl}`;
+    const taskId = valueAfter(args, '--task-id') ?? plan.taskId ?? randomUUID();
+    const taskName = valueAfter(args, '--task-name') ?? plan.taskName ?? context.finalUrl;
     const task = buildTaskFromAgentPlan({ context, plan, taskId, taskName });
     const outputFile = valueAfter(args, '--output');
     const file = outputFile ? resolve(outputFile) : resolveAvailableDetectedTaskFile(taskId);
-    await writeFile(file, `${JSON.stringify(task, null, 2)}\n`, 'utf8');
+    await persistGeneratedTask({ task, file, args });
     const data = {
       generatedTask: {
         file,
@@ -728,6 +733,26 @@ async function confirmAgentPreview(preview: AgentPlanPreview, screenshot: Detect
 function agentFiles(args: string[], contextFile: string, planFile: string): { contextFile?: string; planFile?: string } | undefined {
   if (!hasFlag(args, '--keep-agent-files')) return undefined;
   return { contextFile, planFile };
+}
+
+async function persistGeneratedTask(options: {
+  task: CloudSavableTask;
+  file: string;
+  args: string[];
+}): Promise<void> {
+  await writeFile(options.file, `${JSON.stringify(options.task, null, 2)}\n`, 'utf8');
+  if (process.env[SKIP_DETECT_CLOUD_SAVE_ENV] === '1') return;
+
+  const auth = await resolveAuth();
+  if (!auth.credential) {
+    throw new Error('Task was written to the local file, but cloud saving requires authentication. Run "octoparse auth login" and try again.');
+  }
+
+  await saveDetectedTaskToCloud({
+    auth: auth.credential,
+    baseUrl: valueAfter(options.args, '--api-base-url'),
+    task: options.task
+  });
 }
 
 async function previewAgentPlanCommand(args: string[], json: boolean, quiet: boolean): Promise<number> {
@@ -1292,7 +1317,15 @@ export async function detectUrlCommand(url: string | undefined, args: string[]):
     '--output',
     taskFile
   ];
-  const detectExit = await detectCommand(detectArgs);
+  const previousSkipCloudSave = process.env[SKIP_DETECT_CLOUD_SAVE_ENV];
+  process.env[SKIP_DETECT_CLOUD_SAVE_ENV] = '1';
+  let detectExit: number;
+  try {
+    detectExit = await detectCommand(detectArgs);
+  } finally {
+    if (previousSkipCloudSave === undefined) delete process.env[SKIP_DETECT_CLOUD_SAVE_ENV];
+    else process.env[SKIP_DETECT_CLOUD_SAVE_ENV] = previousSkipCloudSave;
+  }
   if (detectExit !== EXIT_OK) return detectExit;
 
   const task = JSON.parse(await readFile(taskFile, 'utf8')) as { taskId: string };

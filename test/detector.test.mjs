@@ -5,10 +5,12 @@ import { access, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { mock, test } from 'node:test';
+import { gunzipSync } from 'node:zlib';
 import { buildAgentContextForTesting, buildTaskFromAgentPlan, previewAgentPlanForTesting, detectCommand, detectUrlCommand, resolveAgentScreenshotPathForTesting, resolveAvailableDetectedTaskFile, runInlineAgentDetectForTesting, splitRunUrlArgs } from '../dist/commands/detect.js';
 import { EngineHost } from '../dist/runtime/engine-host.js';
 import { setEngineHostFactoryForTesting } from '../dist/commands/run.js';
 import { browserSessionPath, loadBrowserSession, saveBrowserSession } from '../dist/runtime/browser-session.js';
+import { detectedTaskToCloudTaskInfo, encodeTaskXml } from '../dist/runtime/task-cloud-save.js';
 import { hasLinuxDisplayEnvironment, requiresVirtualDisplay } from '../dist/runtime/virtual-display.js';
 import { applyGoalScoresForTesting, augmentAdjacentMetadataFieldsForTesting, dedupeEquivalentCandidates, detectInteractivePaginationOptionsForTesting, detectPageObstructionsForTesting, detectPaginationForCandidatesForTesting, detectSearchResultBlocksForTesting, dismissPageObstructionsForTesting, filterDetectedBoilerplateCandidates, findSearchInputCandidatesForTesting, isPlausiblePaginationOptionForTesting, pageLooksLikeSearchResultForTesting, preferredPaginationForTesting, refineCandidateFieldsForTesting, resetManualOverlayHintKeysForTesting, resolveSearchSubmitButtonByGeometryForTesting, resolveSearchSubmitButtonForTesting, sanitizeCandidatePaginationByLayoutForTesting, scoreSearchResultPageForTesting, selectDetailUrlFieldForTesting, shouldPromptForLoginInterventionForTesting, writeManualOverlayHintOnceForTesting } from '../dist/runtime/detector/page-detector.js';
 import { protectedSmartResultToCandidatesForTesting } from '../dist/runtime/detector/protected-smart.js';
@@ -48,6 +50,33 @@ test('resolveAgentScreenshotPathForTesting enables default full-page screenshots
   } finally {
     chdir(previousCwd);
   }
+});
+
+test('detectedTaskToCloudTaskInfo uses client-compatible compressed xml payload', async () => {
+  const xml = '<ns0:RootAction useKernelBrowser="false"><x>Title</x></ns0:RootAction>';
+  const taskInfo = detectedTaskToCloudTaskInfo({
+    taskId: 'detected_cloud',
+    taskName: 'Detected Cloud',
+    xml,
+    disableImage: true,
+    disableAD: true,
+    workflowSetting: { repeatPageLoopCount: 12 }
+  }, 'user-1');
+  const compressed = Buffer.from(String(taskInfo.xoml), 'base64');
+  assert.equal(compressed.readInt32LE(0), compressed.byteLength - 4);
+  assert.equal(gunzipSync(compressed.subarray(4)).toString('ucs2'), xml);
+  assert.equal(taskInfo.taskId, 'detected_cloud');
+  assert.equal(taskInfo.taskName, 'Detected Cloud');
+  assert.equal(taskInfo.taskGroupId, 1);
+  assert.equal(taskInfo.userId, 'user-1');
+  assert.equal(taskInfo.author, 'user-1');
+  assert.equal(taskInfo.status, 1);
+  assert.equal(taskInfo.taskType, 1);
+  assert.equal(taskInfo.workFlowType, 1);
+  assert.equal(taskInfo.disableImage, true);
+  assert.equal(taskInfo.adBlockEnable, true);
+  assert.deepEqual(taskInfo.workflowSetting, { repeatPageLoopCount: 12 });
+  assert.equal(encodeTaskXml(xml), taskInfo.xoml);
 });
 
 test('virtual display detection identifies Linux servers without a display', () => {
@@ -3601,9 +3630,12 @@ test('buildTaskFromCandidate creates a local task JSON payload accepted by task 
   assert.equal(task.taskId, 'detected_example');
   assert.deepEqual(task.fieldNames, ['title', 'url']);
   assert.match(task.xml, /<ns0:NavigateAction/);
+  assert.match(task.xml, /<ns0:NavigateAction[^>]*x:Name="Navigate1"[^>]*Name="Navigate1"/);
   assert.match(task.xml, /<ns0:LoopAction/);
+  assert.match(task.xml, /<ns0:LoopAction[^>]*x:Name="LoopItems"[^>]*Name="LoopItems"/);
   assert.match(task.xml, /LoopType="VarilableItemList"/);
   assert.match(task.xml, /<ns0:ExtractDataAction/);
+  assert.match(task.xml, /<ns0:ExtractDataAction[^>]*x:Name="ExtractItems"[^>]*Name="ExtractItems"/);
   assert.match(task.xml, /&lt;Name&gt;title&lt;\/Name&gt;/);
   assert.match(task.xml, /&lt;ExtractType&gt;ExtractText&lt;\/ExtractType&gt;/);
   assert.match(task.xml, /&lt;Name&gt;url&lt;\/Name&gt;/);
@@ -4339,6 +4371,10 @@ test('runInlineAgentDetectForTesting lets an external command generate and apply
   const agentScript = join(dir, 'agent.mjs');
   const taskFile = join(dir, 'task.json');
   const seenWorkDirFile = join(dir, 'seen-workdir.txt');
+  const originalFetch = globalThis.fetch;
+  const originalApiKey = process.env.OCTO_ENGINE_API_KEY;
+  const originalBaseUrl = process.env.OCTO_ENGINE_API_BASE_URL;
+  const saveRequests = [];
   await writeFile(agentScript, `
 import { readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
@@ -4377,6 +4413,9 @@ await writeFile(process.env.OCTOPARSE_AGENT_PLAN, JSON.stringify(plan, null, 2))
 
   try {
     chdir(dir);
+    process.env.OCTO_ENGINE_API_KEY = 'detect-save-key';
+    process.env.OCTO_ENGINE_API_BASE_URL = 'https://example.invalid';
+    globalThis.fetch = mockDetectedTaskCloudSave(saveRequests);
     const code = await runInlineAgentDetectForTesting({
       args: ['--agent-command', `${process.execPath} ${agentScript}`, '--yes', '--output', taskFile],
       quiet: true,
@@ -4426,10 +4465,23 @@ await writeFile(process.env.OCTOPARSE_AGENT_PLAN, JSON.stringify(plan, null, 2))
     assert.equal(task.detection.candidateId, 'search_results_1');
     assert.equal(task.detection.selectionSource, undefined);
     assert.doesNotMatch(task.xml, /Name&gt;summary/);
+    assert.equal(saveRequests.length, 1);
+    assert.match(saveRequests[0].body.taskId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    assert.equal(saveRequests[0].body.taskName, 'https://example.com/list');
+    assert.equal(saveRequests[0].body.taskGroupId, 23);
+    assert.equal(saveRequests[0].headers['x-api-key'], 'detect-save-key');
+    const cloudXml = decodeCloudTaskXml(saveRequests[0].body.xoml);
+    assert.equal(cloudXml, task.xml);
+    assert.match(cloudXml, /<ns0:NavigateAction[^>]*x:Name="Navigate1"[^>]*Name="Navigate1"/);
     const seenWorkDir = await readFile(seenWorkDirFile, 'utf8');
     await assert.rejects(access(seenWorkDir), { code: 'ENOENT' });
   } finally {
     chdir(previousCwd);
+    globalThis.fetch = originalFetch;
+    if (originalApiKey === undefined) delete process.env.OCTO_ENGINE_API_KEY;
+    else process.env.OCTO_ENGINE_API_KEY = originalApiKey;
+    if (originalBaseUrl === undefined) delete process.env.OCTO_ENGINE_API_BASE_URL;
+    else process.env.OCTO_ENGINE_API_BASE_URL = originalBaseUrl;
   }
 });
 
@@ -4517,10 +4569,7 @@ await writeFile(process.env.OCTOPARSE_AGENT_PLAN, JSON.stringify({
   try {
     chdir(dir);
     process.env.OCTO_ENGINE_API_KEY = 'runtime-key';
-    globalThis.fetch = async () => new Response(JSON.stringify({ isSuccess: false, error: 'unused' }), {
-      status: 404,
-      headers: { 'content-type': 'application/json' }
-    });
+    globalThis.fetch = mockDetectedTaskCloudSave([]);
     setEngineHostFactoryForTesting(() => new EngineHost({
       default: FakeWorkflow,
       WorkflowEvents: workflowEvents,
@@ -6243,4 +6292,57 @@ function evaluateFakeAbsoluteXPath(path, body) {
     current = next;
   }
   return current;
+}
+
+function mockDetectedTaskCloudSave(saveRequests) {
+  return async (url, init = {}) => {
+    const endpoint = new URL(String(url)).pathname;
+    if (endpoint === '/api/account/getAccount') {
+      return new Response(JSON.stringify({
+        isSuccess: true,
+        data: {
+          userId: 'user_detect_save',
+          email: 'detect@example.com'
+        }
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    if (endpoint === '/api/TaskGroup/Default') {
+      return new Response(JSON.stringify({
+        isSuccess: true,
+        data: 23
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    if (endpoint === '/api/task/saveTaskInfo') {
+      const body = JSON.parse(String(init.body ?? '{}'));
+      saveRequests.push({
+        headers: init.headers ?? {},
+        body
+      });
+      return new Response(JSON.stringify({
+        isSuccess: true,
+        data: 1,
+        taskCount: 1,
+        taskCountLimit: 100
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    return new Response(JSON.stringify({ isSuccess: true, data: {} }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+}
+
+function decodeCloudTaskXml(xoml) {
+  const compressed = Buffer.from(String(xoml), 'base64');
+  assert.equal(compressed.readInt32LE(0), compressed.byteLength - 4);
+  return gunzipSync(compressed.subarray(4)).toString('ucs2');
 }

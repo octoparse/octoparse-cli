@@ -196,7 +196,7 @@ async function main(argv: string[]): Promise<number> {
 
 function requiresAuthentication(argv: string[]): boolean {
   const [command] = argv;
-  if (command === 'detect' && (hasFlagWithValue(argv, '--preview-agent-plan') || hasFlagWithValue(argv, '--apply-agent-plan'))) {
+  if (command === 'detect' && hasFlagWithValue(argv, '--preview-agent-plan')) {
     return false;
   }
   return command === 'task'

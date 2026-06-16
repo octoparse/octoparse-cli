@@ -10,7 +10,7 @@ import { promisify } from 'node:util';
 import { authCommand, createWindowsUrlLauncherFile } from '../dist/commands/auth.js';
 import { browserDoctorCommand } from '../dist/commands/doctor.js';
 import { cloudHistory } from '../dist/commands/cloud.js';
-import { ApiRequestError, fetchAccountInfo, validateApiKey } from '../dist/runtime/api-client.js';
+import { ApiRequestError, fetchAccountInfo, fetchUserDefaultTaskGroupId, saveTaskInfo, validateApiKey } from '../dist/runtime/api-client.js';
 import { DEFAULT_OAUTH_REDIRECT_URI, exchangeCodeForToken, runOAuthLogin } from '../dist/runtime/oauth.js';
 import { injectGlobalCookie, localDataExportCommand, runTask, setEngineHostFactoryForTesting } from '../dist/commands/run.js';
 import { EngineHost } from '../dist/runtime/engine-host.js';
@@ -488,6 +488,77 @@ test('account info accepts OAuth bearer credential', async () => {
     assert.equal(result.data.userId, 'u_bearer');
     assert.equal(seen[0].headers.Authorization, 'Bearer oauth-token');
     assert.equal(seen[0].headers['x-api-key'], undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('saveTaskInfo posts generated tasks with API key authentication', async () => {
+  const originalFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url: String(url), init });
+    return new Response(JSON.stringify({
+      isSuccess: true,
+      data: 1,
+      taskCount: 12,
+      taskCountLimit: 100
+    }), {
+      status: 200,
+      statusText: 'OK',
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+
+  try {
+    const result = await saveTaskInfo({
+      auth: { type: 'apiKey', value: 'save-key' },
+      baseUrl: 'https://example.invalid',
+      taskInfo: {
+        taskId: 'detected_save',
+        taskName: 'Detected Save',
+        xoml: 'compressed'
+      }
+    });
+    assert.equal(result.status, 1);
+    assert.equal(result.taskCount, 12);
+    assert.equal(result.taskCountLimit, 100);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].url, 'https://example.invalid/api/task/saveTaskInfo');
+    assert.equal(seen[0].init.method, 'POST');
+    assert.equal(seen[0].init.headers['x-api-key'], 'save-key');
+    assert.equal(seen[0].init.headers.Authorization, undefined);
+    assert.equal(JSON.parse(seen[0].init.body).taskId, 'detected_save');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('fetchUserDefaultTaskGroupId reads the client default group endpoint', async () => {
+  const originalFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url: String(url), init });
+    return new Response(JSON.stringify({
+      isSuccess: true,
+      data: 23
+    }), {
+      status: 200,
+      statusText: 'OK',
+      headers: { 'content-type': 'application/json' }
+    });
+  };
+
+  try {
+    const result = await fetchUserDefaultTaskGroupId({
+      auth: { type: 'apiKey', value: 'group-key' },
+      baseUrl: 'https://example.invalid'
+    });
+    assert.equal(result, 23);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].url, 'https://example.invalid/api/TaskGroup/Default');
+    assert.equal(seen[0].init.method, 'GET');
+    assert.equal(seen[0].init.headers['x-api-key'], 'group-key');
   } finally {
     globalThis.fetch = originalFetch;
   }

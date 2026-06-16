@@ -145,6 +145,15 @@ export interface ClientSourceResult {
   raw: unknown;
 }
 
+export interface TaskSaveResult {
+  baseUrl: string;
+  endpoint: string;
+  status: number;
+  taskCount: number;
+  taskCountLimit: number;
+  raw: unknown;
+}
+
 export class ApiRequestError extends Error {
   constructor(
     message: string,
@@ -444,6 +453,42 @@ export async function fetchTaskInfo(options: { apiKey?: string; auth?: AuthCrede
     throw new ApiRequestError(`Task not found or invalid response: ${options.taskId}`, 'TASK_NOT_FOUND');
   }
   return task as RemoteTaskInfo;
+}
+
+export async function fetchUserDefaultTaskGroupId(options: { apiKey?: string; auth?: AuthCredential; baseUrl?: string }): Promise<number | undefined> {
+  const result = await apiResult<Record<string, unknown> | number>({
+    apiKey: options.apiKey,
+    auth: options.auth,
+    baseUrl: options.baseUrl,
+    endpoint: '/api/TaskGroup/Default',
+    method: 'GET'
+  });
+  return numberValue(result.data) ?? numberValue(getRecord(result.data)?.data);
+}
+
+export async function saveTaskInfo(options: {
+  apiKey?: string;
+  auth?: AuthCredential;
+  baseUrl?: string;
+  taskInfo: Record<string, unknown>;
+}): Promise<TaskSaveResult> {
+  const result = await apiResult<Record<string, unknown> | number>({
+    apiKey: options.apiKey,
+    auth: options.auth,
+    baseUrl: options.baseUrl,
+    endpoint: '/api/task/saveTaskInfo',
+    method: 'POST',
+    body: options.taskInfo
+  });
+  const data = getRecord(result.data);
+  return {
+    baseUrl: result.baseUrl,
+    endpoint: result.endpoint,
+    status: numberValue(result.data) ?? numberValue(data?.data) ?? numberValue(data?.status) ?? 0,
+    taskCount: numberValue(getRecord(result.raw)?.taskCount) ?? 0,
+    taskCountLimit: numberValue(getRecord(result.raw)?.taskCountLimit) ?? 0,
+    raw: result.raw
+  };
 }
 
 export async function startCloudTask(options: { apiKey?: string; auth?: AuthCredential; taskId: string; baseUrl?: string }): Promise<ApiResult> {
