@@ -1542,6 +1542,22 @@ test('detected browser session cookies are injected into runtime task xml and xo
   }
 });
 
+test('local run sanitizes URL-like task names before passing them to runtime', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'octoparse-url-task-name-'));
+  const taskFile = join(root, 'task.json');
+  const minimalTask = JSON.parse(await readFile('examples/minimal-task.json', 'utf8'));
+  await writeFile(taskFile, JSON.stringify({
+    ...minimalTask,
+    taskId: 'url-task-name',
+    taskName: 'https://www.gc-zb.com/search/index.html'
+  }));
+
+  const result = await runWithFakeRuntimeEvent('url-task-name', { taskFile });
+  assert.equal(result.code, 0);
+  assert.equal(result.workflowTask.taskName, 'www.gc-zb.com_search_index.html');
+  assert.doesNotMatch(result.workflowTask.taskName, /[<>:"/\\|?*]/);
+});
+
 test('task list text output hides internal workflow metadata', () => {
   const line = formatTaskListLine({
     taskId: 'task-1',

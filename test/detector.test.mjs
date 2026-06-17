@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { mock, test } from 'node:test';
 import { gunzipSync } from 'node:zlib';
-import { buildAgentContextForTesting, buildTaskFromAgentPlan, previewAgentPlanForTesting, detectCommand, detectUrlCommand, resolveAgentScreenshotPathForTesting, resolveAvailableDetectedTaskFile, runInlineAgentDetectForTesting, splitRunUrlArgs } from '../dist/commands/detect.js';
+import { buildAgentContextForTesting, buildTaskFromAgentPlan, previewAgentPlanForTesting, defaultDetectedTaskNameForTesting, detectCommand, detectUrlCommand, resolveAgentScreenshotPathForTesting, resolveAvailableDetectedTaskFile, runInlineAgentDetectForTesting, splitRunUrlArgs } from '../dist/commands/detect.js';
 import { EngineHost } from '../dist/runtime/engine-host.js';
 import { setEngineHostFactoryForTesting } from '../dist/commands/run.js';
 import { browserSessionPath, loadBrowserSession, saveBrowserSession } from '../dist/runtime/browser-session.js';
@@ -27,6 +27,18 @@ test('resolveAvailableDetectedTaskFile creates a default file without overwritin
   } finally {
     chdir(previousCwd);
   }
+});
+
+test('defaultDetectedTaskNameForTesting derives a Windows-safe name from URL without protocol', () => {
+  assert.equal(
+    defaultDetectedTaskNameForTesting('https://www.gc-zb.com/search/index.html'),
+    'www.gc-zb.com_search_index.html'
+  );
+  assert.equal(
+    defaultDetectedTaskNameForTesting('http://example.com/search?q=abc'),
+    'example.com_search_q=abc'
+  );
+  assert.doesNotMatch(defaultDetectedTaskNameForTesting('https://example.com/a/b'), /https?:|[\\/]/);
 });
 
 test('resolveAgentScreenshotPathForTesting enables default full-page screenshots for agent workflows', async () => {
@@ -4467,7 +4479,7 @@ await writeFile(process.env.OCTOPARSE_AGENT_PLAN, JSON.stringify(plan, null, 2))
     assert.doesNotMatch(task.xml, /Name&gt;summary/);
     assert.equal(saveRequests.length, 1);
     assert.match(saveRequests[0].body.taskId, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-    assert.equal(saveRequests[0].body.taskName, 'https://example.com/list');
+    assert.equal(saveRequests[0].body.taskName, 'example.com_list');
     assert.equal(saveRequests[0].body.taskGroupId, 23);
     assert.equal(saveRequests[0].headers['x-api-key'], 'detect-save-key');
     const cloudXml = decodeCloudTaskXml(saveRequests[0].body.xoml);

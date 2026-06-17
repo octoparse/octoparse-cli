@@ -28,6 +28,7 @@ import {
 import { formatChromeResolveStatus, type ChromeResolveStatus } from './chrome-progress.js';
 import { maybePrintRuntimeSecurityNotice } from './security-notice.js';
 import { startVirtualDisplayIfNeeded, type VirtualDisplayHandle } from './virtual-display.js';
+import { safeTaskName } from './naming.js';
 
 const require = createRequire(import.meta.url);
 const defaultEngineModule = require('@octopus/engine');
@@ -123,7 +124,8 @@ export class EngineHost extends EventEmitter {
     const startedAt = new Date().toISOString();
     let total = 0;
 
-    this.emit('run.started', { runId, lotId, taskId: task.taskId, taskName: task.taskName });
+    const runtimeTaskName = safeTaskName(task.taskName || task.taskId);
+    this.emit('run.started', { runId, lotId, taskId: task.taskId, taskName: runtimeTaskName });
 
     this.bridgeHub = this.bridgeHubFactory();
     this.virtualDisplay = await startVirtualDisplayIfNeeded();
@@ -146,7 +148,7 @@ export class EngineHost extends EventEmitter {
 
     const workflow = new WorkflowAgent({
       taskId: runId,
-      taskName: task.taskName,
+      taskName: runtimeTaskName,
       xml: task.xml,
       xoml: task.xoml,
       fieldNames: task.fieldNames,
@@ -193,7 +195,7 @@ export class EngineHost extends EventEmitter {
           runId,
           lotId,
           taskId: task.taskId,
-          taskName: task.taskName,
+          taskName: runtimeTaskName,
           status,
           total,
           outputDir: options.outputDir,

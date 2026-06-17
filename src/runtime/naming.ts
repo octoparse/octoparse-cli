@@ -13,3 +13,9 @@ export function safeFileName(value: string): string {
     .slice(0, 120);
   return safe || 'octopus-export';
 }
+
+export function safeTaskName(value: string): string {
+  const withoutScheme = value.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, '');
+  const name = safeFileName(withoutScheme).replace(/^_+|_+$/g, '');
+  return name || 'octopus-task';
+}
