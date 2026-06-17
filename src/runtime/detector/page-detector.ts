@@ -24,6 +24,10 @@ export function applyGoalScoresForTesting(candidates: DetectedCandidate[], goal:
   return applyGoalScores(candidates, goal);
 }
 
+export function rankCandidatesForTesting(candidates: DetectedCandidate[]): DetectedCandidate[] {
+  return rankCandidates(candidates);
+}
+
 const require = createRequire(import.meta.url);
 const puppeteer = require('rebrowser-puppeteer-core') as typeof import('puppeteer-core');
 const EngineModule = require('@octopus/engine') as {
@@ -2161,9 +2165,10 @@ function scrollProbeStable(previous: ScrollProbeSnapshot, next: ScrollProbeSnaps
 
 async function detectCandidates(page: Page, options: DetectOptions, scrollProbe?: ScrollProbeSummary): Promise<DetectedCandidate[]> {
   if (!options.legacyDetector) {
-    const protectedSmart = await detectProtectedSmartCandidates(page, { maxCandidates: options.maxCandidates, baseUrl: options.apiBaseUrl });
     const outputLimit = options.interactive ? Math.max(options.maxCandidates, 24) : options.maxCandidates;
-    const fallback = await detectFallbackListCandidates(page, Math.max(outputLimit, 12), options.interactive);
+    const refinementLimit = candidateRefinementLimit(outputLimit);
+    const protectedSmart = await detectProtectedSmartCandidates(page, { maxCandidates: refinementLimit, baseUrl: options.apiBaseUrl });
+    const fallback = await detectFallbackListCandidates(page, refinementLimit, options.interactive);
     if (!protectedSmart.length && !fallback.length) {
       throw new Error('No list candidates were detected. Use --legacy-detector only for debugging the old detector.');
     }
@@ -2182,7 +2187,7 @@ async function detectCandidates(page: Page, options: DetectOptions, scrollProbe?
 
   const seen = new Set<string>();
   const outputLimit = options.interactive ? Math.max(options.maxCandidates, 24) : options.maxCandidates;
-  const refinementLimit = Math.max(outputLimit, Math.min(80, Math.max(32, outputLimit * 4)));
+  const refinementLimit = candidateRefinementLimit(outputLimit);
   const sorted = candidates
     .filter((candidate) => {
       const key = `${candidate.type}:${candidate.selector}:${candidate.itemSelector ?? ''}`;
@@ -2208,6 +2213,10 @@ async function detectCandidates(page: Page, options: DetectOptions, scrollProbe?
   const ranked = options.goal ? applyGoalScores(deduped, options.goal) : rankCandidates(deduped);
   const limited = ranked.slice(0, outputLimit);
   return options.llmRank ? applyLlmRankPreparation(limited, options.goal) : limited;
+}
+
+function candidateRefinementLimit(outputLimit: number): number {
+  return Math.max(outputLimit, Math.min(64, Math.max(32, outputLimit * 3)));
 }
 
 async function detectRawCandidates(page: Page, interactive = false): Promise<RawCandidate[]> {
@@ -2246,7 +2255,8 @@ async function detectFallbackListCandidates(page: Page, limit: number, interacti
     confidence: Number(Math.max(0.1, candidate.confidence - 0.06).toFixed(2)),
     reasons: [...candidate.reasons, 'Fallback detector candidate']
   }));
-  return refineCandidateFields(page, detected);
+  const refined = await refineCandidateFields(page, detected);
+  return rankCandidates(refined).slice(0, limit);
 }
 
 async function chooseCandidateInteractively(page: Page, candidates: DetectedCandidate[], runtimeConsole: SuppressedRuntimeConsole): Promise<string[]> {

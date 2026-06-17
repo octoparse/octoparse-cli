@@ -12,7 +12,7 @@ import { setEngineHostFactoryForTesting } from '../dist/commands/run.js';
 import { browserSessionPath, loadBrowserSession, saveBrowserSession } from '../dist/runtime/browser-session.js';
 import { detectedTaskToCloudTaskInfo, encodeTaskXml } from '../dist/runtime/task-cloud-save.js';
 import { hasLinuxDisplayEnvironment, requiresVirtualDisplay } from '../dist/runtime/virtual-display.js';
-import { applyGoalScoresForTesting, augmentAdjacentMetadataFieldsForTesting, dedupeEquivalentCandidates, detectInteractivePaginationOptionsForTesting, detectPageObstructionsForTesting, detectPaginationForCandidatesForTesting, detectSearchResultBlocksForTesting, dismissPageObstructionsForTesting, filterDetectedBoilerplateCandidates, findSearchInputCandidatesForTesting, isPlausiblePaginationOptionForTesting, pageLooksLikeSearchResultForTesting, preferredPaginationForTesting, refineCandidateFieldsForTesting, resetManualOverlayHintKeysForTesting, resolveSearchSubmitButtonByGeometryForTesting, resolveSearchSubmitButtonForTesting, sanitizeCandidatePaginationByLayoutForTesting, scoreSearchResultPageForTesting, selectDetailUrlFieldForTesting, shouldPromptForLoginInterventionForTesting, writeManualOverlayHintOnceForTesting } from '../dist/runtime/detector/page-detector.js';
+import { applyGoalScoresForTesting, augmentAdjacentMetadataFieldsForTesting, dedupeEquivalentCandidates, detectInteractivePaginationOptionsForTesting, detectPageObstructionsForTesting, detectPaginationForCandidatesForTesting, detectSearchResultBlocksForTesting, dismissPageObstructionsForTesting, filterDetectedBoilerplateCandidates, findSearchInputCandidatesForTesting, isPlausiblePaginationOptionForTesting, pageLooksLikeSearchResultForTesting, preferredPaginationForTesting, rankCandidatesForTesting, refineCandidateFieldsForTesting, resetManualOverlayHintKeysForTesting, resolveSearchSubmitButtonByGeometryForTesting, resolveSearchSubmitButtonForTesting, sanitizeCandidatePaginationByLayoutForTesting, scoreSearchResultPageForTesting, selectDetailUrlFieldForTesting, shouldPromptForLoginInterventionForTesting, writeManualOverlayHintOnceForTesting } from '../dist/runtime/detector/page-detector.js';
 import { protectedSmartResultToCandidatesForTesting } from '../dist/runtime/detector/protected-smart.js';
 import { buildTaskFromCandidate } from '../dist/runtime/detector/xml.js';
 
@@ -1298,6 +1298,133 @@ test('goal ranking keeps job records above refined category link candidates', ()
   const ranked = applyGoalScoresForTesting([categoryCandidate, jobCandidate], '采集招聘职位列表');
 
   assert.equal(ranked[0].id, 'protected_smart_1');
+});
+
+test('auto ranking keeps gc-zb announcement records above category navigation', () => {
+  const categoryNavCandidate = {
+    id: 'protected_smart_4',
+    type: 'repeated_card',
+    title: 'Protected Smart category navigation',
+    confidence: 0.99,
+    selector: '',
+    xpath: '/html/body/div[4]/div[1]/a',
+    itemSelector: '',
+    itemXPath: '/html/body/div[4]/div[1]/a',
+    itemCount: 45,
+    fields: [
+      { name: '标题', kind: 'text', selector: '', xpath: '/html/body/div[4]/div[1]/a', relativeXPath: './a', samples: ['招标采购', '前期项目', '结果公告'] },
+      { name: '标题链接', kind: 'href', selector: '', xpath: '/html/body/div[4]/div[1]/a', relativeXPath: './a', samples: ['https://www.gc-zb.com/search.html?cateId=0&ucode=', 'https://www.gc-zb.com/search.html?cateId=2&ucode=', 'https://www.gc-zb.com/search.html?cateId=1&ucode='] }
+    ],
+    sampleRows: [
+      { '标题': '招标采购', '标题链接': 'https://www.gc-zb.com/search.html?cateId=0&ucode=' },
+      { '标题': '前期项目', '标题链接': 'https://www.gc-zb.com/search.html?cateId=2&ucode=' },
+      { '标题': '结果公告', '标题链接': 'https://www.gc-zb.com/search.html?cateId=1&ucode=' }
+    ],
+    reasons: ['Detected by protected SmartProxy resource', 'fullColRate=1.00'],
+    layout: {
+      role: 'main',
+      score: 0.86,
+      mainScore: 0.86,
+      sidebarPenalty: 0,
+      boilerplatePenalty: 0,
+      visualCoverage: 0.21,
+      textDensity: 0.02,
+      linkDensity: 0.94,
+      centerDistance: 0.2,
+      reasons: []
+    }
+  };
+  const announcementCandidate = {
+    id: 'protected_smart_3',
+    type: 'search_results',
+    title: 'Protected Smart announcement records',
+    confidence: 0.99,
+    selector: '',
+    xpath: '/html/body/div[4]/div[2]/ul/li',
+    itemSelector: '',
+    itemXPath: '/html/body/div[4]/div[2]/ul/li',
+    itemCount: 20,
+    fields: [
+      { name: '标题', kind: 'text', selector: '', xpath: '/html/body/div[4]/div[2]/ul/li/span[1]', relativeXPath: './span[1]', samples: ['[招标公告]', '[招标公告]', '[结果公告]'] },
+      { name: '字段', kind: 'text', selector: '', xpath: '/html/body/div[4]/div[2]/ul/li/span[2]', relativeXPath: './span[2]', samples: ['[广东]', '[北京]', '[上海]'] },
+      { name: '标题链接', kind: 'href', selector: '', xpath: '/html/body/div[4]/div[2]/ul/li/a', relativeXPath: './a', samples: ['https://www.gc-zb.com/markinfo/123456789.html', 'https://www.gc-zb.com/markinfo/987654321.html', 'https://www.gc-zb.com/markinfo/456789123.html'] },
+      { name: '标题2', kind: 'text', selector: '', xpath: '/html/body/div[4]/div[2]/ul/li/a', relativeXPath: './a', samples: ['PA1大修19台電機檢修-公告', '中国电信北京公司2026年通信工程施工服务招标公告', '上海某项目设备采购中标结果公告'] },
+      { name: '时间', kind: 'text', selector: '', xpath: '/html/body/div[4]/div[2]/ul/li/span[3]', relativeXPath: './span[3]', samples: ['2026-06-17', '2026-06-16', '2026-06-15'] }
+    ],
+    sampleRows: [
+      {
+        '标题': '[招标公告]',
+        '字段': '[广东]',
+        '标题链接': 'https://www.gc-zb.com/markinfo/123456789.html',
+        '标题2': 'PA1大修19台電機檢修-公告',
+        '时间': '2026-06-17'
+      },
+      {
+        '标题': '[招标公告]',
+        '字段': '[北京]',
+        '标题链接': 'https://www.gc-zb.com/markinfo/987654321.html',
+        '标题2': '中国电信北京公司2026年通信工程施工服务招标公告',
+        '时间': '2026-06-16'
+      }
+    ],
+    reasons: ['Detected by protected SmartProxy resource', 'fullColRate=0.72'],
+    layout: {
+      role: 'main',
+      score: 0.82,
+      mainScore: 0.8,
+      sidebarPenalty: 0.02,
+      boilerplatePenalty: 0,
+      visualCoverage: 0.36,
+      textDensity: 0.22,
+      linkDensity: 0.54,
+      centerDistance: 0.18,
+      reasons: []
+    }
+  };
+  const categoryGridCandidate = {
+    id: 'protected_smart_2',
+    type: 'search_results',
+    title: 'Protected Smart category grid',
+    confidence: 0.99,
+    selector: '',
+    xpath: '/html/body/div[4]/div[1]/div',
+    itemSelector: '',
+    itemXPath: '/html/body/div[4]/div[1]/div',
+    itemCount: 6,
+    fields: [
+      { name: '标题', kind: 'text', selector: '', xpath: '/html/body/div[4]/div[1]/div/a[1]', relativeXPath: './a[1]', samples: ['招标采购', 'VIP项目', '招采预测'] },
+      { name: '标题链接', kind: 'href', selector: '', xpath: '/html/body/div[4]/div[1]/div/a[1]', relativeXPath: './a[1]', samples: ['https://www.gc-zb.com/search.html?cateId=0&ucode=', 'https://www.gc-zb.com/search.html?cateId=9&ucode=', 'https://www.gc-zb.com/search.html?activeName=seventh&ucode='] },
+      { name: '字段', kind: 'text', selector: '', xpath: '/html/body/div[4]/div[1]/div/a[2]', relativeXPath: './a[2]', samples: ['前期项目', '独家项目', '渠道拓展'] },
+      { name: '链接', kind: 'href', selector: '', xpath: '/html/body/div[4]/div[1]/div/a[2]', relativeXPath: './a[2]', samples: ['https://www.gc-zb.com/search.html?cateId=1&ucode=', 'https://www.gc-zb.com/search.html?activeName=eleventh&ucode=', 'https://www.gc-zb.com/ground/channel.html?ucode='] },
+      { name: '字段2', kind: 'text', selector: '', xpath: '/html/body/div[4]/div[1]/div/a[3]', relativeXPath: './a[3]', samples: ['结果公告', '审批项目', '商机挖掘'] },
+      { name: '链接2', kind: 'href', selector: '', xpath: '/html/body/div[4]/div[1]/div/a[3]', relativeXPath: './a[3]', samples: ['https://www.gc-zb.com/search.html?cateId=2&ucode=', 'https://www.gc-zb.com/search.html?activeName=eighth&cateId=10&ucode=', 'https://www.gc-zb.com/ground/excavate.html?ucode=&activeName=fifth'] },
+      { name: '字段3', kind: 'text', selector: '', xpath: '/html/body/div[4]/div[1]/div/a[4]', relativeXPath: './a[4]', samples: ['变更公告', '环评项目', '市场分析'] },
+      { name: '链接3', kind: 'href', selector: '', xpath: '/html/body/div[4]/div[1]/div/a[4]', relativeXPath: './a[4]', samples: ['https://www.gc-zb.com/search.html?cateId=3&ucode=', 'https://www.gc-zb.com/search.html?activeName=eighth&cateId=11&ucode=', 'https://www.gc-zb.com/ground/marketAnalysis.html?ucode='] }
+    ],
+    sampleRows: [
+      {
+        '标题': '招标采购',
+        '标题链接': 'https://www.gc-zb.com/search.html?cateId=0&ucode=',
+        '字段': '前期项目',
+        '链接': 'https://www.gc-zb.com/search.html?cateId=1&ucode=',
+        '字段2': '结果公告',
+        '链接2': 'https://www.gc-zb.com/search.html?cateId=2&ucode=',
+        '字段3': '变更公告',
+        '链接3': 'https://www.gc-zb.com/search.html?cateId=3&ucode='
+      }
+    ],
+    reasons: ['Detected by protected SmartProxy resource', 'fullColRate=0.67'],
+    layout: {
+      ...categoryNavCandidate.layout,
+      score: 0.82,
+      mainScore: 0.89,
+      textDensity: 0.18,
+      linkDensity: 1
+    }
+  };
+
+  assert.equal(rankCandidatesForTesting([categoryGridCandidate, categoryNavCandidate, announcementCandidate])[0].id, 'protected_smart_3');
+  assert.equal(applyGoalScoresForTesting([categoryGridCandidate, categoryNavCandidate, announcementCandidate], '采集招标公告列表')[0].id, 'protected_smart_3');
 });
 
 test('filterDetectedBoilerplateCandidates removes standalone pagination controls', () => {

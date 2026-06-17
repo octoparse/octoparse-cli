@@ -5,6 +5,7 @@ import type {
   AgentVisualArtifacts,
   DetectAgentContext
 } from './agent-types.js';
+import { rankCandidates } from './candidate-ranking.js';
 
 export function buildAgentContext(result: PageDetectionResult, goal?: string): DetectAgentContext {
   const recommended = recommendedCandidate(result.candidates);
@@ -77,9 +78,7 @@ export function buildAgentContext(result: PageDetectionResult, goal?: string): D
 export function recommendedCandidate(candidates: DetectedCandidate[]): DetectedCandidate | undefined {
   const usable = candidates.filter((candidate) => candidate.type !== 'form');
   const ranked = usable.length ? usable : candidates;
-  return ranked
-    .slice()
-    .sort((a, b) => (b.goalScore ?? b.confidence) - (a.goalScore ?? a.confidence))[0];
+  return rankCandidates(ranked)[0];
 }
 
 function buildAgentVisualArtifacts(screenshot: DetectedAgentScreenshot | undefined): AgentVisualArtifacts | undefined {
@@ -102,7 +101,7 @@ function buildAgentDecisionSummary(
   visualArtifacts: AgentVisualArtifacts | undefined
 ): AgentDecisionSummary {
   const cropByCandidate = new Map((visualArtifacts?.candidateScreenshots ?? []).map((item) => [item.candidateId, item]));
-  const ranked = candidates.slice().sort((a, b) => (b.goalScore ?? b.confidence) - (a.goalScore ?? a.confidence));
+  const ranked = rankCandidates(candidates);
   return {
     ...(recommendedCandidateId ? { recommendedCandidateId } : {}),
     useTheseVisualInputs: [
