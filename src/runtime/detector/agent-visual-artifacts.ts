@@ -25,7 +25,7 @@ function candidateScreenshotPath(path: string, candidateId: string): string {
 }
 
 async function captureAnnotatedAgentScreenshot(page: Page, path: string, candidates: DetectedCandidate[]): Promise<boolean> {
-  const overlays = candidatesForVisualArtifacts(candidates).map((candidate, index) => ({
+  const overlays = candidatesForAnnotatedScreenshot(candidates).map((candidate, index) => ({
     id: candidate.id,
     label: `${index + 1}. ${candidate.id}`,
     box: visualBoxForCandidate(candidate)
@@ -106,7 +106,7 @@ async function captureCandidateScreenshots(
     height: Math.max(document.documentElement.scrollHeight, document.body?.scrollHeight ?? 0, window.innerHeight)
   }));
   const screenshots: NonNullable<DetectedAgentScreenshot['candidateScreenshots']> = [];
-  for (const [index, candidate] of candidatesForVisualArtifacts(candidates).entries()) {
+  for (const [index, candidate] of candidatesForCandidateScreenshots(candidates).entries()) {
     const rawBox = visualBoxForCandidate(candidate);
     const box = rawBox ? expandClip(rawBox, pageSize, 32) : undefined;
     if (!box || box.width < 8 || box.height < 8) continue;
@@ -122,12 +122,29 @@ async function captureCandidateScreenshots(
   return screenshots;
 }
 
-function candidatesForVisualArtifacts(candidates: DetectedCandidate[]): DetectedCandidate[] {
+function candidatesForAnnotatedScreenshot(candidates: DetectedCandidate[]): DetectedCandidate[] {
   return candidates
     .filter((candidate) => candidate.type !== 'form')
+    .filter((candidate) => visualBoxForCandidate(candidate))
     .slice()
-    .sort((a, b) => (b.goalScore ?? b.confidence) - (a.goalScore ?? a.confidence))
+    .sort(compareVisualArtifactCandidates);
+}
+
+function candidatesForCandidateScreenshots(candidates: DetectedCandidate[]): DetectedCandidate[] {
+  return candidatesForAnnotatedScreenshot(candidates)
     .slice(0, 3);
+}
+
+function compareVisualArtifactCandidates(a: DetectedCandidate, b: DetectedCandidate): number {
+  return (b.goalScore ?? b.confidence) - (a.goalScore ?? a.confidence);
+}
+
+export function candidateIdsForAnnotatedScreenshotForTesting(candidates: DetectedCandidate[]): string[] {
+  return candidatesForAnnotatedScreenshot(candidates).map((candidate) => candidate.id);
+}
+
+export function candidateIdsForCandidateScreenshotsForTesting(candidates: DetectedCandidate[]): string[] {
+  return candidatesForCandidateScreenshots(candidates).map((candidate) => candidate.id);
 }
 
 function visualBoxForCandidate(candidate: DetectedCandidate): DetectedCandidateDiagnostics['boundingBox'] {

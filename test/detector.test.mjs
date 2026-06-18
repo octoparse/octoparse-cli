@@ -13,6 +13,7 @@ import { browserSessionPath, loadBrowserSession, saveBrowserSession } from '../d
 import { detectedTaskToCloudTaskInfo, encodeTaskXml } from '../dist/runtime/task-cloud-save.js';
 import { hasLinuxDisplayEnvironment, requiresVirtualDisplay } from '../dist/runtime/virtual-display.js';
 import { applyGoalScoresForTesting, augmentAdjacentMetadataFieldsForTesting, dedupeEquivalentCandidates, detectInteractivePaginationOptionsForTesting, detectPageObstructionsForTesting, detectPaginationForCandidatesForTesting, detectSearchResultBlocksForTesting, dismissPageObstructionsForTesting, filterDetectedBoilerplateCandidates, findSearchInputCandidatesForTesting, isPlausiblePaginationOptionForTesting, pageLooksLikeSearchResultForTesting, preferredPaginationForTesting, rankCandidatesForTesting, refineCandidateFieldsForTesting, resetManualOverlayHintKeysForTesting, resolveSearchSubmitButtonByGeometryForTesting, resolveSearchSubmitButtonForTesting, sanitizeCandidatePaginationByLayoutForTesting, scoreSearchResultPageForTesting, selectDetailUrlFieldForTesting, shouldPromptForLoginInterventionForTesting, writeManualOverlayHintOnceForTesting } from '../dist/runtime/detector/page-detector.js';
+import { candidateIdsForAnnotatedScreenshotForTesting, candidateIdsForCandidateScreenshotsForTesting } from '../dist/runtime/detector/agent-visual-artifacts.js';
 import { protectedSmartResultToCandidatesForTesting } from '../dist/runtime/detector/protected-smart.js';
 import { buildTaskFromCandidate } from '../dist/runtime/detector/xml.js';
 
@@ -62,6 +63,51 @@ test('resolveAgentScreenshotPathForTesting enables default full-page screenshots
   } finally {
     chdir(previousCwd);
   }
+});
+
+test('agent annotated screenshots include all final boxed candidates while crops stay focused', () => {
+  const boxed = (id, confidence, type = 'search_results') => ({
+    id,
+    type,
+    title: id,
+    confidence,
+    selector: `#${id}`,
+    xpath: `//*[@id="${id}"]`,
+    itemSelector: `#${id} .item`,
+    itemXPath: `//*[@id="${id}"]//*[@class="item"]`,
+    itemCount: 3,
+    fields: [
+      {
+        name: 'title',
+        kind: 'text',
+        selector: 'a',
+        xpath: `//*[@id="${id}"]//a`,
+        relativeXPath: './/a',
+        samples: [id]
+      }
+    ],
+    sampleRows: [{ title: id }],
+    reasons: [],
+    diagnostics: {
+      matchCount: 3,
+      boundingBox: { x: 0, y: 0, width: 100, height: 80 },
+      sampleBoxes: [],
+      textLength: 20,
+      visualCoverage: 0.1,
+      warnings: []
+    }
+  });
+  const candidates = [
+    boxed('first', 0.9),
+    boxed('second', 0.8),
+    boxed('third', 0.7),
+    boxed('fourth', 0.6),
+    boxed('search_form', 0.99, 'form'),
+    { ...boxed('no_box', 0.95), diagnostics: { matchCount: 0, sampleBoxes: [], textLength: 0, visualCoverage: 0, warnings: ['itemXPath matched no visible elements'] } }
+  ];
+
+  assert.deepEqual(candidateIdsForAnnotatedScreenshotForTesting(candidates), ['first', 'second', 'third', 'fourth']);
+  assert.deepEqual(candidateIdsForCandidateScreenshotsForTesting(candidates), ['first', 'second', 'third']);
 });
 
 test('detectedTaskToCloudTaskInfo uses client-compatible compressed xml payload', async () => {
