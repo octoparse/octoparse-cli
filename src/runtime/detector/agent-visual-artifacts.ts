@@ -25,12 +25,13 @@ function candidateScreenshotPath(path: string, candidateId: string): string {
 }
 
 async function captureAnnotatedAgentScreenshot(page: Page, path: string, candidates: DetectedCandidate[]): Promise<boolean> {
-  const overlays = candidatesForAnnotatedScreenshot(candidates).map((candidate, index) => ({
+  const candidateOverlays = candidatesForAnnotatedScreenshot(candidates).map((candidate, index) => ({
     id: candidate.id,
     label: `${index + 1}. ${candidate.id}`,
     box: visualBoxForCandidate(candidate)
   })).filter((item): item is { id: string; label: string; box: NonNullable<ReturnType<typeof visualBoxForCandidate>> } => Boolean(item.box));
-  if (!overlays.length) return false;
+  const elementOverlays = elementOverlaysForCandidates(candidatesForAnnotatedScreenshot(candidates));
+  if (!candidateOverlays.length && !elementOverlays.length) return false;
   await page.evaluate((items) => {
     const previous = document.getElementById('__octopus_agent_visual_overlay__');
     previous?.remove();
@@ -48,7 +49,7 @@ async function captureAnnotatedAgentScreenshot(page: Page, path: string, candida
       fontFamily: 'Arial, sans-serif'
     });
     const colors = ['#ff2d55', '#007aff', '#34c759', '#ff9500', '#af52de', '#00c7be'];
-    for (const [index, item] of items.entries()) {
+    for (const [index, item] of items.candidates.entries()) {
       const color = colors[index % colors.length];
       const box = document.createElement('div');
       Object.assign(box.style, {
@@ -84,8 +85,42 @@ async function captureAnnotatedAgentScreenshot(page: Page, path: string, candida
       root.appendChild(box);
       root.appendChild(label);
     }
+    for (const [index, item] of items.elements.entries()) {
+      const color = '#111827';
+      const dot = document.createElement('div');
+      const size = 18;
+      Object.assign(dot.style, {
+        position: 'absolute',
+        left: `${Math.max(0, item.box.x - 3)}px`,
+        top: `${Math.max(0, item.box.y - 3)}px`,
+        width: `${Math.max(size, Math.min(48, item.box.width + 6))}px`,
+        height: `${Math.max(size, Math.min(30, item.box.height + 6))}px`,
+        border: `2px solid ${color}`,
+        background: 'rgba(255, 255, 255, 0.18)',
+        boxSizing: 'border-box',
+        borderRadius: '3px'
+      });
+      const label = document.createElement('div');
+      label.textContent = item.label;
+      Object.assign(label.style, {
+        position: 'absolute',
+        left: `${Math.max(0, item.box.x)}px`,
+        top: `${Math.max(0, item.box.y - 22 - (index % 2) * 10)}px`,
+        padding: '2px 5px',
+        color: '#fff',
+        background: color,
+        fontSize: '12px',
+        lineHeight: '16px',
+        fontWeight: '700',
+        borderRadius: '3px',
+        whiteSpace: 'nowrap',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.35)'
+      });
+      root.appendChild(dot);
+      root.appendChild(label);
+    }
     document.documentElement.appendChild(root);
-  }, overlays);
+  }, { candidates: candidateOverlays, elements: elementOverlays });
   try {
     await page.screenshot({ path, fullPage: true });
     return true;
@@ -111,7 +146,7 @@ async function captureCandidateScreenshots(
     const box = rawBox ? expandClip(rawBox, pageSize, 32) : undefined;
     if (!box || box.width < 8 || box.height < 8) continue;
     const path = candidateScreenshotPath(basePath, candidate.id);
-    await page.screenshot({ path, clip: box });
+    await captureCandidateScreenshot(page, path, box, candidate);
     screenshots.push({
       candidateId: candidate.id,
       path,
@@ -120,6 +155,76 @@ async function captureCandidateScreenshots(
     });
   }
   return screenshots;
+}
+
+async function captureCandidateScreenshot(
+  page: Page,
+  path: string,
+  clip: NonNullable<DetectedCandidateDiagnostics['boundingBox']>,
+  candidate: DetectedCandidate
+): Promise<void> {
+  const elementOverlays = elementOverlaysForCandidates([candidate]);
+  if (!elementOverlays.length) {
+    await page.screenshot({ path, clip });
+    return;
+  }
+  await page.evaluate((items) => {
+    const previous = document.getElementById('__octopus_agent_candidate_element_overlay__');
+    previous?.remove();
+    const root = document.createElement('div');
+    root.id = '__octopus_agent_candidate_element_overlay__';
+    root.setAttribute('aria-hidden', 'true');
+    Object.assign(root.style, {
+      position: 'absolute',
+      left: '0',
+      top: '0',
+      width: '0',
+      height: '0',
+      zIndex: '2147483647',
+      pointerEvents: 'none',
+      fontFamily: 'Arial, sans-serif'
+    });
+    for (const [index, item] of items.entries()) {
+      const dot = document.createElement('div');
+      Object.assign(dot.style, {
+        position: 'absolute',
+        left: `${Math.max(0, item.box.x - 2)}px`,
+        top: `${Math.max(0, item.box.y - 2)}px`,
+        width: `${Math.max(16, Math.min(44, item.box.width + 4))}px`,
+        height: `${Math.max(16, Math.min(28, item.box.height + 4))}px`,
+        border: '2px solid #111827',
+        background: 'rgba(255,255,255,0.18)',
+        boxSizing: 'border-box',
+        borderRadius: '3px'
+      });
+      const label = document.createElement('div');
+      label.textContent = item.label;
+      Object.assign(label.style, {
+        position: 'absolute',
+        left: `${Math.max(0, item.box.x)}px`,
+        top: `${Math.max(0, item.box.y - 21 - (index % 2) * 9)}px`,
+        padding: '2px 5px',
+        color: '#fff',
+        background: '#111827',
+        fontSize: '12px',
+        lineHeight: '16px',
+        fontWeight: '700',
+        borderRadius: '3px',
+        whiteSpace: 'nowrap',
+        boxShadow: '0 1px 3px rgba(0,0,0,0.35)'
+      });
+      root.appendChild(dot);
+      root.appendChild(label);
+    }
+    document.documentElement.appendChild(root);
+  }, elementOverlays);
+  try {
+    await page.screenshot({ path, clip });
+  } finally {
+    await page.evaluate(() => {
+      document.getElementById('__octopus_agent_candidate_element_overlay__')?.remove();
+    }).catch(() => undefined);
+  }
 }
 
 function candidatesForAnnotatedScreenshot(candidates: DetectedCandidate[]): DetectedCandidate[] {
@@ -137,6 +242,22 @@ function candidatesForCandidateScreenshots(candidates: DetectedCandidate[]): Det
 
 function compareVisualArtifactCandidates(a: DetectedCandidate, b: DetectedCandidate): number {
   return (b.goalScore ?? b.confidence) - (a.goalScore ?? a.confidence);
+}
+
+function elementOverlaysForCandidates(candidates: DetectedCandidate[]): Array<{
+  label: string;
+  box: NonNullable<DetectedCandidateDiagnostics['boundingBox']>;
+}> {
+  return candidates
+    .flatMap((candidate) => (candidate.visualElements ?? [])
+      .filter((element) => element.source === 'visible_dom')
+      .filter((element) => element.annotationLabel && element.boundingBox)
+      .sort((a, b) => (b.confidence ?? 0) - (a.confidence ?? 0))
+      .slice(0, 12)
+      .map((element) => ({
+        label: element.annotationLabel || element.id,
+        box: element.boundingBox as NonNullable<DetectedCandidateDiagnostics['boundingBox']>
+      })));
 }
 
 export function candidateIdsForAnnotatedScreenshotForTesting(candidates: DetectedCandidate[]): string[] {

@@ -5,6 +5,7 @@ import type {
   DetectedDetailPlan,
   DetectedField,
   DetectedFieldDiagnostics,
+  DetectedVisualElement,
   DetectedPagination,
   DetectedSearchPlan,
   PageDetectionResult
@@ -129,23 +130,7 @@ export interface AgentVisualArtifacts {
   }>;
 }
 
-export interface AgentVisualElement {
-  id: string;
-  fieldId?: string;
-  candidateId: string;
-  scope: 'field' | 'detail';
-  fieldName: string;
-  kind: DetectedField['kind'];
-  role: 'text' | 'link' | 'image' | 'input';
-  selector: string;
-  xpath: string;
-  relativeXPath?: string;
-  boundingBox?: DetectedBox;
-  visible: boolean;
-  clickable: boolean;
-  sample: string;
-  samples: string[];
-}
+export type AgentVisualElement = DetectedVisualElement;
 
 export interface AgentDecisionSummary {
   recommendedCandidateId?: string;
@@ -168,6 +153,14 @@ export interface AgentCandidateDecisionSummary {
     name: string;
     elementId?: string;
     kind: DetectedField['kind'];
+  }>;
+  visibleDomHints?: Array<{
+    elementId: string;
+    annotationLabel?: string;
+    role: AgentVisualElement['role'];
+    kind: DetectedField['kind'];
+    sample: string;
+    rowCoverage?: AgentVisualElement['rowCoverage'];
   }>;
   sampleRow?: Record<string, string>;
   visual: {

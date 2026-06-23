@@ -1,12 +1,16 @@
 import type { AgentVisualElement } from './agent-types.js';
-import type { DetectedCandidate, DetectedField } from './types.js';
+import type { DetectedCandidate, DetectedField, DetectedVisualElement } from './types.js';
 
-type AgentFieldScope = 'field' | 'detail';
+type AgentFieldScope = 'field' | 'detail' | 'visible_dom';
 
 export function ensureAgentElementIds(candidates: DetectedCandidate[]): DetectedCandidate[] {
+  let visualIndex = 1;
   return candidates.map((candidate) => ({
     ...candidate,
     fields: candidate.fields.map((field, index) => ensureFieldElementId(candidate.id, 'field', field, index)),
+    ...(candidate.visualElements?.length ? {
+      visualElements: candidate.visualElements.map((element, index) => ensureVisualElementId(candidate.id, element, index, visualIndex++))
+    } : {}),
     ...(candidate.detailPlan ? {
       detailPlan: {
         ...candidate.detailPlan,
@@ -17,10 +21,22 @@ export function ensureAgentElementIds(candidates: DetectedCandidate[]): Detected
 }
 
 export function buildAgentVisualElements(candidates: DetectedCandidate[]): AgentVisualElement[] {
-  return candidates.flatMap((candidate) => [
-    ...candidate.fields.map((field) => visualElementForField(candidate.id, 'field', field)),
-    ...(candidate.detailPlan?.fields.map((field) => visualElementForField(candidate.id, 'detail', field)) ?? [])
-  ]);
+  const seen = new Set<string>();
+  const output: AgentVisualElement[] = [];
+  const push = (element: AgentVisualElement) => {
+    if (seen.has(element.id)) return;
+    seen.add(element.id);
+    output.push({
+      ...element,
+      annotationLabel: element.annotationLabel || `V${output.length + 1}`
+    });
+  };
+  for (const candidate of candidates) {
+    candidate.fields.map((field) => visualElementForField(candidate.id, 'field', field)).forEach(push);
+    (candidate.visualElements ?? []).forEach((element) => push(element));
+    (candidate.detailPlan?.fields.map((field) => visualElementForField(candidate.id, 'detail', field)) ?? []).forEach(push);
+  }
+  return output;
 }
 
 function ensureFieldElementId(
@@ -34,6 +50,17 @@ function ensureFieldElementId(
     ...field,
     fieldId: field.fieldId || elementId,
     elementId
+  };
+}
+
+function ensureVisualElementId(candidateId: string, element: DetectedVisualElement, index: number, visualIndex: number): DetectedVisualElement {
+  return {
+    ...element,
+    candidateId: element.candidateId || candidateId,
+    id: element.id || buildFieldElementId(candidateId, element.scope || 'visible_dom', index, element.fieldName || element.label || element.role),
+    annotationLabel: element.annotationLabel || `V${visualIndex}`,
+    scope: element.scope || 'visible_dom',
+    source: element.source || 'visible_dom'
   };
 }
 
@@ -53,7 +80,9 @@ function visualElementForField(candidateId: string, scope: AgentFieldScope, fiel
     fieldId: field.fieldId || field.elementId,
     candidateId,
     scope,
+    source: 'detected_field',
     fieldName: field.name,
+    label: field.name,
     kind: field.kind,
     role: visualRoleForField(field),
     selector: field.selector,

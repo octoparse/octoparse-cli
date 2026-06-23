@@ -23,6 +23,40 @@ export interface DetectedField {
   diagnostics?: DetectedFieldDiagnostics;
 }
 
+export type DetectedVisualElementScope = 'field' | 'detail' | 'visible_dom';
+export type DetectedVisualElementRole = 'text' | 'link' | 'image' | 'input' | 'button';
+
+export interface DetectedVisualElement {
+  id: string;
+  fieldId?: string;
+  candidateId: string;
+  scope: DetectedVisualElementScope;
+  source: 'detected_field' | 'visible_dom';
+  annotationLabel?: string;
+  fieldName?: string;
+  label?: string;
+  tagName?: string;
+  kind: DetectedField['kind'];
+  role: DetectedVisualElementRole;
+  selector: string;
+  xpath: string;
+  relativeXPath?: string;
+  boundingBox?: DetectedBox;
+  visible: boolean;
+  clickable: boolean;
+  sample: string;
+  samples: string[];
+  samplesByKind?: Partial<Record<DetectedField['kind'], string[]>>;
+  attributes?: Record<string, string>;
+  rowCoverage?: {
+    matchedRows: number;
+    filledRows: number;
+    totalRows: number;
+    fillRate: number;
+  };
+  confidence?: number;
+}
+
 export interface DetectedBox {
   x: number;
   y: number;
@@ -78,6 +112,7 @@ export interface DetectedCandidate {
   itemXPath?: string;
   itemCount: number;
   fields: DetectedField[];
+  visualElements?: DetectedVisualElement[];
   sampleRows: Record<string, string>[];
   reasons: string[];
   pagination?: DetectedPagination;

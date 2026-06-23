@@ -20,6 +20,7 @@ export function buildAgentContext(result: PageDetectionResult, goal?: string): D
       'You are choosing a web scraping task plan from deterministic candidates.',
       'Select candidateId for the primary data region. Optionally filter or rename fields.',
       'Prefer selecting fields by visualElements[].id / elementId when a field appears in the annotated screenshot or candidate crop.',
+      'visualElements includes detected_field entries and extra visible_dom entries from the selected candidate rows. Use visible_dom elementIds when detector fields miss a visible title, price, image, author, metric, or detail link.',
       'For detail scraping, return detail.mode=list_with_detail or detail_only, urlField, and detail fields.',
       'Start with decisionSummary, then use visualArtifacts.annotatedScreenshotPath and candidate crop images to match candidateId to the visible page.',
       'Always use the user goal, annotated/full-page screenshot, candidate bounding boxes, diagnostics, and sample rows together when judging candidates.',
@@ -38,13 +39,14 @@ export function buildAgentContext(result: PageDetectionResult, goal?: string): D
         'context.visualArtifacts.annotatedScreenshotPath or context.screenshot.path',
         'context.visualArtifacts.candidateScreenshots',
         'context.visualElements',
+        'context.visualElements[].source, annotationLabel, rowCoverage, boundingBox, samplesByKind',
         'candidate.boundingBox or candidate.layout.boundingBox',
         'candidate.sampleRows',
         'candidate.fields',
         'candidate.diagnostics',
         'candidate.pagination'
       ],
-      rankingRule: 'Choose the candidate that best matches the user goal and the visible main content in the full-page screenshot. Text samples alone are insufficient when layout, sidebars, ads, or pagination are ambiguous.',
+      rankingRule: 'Choose the candidate that best matches the user goal and the visible main content in the full-page screenshot. Text samples alone are insufficient when layout, sidebars, ads, or pagination are ambiguous. Use visible_dom visualElements to recover fields that the deterministic detector did not promote.',
       recommendedCandidateRule: 'recommendedCandidateId is a deterministic hint, not a final answer. Override it when screenshot/layout/diagnostics/sampleRows show a better match for the user goal.',
       paginationRule: 'Only keep pagination when the candidate has explicit pagination evidence that matches the visible page controls or a real scroll-loading behavior; disable pagination when the screenshot shows a footer pager or no continuation control for the selected region.',
       searchRule: 'When the user goal describes a search/query keyword, use searchPlan and detected submit controls from context instead of treating the blank search homepage as the extraction target.'
@@ -132,6 +134,19 @@ function buildAgentDecisionSummary(
           ...(field.elementId ? { elementId: field.elementId } : {}),
           kind: field.kind
         })),
+        ...(candidate.visualElements?.length ? {
+          visibleDomHints: candidate.visualElements
+            .filter((element) => element.source === 'visible_dom')
+            .slice(0, 12)
+            .map((element) => ({
+              elementId: element.id,
+              annotationLabel: element.annotationLabel,
+              role: element.role,
+              kind: element.kind,
+              sample: element.sample,
+              ...(element.rowCoverage ? { rowCoverage: element.rowCoverage } : {})
+            }))
+        } : {}),
         ...(candidate.sampleRows[0] ? { sampleRow: candidate.sampleRows[0] } : {}),
         visual: {
           ...(candidateBoundingBox(candidate) ? { boundingBox: candidateBoundingBox(candidate) } : {}),

@@ -4191,6 +4191,30 @@ test('buildAgentContextForTesting exposes deterministic candidates for external 
             samples: ['https://example.com/a']
           }
         ],
+        visualElements: [
+          {
+            id: 've_search_results_1_1_price',
+            candidateId: 'search_results_1',
+            scope: 'visible_dom',
+            source: 'visible_dom',
+            annotationLabel: 'V1',
+            label: 'text:$19.99',
+            tagName: 'span',
+            kind: 'text',
+            role: 'text',
+            selector: 'span.price',
+            xpath: '/html[1]/body[1]/main[1]/div//span[1]',
+            relativeXPath: './span[1]',
+            boundingBox: { x: 40, y: 90, width: 80, height: 20 },
+            visible: true,
+            clickable: false,
+            sample: '$19.99',
+            samples: ['$19.99', '$29.99'],
+            samplesByKind: { text: ['$19.99', '$29.99'] },
+            rowCoverage: { matchedRows: 2, filledRows: 2, totalRows: 2, fillRate: 1 },
+            confidence: 0.86
+          }
+        ],
         sampleRows: [{ title: 'Alpha', url: 'https://example.com/a' }],
         reasons: ['test']
       }
@@ -4212,9 +4236,15 @@ test('buildAgentContextForTesting exposes deterministic candidates for external 
   assert.equal(context.visualElements[0].scope, 'field');
   assert.equal(context.visualElements[0].role, 'text');
   assert.equal(context.visualElements[1].role, 'link');
+  const visibleDom = context.visualElements.find((item) => item.source === 'visible_dom');
+  assert.equal(visibleDom.annotationLabel, 'V1');
+  assert.equal(visibleDom.label, 'text:$19.99');
+  assert.equal(visibleDom.rowCoverage.fillRate, 1);
   assert.equal(context.decisionSummary.recommendedCandidateId, 'search_results_1');
   assert.equal(context.decisionSummary.candidates[0].candidateId, 'search_results_1');
   assert.equal(context.decisionSummary.candidates[0].fields[0].elementId, context.visualElements[0].id);
+  assert.equal(context.decisionSummary.candidates[0].visibleDomHints[0].elementId, 've_search_results_1_1_price');
+  assert.equal(context.decisionSummary.candidates[0].visibleDomHints[0].annotationLabel, 'V1');
   assert.equal(context.decisionSummary.candidates[0].visual.candidateScreenshotPath, '/tmp/example.search_results_1.crop.png');
   assert.ok(context.decisionSummary.useTheseVisualInputs.some((item) => item.includes('annotatedScreenshotPath')));
   assert.ok(context.decisionPolicy.requiredInputs.includes('context.goal'));
@@ -4690,6 +4720,132 @@ test('buildTaskFromAgentPlan accepts visual element ids for field choices', () =
   assert.match(task.xml, /Name&gt;headline/);
   assert.match(task.xml, /Name&gt;body/);
   assert.doesNotMatch(task.xml, /Name&gt;summary/);
+});
+
+test('buildTaskFromAgentPlan can promote visible DOM visual elements into fields', () => {
+  const context = buildAgentContextForTesting({
+    url: 'https://example.com/list',
+    finalUrl: 'https://example.com/list',
+    title: 'Example',
+    capturedAt: '2026-05-28T00:00:00.000Z',
+    candidates: [
+      {
+        id: 'search_results_1',
+        type: 'search_results',
+        title: 'Search/list results',
+        confidence: 0.8,
+        selector: 'main',
+        xpath: '/html[1]/body[1]/main[1]',
+        itemSelector: 'main > div.card:nth-of-type(1)',
+        itemXPath: '/html[1]/body[1]/main[1]/div',
+        itemCount: 3,
+        fields: [
+          {
+            name: 'title',
+            kind: 'text',
+            selector: 'a',
+            xpath: '/html[1]/body[1]/main[1]/div//a[1]',
+            relativeXPath: './a[1]',
+            samples: ['Alpha']
+          }
+        ],
+        visualElements: [
+          {
+            id: 've_search_results_1_price',
+            candidateId: 'search_results_1',
+            scope: 'visible_dom',
+            source: 'visible_dom',
+            annotationLabel: 'V1',
+            label: 'text:$19.99',
+            tagName: 'span',
+            kind: 'text',
+            role: 'text',
+            selector: 'span.price',
+            xpath: '/html[1]/body[1]/main[1]/div//span[1]',
+            relativeXPath: './span[1]',
+            boundingBox: { x: 20, y: 70, width: 80, height: 20 },
+            visible: true,
+            clickable: false,
+            sample: '$19.99',
+            samples: ['$19.99', '$29.99', '$39.99'],
+            samplesByKind: { text: ['$19.99', '$29.99', '$39.99'] },
+            rowCoverage: { matchedRows: 3, filledRows: 3, totalRows: 3, fillRate: 1 },
+            confidence: 0.9
+          },
+          {
+            id: 've_search_results_1_link',
+            candidateId: 'search_results_1',
+            scope: 'visible_dom',
+            source: 'visible_dom',
+            annotationLabel: 'V2',
+            label: 'link:Alpha',
+            tagName: 'a',
+            kind: 'text',
+            role: 'link',
+            selector: 'a.title',
+            xpath: '/html[1]/body[1]/main[1]/div//a[1]',
+            relativeXPath: './a[1]',
+            boundingBox: { x: 20, y: 40, width: 200, height: 24 },
+            visible: true,
+            clickable: true,
+            sample: 'Alpha',
+            samples: ['Alpha', 'Beta'],
+            samplesByKind: {
+              text: ['Alpha', 'Beta'],
+              href: ['https://example.com/a', 'https://example.com/b']
+            },
+            attributes: { href: 'https://example.com/a' },
+            rowCoverage: { matchedRows: 2, filledRows: 2, totalRows: 2, fillRate: 1 },
+            confidence: 0.82
+          }
+        ],
+        sampleRows: [{ title: 'Alpha' }],
+        reasons: ['test']
+      }
+    ]
+  });
+
+  const preview = previewAgentPlanForTesting({
+    context,
+    plan: {
+      selection: {
+        candidateId: 'search_results_1',
+        fields: [
+          'title',
+          { elementId: 've_search_results_1_price', as: 'price' },
+          { elementId: 've_search_results_1_link', as: 'url', kind: 'href' }
+        ]
+      }
+    }
+  });
+
+  assert.equal(preview.pass, true);
+  assert.equal(preview.fields[1].name, 'price');
+  assert.deepEqual(preview.fields[1].samples, ['$19.99', '$29.99', '$39.99']);
+  assert.equal(preview.fields[2].name, 'url');
+  assert.equal(preview.fields[2].kind, 'href');
+  assert.deepEqual(preview.fields[2].samples, ['https://example.com/a', 'https://example.com/b']);
+
+  const task = buildTaskFromAgentPlan({
+    context,
+    plan: {
+      selection: {
+        candidateId: 'search_results_1',
+        fields: [
+          'title',
+          { elementId: 've_search_results_1_price', as: 'price' },
+          { elementId: 've_search_results_1_link', as: 'url', kind: 'href' }
+        ]
+      }
+    },
+    taskId: 'detected_agent_visible_dom',
+    taskName: 'Detected Agent Visible DOM'
+  });
+
+  assert.deepEqual(task.fieldNames, ['title', 'price', 'url']);
+  assert.match(task.xml, /Name&gt;price/);
+  assert.match(task.xml, /Name&gt;url/);
+  assert.match(task.xml, /ExtractHref/);
 });
 
 test('runInlineAgentDetectForTesting lets an external command generate and apply a plan', async () => {

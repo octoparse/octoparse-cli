@@ -153,6 +153,11 @@ Notes:
   Prefer selection.fields entries such as {"elementId":"<context.visualElements id>","as":"title"}
   when context.visualElements is available; fall back to existing field names
   or source/as pairs when no elementId is available.
+  context.visualElements includes source=detected_field and extra source=visible_dom
+  entries from candidate rows. Screenshots may show V* labels that match
+  visualElements[].annotationLabel. Use visible_dom ids when detector fields miss
+  visible titles/prices/images/links/metrics; set kind="href" or kind="src" when
+  the selected element should extract a URL or image source.
   Do not treat --auto examples as the default LLM/agent workflow; --auto skips
   agent planning and is only for direct CLI automatic selection.
   Agent workflows generate a full-page screenshot, an annotated screenshot, and

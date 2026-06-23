@@ -1,4 +1,4 @@
-import type { DetectedCandidate, DetectedDetailPlan, DetectedField, DetectedPagination } from './types.js';
+import type { DetectedCandidate, DetectedDetailPlan, DetectedField, DetectedFieldDiagnostics, DetectedPagination, DetectedVisualElement } from './types.js';
 import { buildTaskFromCandidate } from './xml.js';
 import type {
   AgentDetailPlan,
@@ -240,30 +240,41 @@ function applyAgentPlanToCandidate(candidate: DetectedCandidate, plan: AgentPlan
   const paginationPlan = selection.pagination !== undefined ? selection.pagination : plan.pagination;
   return {
     ...candidate,
-    fields: fieldsPlan ? applyAgentFieldPlan(candidate.fields, fieldsPlan, 'field') : candidate.fields,
+    fields: fieldsPlan ? applyAgentFieldPlan(candidate.fields, fieldsPlan, 'field', candidate.visualElements ?? []) : candidate.fields,
     ...(paginationPlan !== undefined ? { pagination: normalizeAgentPagination(paginationPlan) } : {}),
     ...(detailPlan !== undefined ? { detailPlan: normalizeAgentDetailPlan(candidate, detailPlan) } : {})
   };
 }
 
-function applyAgentFieldPlan(fields: DetectedField[], plan: AgentFieldPlan[], fallbackPrefix: string): DetectedField[] {
+function applyAgentFieldPlan(
+  fields: DetectedField[],
+  plan: AgentFieldPlan[],
+  fallbackPrefix: string,
+  visualElements: DetectedVisualElement[] = []
+): DetectedField[] {
   return plan.map((item, index) => {
     if (typeof item === 'string') {
-      const field = fields.find((candidate) => candidate.name === item || candidate.elementId === item || candidate.fieldId === item);
-      if (!field) throw new Error(`Agent plan references an unknown field: ${item}`);
+      const field = fields.find((candidate) => candidate.name === item || candidate.elementId === item || candidate.fieldId === item)
+        ?? visualElementToField(visualElements.find((element) => element.id === item || element.fieldId === item), item);
+      if (!field) throw new Error(`Agent plan references an unknown field or element: ${item}`);
       return field;
     }
     const source = item.elementId ?? item.fieldId ?? item.source ?? item.name;
     const sourceField = source ? fields.find((field) => field.elementId === source || field.fieldId === source || field.name === source) : undefined;
-    if (!sourceField && !item.xpath) throw new Error(`Agent plan field is missing elementId, source, or xpath: ${item.as ?? item.name ?? `${fallbackPrefix}_${index + 1}`}`);
+    const sourceElementField = sourceField ? undefined : visualElementToField(
+      source ? visualElements.find((element) => element.id === source || element.fieldId === source || element.fieldName === source || element.label === source) : undefined,
+      item.as ?? item.name ?? source ?? `${fallbackPrefix}_${index + 1}`,
+      item.kind
+    );
+    if (!sourceField && !sourceElementField && !item.xpath) throw new Error(`Agent plan field is missing elementId, source, or xpath: ${item.as ?? item.name ?? `${fallbackPrefix}_${index + 1}`}`);
     return {
-      ...(sourceField ?? {
+      ...(sourceField ?? sourceElementField ?? {
         kind: item.kind ?? 'text',
         selector: item.selector ?? '',
         xpath: item.xpath ?? '',
         samples: item.samples ?? []
       }),
-      name: item.as ?? item.name ?? sourceField?.name ?? `${fallbackPrefix}_${index + 1}`,
+      name: item.as ?? item.name ?? sourceField?.name ?? sourceElementField?.name ?? `${fallbackPrefix}_${index + 1}`,
       ...(item.kind ? { kind: item.kind } : {}),
       ...(item.selector ? { selector: item.selector } : {}),
       ...(item.xpath ? { xpath: item.xpath } : {}),
@@ -272,6 +283,60 @@ function applyAgentFieldPlan(fields: DetectedField[], plan: AgentFieldPlan[], fa
       ...(item.operations ? { operations: item.operations } : {})
     };
   });
+}
+
+function visualElementToField(
+  element: DetectedVisualElement | undefined,
+  fallbackName: string,
+  requestedKind?: DetectedField['kind']
+): DetectedField | undefined {
+  if (!element) return undefined;
+  const kind = requestedKind ?? element.kind;
+  const samples = samplesForVisualElementKind(element, kind);
+  return {
+    fieldId: element.fieldId || element.id,
+    elementId: element.id,
+    name: element.fieldName || element.label || fallbackName,
+    kind,
+    selector: element.selector || element.tagName || '',
+    xpath: element.xpath,
+    ...(element.relativeXPath ? { relativeXPath: element.relativeXPath } : {}),
+    samples,
+    diagnostics: visualElementDiagnostics(element, samples)
+  };
+}
+
+function samplesForVisualElementKind(element: DetectedVisualElement, kind: DetectedField['kind']): string[] {
+  const byKind = element.samplesByKind?.[kind]?.filter(Boolean);
+  if (byKind?.length) return byKind.slice(0, 3);
+  if (kind === element.kind && element.samples.length) return element.samples.slice(0, 3);
+  if (kind === 'href') {
+    const href = element.attributes?.href || '';
+    return href ? [href] : [];
+  }
+  if (kind === 'src') {
+    const src = element.attributes?.src || element.attributes?.currentSrc || '';
+    return src ? [src] : [];
+  }
+  if (kind === 'value') {
+    const value = element.attributes?.value || element.sample || '';
+    return value ? [value] : [];
+  }
+  return element.samples.length ? element.samples.slice(0, 3) : element.sample ? [element.sample] : [];
+}
+
+function visualElementDiagnostics(element: DetectedVisualElement, samples: string[]): DetectedFieldDiagnostics {
+  const matchedRows = element.rowCoverage?.matchedRows ?? (element.visible ? 1 : 0);
+  const text = samples.join(' ');
+  return {
+    matchCount: Math.max(1, matchedRows),
+    textLength: text.length,
+    paragraphCount: Math.max(0, samples.filter(Boolean).length),
+    hasStyleNoise: false,
+    ...(element.boundingBox ? { boundingBox: element.boundingBox } : {}),
+    ...(element.sample ? { sampleText: element.sample } : {}),
+    warnings: []
+  };
 }
 
 function normalizeAgentPagination(value: DetectedPagination | null | false | undefined): DetectedPagination | undefined {
