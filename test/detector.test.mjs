@@ -12,7 +12,7 @@ import { setEngineHostFactoryForTesting } from '../dist/commands/run.js';
 import { browserSessionPath, loadBrowserSession, saveBrowserSession } from '../dist/runtime/browser-session.js';
 import { detectedTaskToCloudTaskInfo, encodeTaskXml } from '../dist/runtime/task-cloud-save.js';
 import { hasLinuxDisplayEnvironment, requiresVirtualDisplay } from '../dist/runtime/virtual-display.js';
-import { applyGoalScoresForTesting, augmentAdjacentMetadataFieldsForTesting, dedupeEquivalentCandidates, detectInteractivePaginationOptionsForTesting, detectPageObstructionsForTesting, detectPaginationForCandidatesForTesting, detectSearchResultBlocksForTesting, dismissPageObstructionsForTesting, filterDetectedBoilerplateCandidates, findSearchInputCandidatesForTesting, isPlausiblePaginationOptionForTesting, pageLooksLikeSearchResultForTesting, preferredPaginationForTesting, rankCandidatesForTesting, refineCandidateFieldsForTesting, resetManualOverlayHintKeysForTesting, resolveSearchSubmitButtonByGeometryForTesting, resolveSearchSubmitButtonForTesting, sanitizeCandidatePaginationByLayoutForTesting, scoreSearchResultPageForTesting, selectDetailUrlFieldForTesting, shouldPromptForLoginInterventionForTesting, writeManualOverlayHintOnceForTesting } from '../dist/runtime/detector/page-detector.js';
+import { applyGoalScoresForTesting, augmentAdjacentMetadataFieldsForTesting, dedupeEquivalentCandidates, detectInteractivePaginationOptionsForTesting, detectPageObstructionsForTesting, detectPaginationForCandidatesForTesting, detectSearchResultBlocksForTesting, detectSemanticBusinessCardsForTesting, dismissPageObstructionsForTesting, filterDetectedBoilerplateCandidates, findSearchInputCandidatesForTesting, isPlausiblePaginationOptionForTesting, pageLooksLikeSearchResultForTesting, preferredPaginationForTesting, rankCandidatesForTesting, refineCandidateFieldsForTesting, resetManualOverlayHintKeysForTesting, resolveSearchSubmitButtonByGeometryForTesting, resolveSearchSubmitButtonForTesting, sanitizeCandidatePaginationByLayoutForTesting, scoreSearchResultPageForTesting, selectDetailUrlFieldForTesting, shouldPromptForLoginInterventionForTesting, writeManualOverlayHintOnceForTesting } from '../dist/runtime/detector/page-detector.js';
 import { candidateIdsForAnnotatedScreenshotForTesting, candidateIdsForCandidateScreenshotsForTesting } from '../dist/runtime/detector/agent-visual-artifacts.js';
 import { protectedSmartResultToCandidatesForTesting } from '../dist/runtime/detector/protected-smart.js';
 import { buildTaskFromCandidate } from '../dist/runtime/detector/xml.js';
@@ -1592,6 +1592,99 @@ test('goal ranking keeps real search results above footer/header navigation', ()
   ], '采集 MDN 搜索结果列表');
 
   assert.equal(ranked[0].id, 'fallback_search_results_1');
+});
+
+test('semantic business detector prefers GoYellow-style business cards over nearby-city SEO links', async () => {
+  const page = fakeSearchResultBlockPage({
+    elements: [
+      {
+        tag: 'main',
+        attrs: { className: 'result-container-main' },
+        rect: { left: 0, top: 80, right: 1200, bottom: 1300 },
+        children: [
+          {
+            tag: 'section',
+            attrs: { className: 'result-list' },
+            rect: { left: 150, top: 240, right: 930, bottom: 760 },
+            children: [
+              goYellowBusinessRow(1, 'Förg - Sandner', 'https://www.goyellow.de/home/bauunternehmen-foerg-sandner-bayerisch-gmain--bstl34.html', 'Baugewerbe und Hausbau', 'Obere Bahnhofstr. 3, 83457 Bayerisch Gmain', 'https://www.goyellow.de/images/categories/default-1.svg'),
+              goYellowBusinessRow(2, 'Förg Johann Baugeschäft', 'https://www.goyellow.de/home/bauunternehmen-foerg-bayerisch-gmain--31p6l.html', 'Baugewerbe und Hausbau', 'Obere Bahnhofstr. 3, 83457 Bayerisch Gmain', 'https://www.goyellow.de/images/categories/default-5.svg')
+            ]
+          },
+          {
+            tag: 'div',
+            text: 'Weitere Orte in der Nähe',
+            attrs: { className: 'resultlistseolinks toplocalities' },
+            rect: { left: 150, top: 950, right: 930, bottom: 1120 },
+            children: [
+              { tag: 'a', text: 'Bad Reichenhall', attrs: { href: 'https://www.goyellow.de/deutschland/bayern/bad-reichenhall', title: 'Bad Reichenhall' }, rect: { left: 180, top: 990, right: 300, bottom: 1012 } },
+              { tag: 'a', text: 'Piding', attrs: { href: 'https://www.goyellow.de/deutschland/bayern/piding', title: 'Piding' }, rect: { left: 180, top: 1018, right: 240, bottom: 1040 } },
+              { tag: 'a', text: 'Schneizlreuth', attrs: { href: 'https://www.goyellow.de/deutschland/bayern/schneizlreuth', title: 'Schneizlreuth' }, rect: { left: 180, top: 1046, right: 300, bottom: 1068 } },
+              { tag: 'a', text: 'Bischofswiesen', attrs: { href: 'https://www.goyellow.de/deutschland/bayern/bischofswiesen', title: 'Bischofswiesen' }, rect: { left: 180, top: 1074, right: 320, bottom: 1096 } }
+            ]
+          }
+        ]
+      }
+    ]
+  });
+
+  const [business] = await detectSemanticBusinessCardsForTesting(page);
+
+  assert.equal(business.type, 'search_results');
+  assert.equal(business.itemCount, 2);
+  assert.deepEqual(business.fields.map((field) => field.name), ['business_name', 'detail_url', 'category', 'address', 'logo_url']);
+  assert.equal(business.sampleRows[0].business_name, 'Förg - Sandner');
+  assert.equal(business.sampleRows[0].address, 'Obere Bahnhofstr. 3, 83457 Bayerisch Gmain');
+
+  const seoLinks = {
+    id: 'fallback_search_results_1',
+    type: 'search_results',
+    title: 'Nearby city links',
+    confidence: 0.99,
+    selector: 'div.resultlistseolinks',
+    xpath: '/html/body/main/div[2]',
+    itemSelector: 'a',
+    itemXPath: '/html/body/main/div[2]/a',
+    itemCount: 4,
+    fields: [
+      { name: 'title', kind: 'text', selector: 'a', xpath: '/html/body/main/div[2]/a', relativeXPath: '.', samples: ['Bad Reichenhall', 'Piding', 'Schneizlreuth'] },
+      { name: 'url', kind: 'href', selector: 'a', xpath: '/html/body/main/div[2]/a', relativeXPath: '.', samples: ['https://www.goyellow.de/deutschland/bayern/bad-reichenhall', 'https://www.goyellow.de/deutschland/bayern/piding', 'https://www.goyellow.de/deutschland/bayern/schneizlreuth'] }
+    ],
+    sampleRows: [
+      { title: 'Bad Reichenhall', url: 'https://www.goyellow.de/deutschland/bayern/bad-reichenhall' },
+      { title: 'Piding', url: 'https://www.goyellow.de/deutschland/bayern/piding' }
+    ],
+    reasons: ['Fallback detector candidate']
+  };
+  const ranked = applyGoalScoresForTesting([
+    { id: 'semantic_business_1', title: 'Semantic business records', ...business },
+    seoLinks
+  ], '采集搜索结果列表前10个商家，字段包括商家名称、详情链接、地址、电话、网站、类别/描述');
+
+  assert.equal(ranked[0].id, 'semantic_business_1');
+});
+
+test('semantic business detector skips broad result containers that wrap business cards', async () => {
+  const page = fakeSearchResultBlockPage({
+    elements: [
+      {
+        tag: 'main',
+        attrs: { className: 'result-container-main row' },
+        rect: { left: 0, top: 80, right: 1200, bottom: 1300 },
+        children: [
+          goYellowBusinessRow(1, 'Förg - Sandner', 'https://www.goyellow.de/home/bauunternehmen-foerg-sandner-bayerisch-gmain--bstl34.html', 'Baugewerbe und Hausbau', 'Obere Bahnhofstr. 3, 83457 Bayerisch Gmain', 'https://www.goyellow.de/images/categories/default-1.svg'),
+          goYellowBusinessRow(2, 'Förg Johann Baugeschäft', 'https://www.goyellow.de/home/bauunternehmen-foerg-bayerisch-gmain--31p6l.html', 'Baugewerbe und Hausbau', 'Obere Bahnhofstr. 3, 83457 Bayerisch Gmain', 'https://www.goyellow.de/images/categories/default-5.svg')
+        ]
+      }
+    ]
+  });
+
+  const [business] = await detectSemanticBusinessCardsForTesting(page);
+
+  assert.equal(business.itemCount, 2);
+  assert.equal(business.itemSelector.includes('gyresultrecord'), true);
+  assert.equal(business.sampleRows[0].business_name, 'Förg - Sandner');
+  assert.equal(business.sampleRows[1].business_name, 'Förg Johann Baugeschäft');
 });
 
 test('detectSearchResultBlocks finds MDN-style result cards with title links and summaries', async () => {
@@ -6154,13 +6247,24 @@ function matchesSimpleSelector(element, selector) {
   if (withoutAttributeSelectors.trim().includes(' ')) return matchesSimpleSelector(element, scopeMatch.split(/\s+/).at(-1));
   const tagMatch = scopeMatch.match(/^[a-zA-Z][\w-]*/)?.[0];
   if (tagMatch && element.localName !== tagMatch.toLowerCase()) return false;
+  for (const className of scopeMatch.matchAll(/\.([\w-]+)/g)) {
+    if (!String(element.className || '').split(/\s+/).includes(className[1])) return false;
+  }
   for (const match of scopeMatch.matchAll(/\[class\*="([^"]+)" i\]/g)) {
     if (!String(element.className || '').toLowerCase().includes(match[1].toLowerCase())) return false;
   }
+  for (const match of scopeMatch.matchAll(/\[([^=\]\*]+)\*="([^"]+)"(?:\s+i)?\]/g)) {
+    if (!String(element.getAttribute(match[1]) || '').toLowerCase().includes(match[2].toLowerCase())) return false;
+  }
   for (const match of scopeMatch.matchAll(/\[([^=\]]+)="([^"]+)"\]/g)) {
     const attr = match[1];
-    if (attr === 'class*') continue;
+    if (attr.endsWith('*')) continue;
     if (String(element.getAttribute(attr) || '') !== match[2]) return false;
+  }
+  for (const match of scopeMatch.matchAll(/\[([^=\]\*]+)\]/g)) {
+    const attr = match[1].trim();
+    if (attr === 'class' || attr.includes('"')) continue;
+    if (element.getAttribute(attr) === undefined || element.getAttribute(attr) === null) return false;
   }
   return true;
 }
@@ -6440,6 +6544,50 @@ function mdnResultRow(index, title, href, category, summary) {
   };
 }
 
+function goYellowBusinessRow(index, name, href, category, address, logo) {
+  const top = 260 + index * 190;
+  return {
+    tag: 'article',
+    attrs: {
+      className: 'article gyresultrecord',
+      itemtype: 'https://schema.org/LocalBusiness https://schema.org/HomeAndConstructionBusiness',
+      itemscope: '',
+      dataSeourl: href.replace('https://www.goyellow.de', ''),
+      title: `Zur Detailseite von ${name} in Bayerisch Gmain`
+    },
+    rect: { left: 170, top, right: 860, bottom: top + 150 },
+    children: [
+      {
+        tag: 'div',
+        attrs: { className: 'gyresultrecord__categories' },
+        rect: { left: 190, top: top + 12, right: 380, bottom: top + 38 },
+        children: [
+          { tag: 'span', text: category, attrs: { className: 'gyresultrecord__categories-element' }, rect: { left: 190, top: top + 12, right: 360, bottom: top + 36 } }
+        ]
+      },
+      {
+        tag: 'h2',
+        attrs: { className: 'gyresultrecord__locname', itemprop: 'name' },
+        rect: { left: 190, top: top + 46, right: 520, bottom: top + 76 },
+        children: [
+          { tag: 'a', text: name, attrs: { href, className: 'gyresultrecord__locname-a', itemprop: 'url' }, rect: { left: 190, top: top + 46, right: 520, bottom: top + 74 } }
+        ]
+      },
+      {
+        tag: 'div',
+        text: address,
+        attrs: { className: 'postal-address' },
+        rect: { left: 190, top: top + 86, right: 570, bottom: top + 112 }
+      },
+      {
+        tag: 'img',
+        attrs: { src: logo, itemprop: 'contentUrl', alt: `${name} logo` },
+        rect: { left: 650, top: top + 28, right: 770, bottom: top + 120 }
+      }
+    ]
+  };
+}
+
 function fakeSearchResultBlockPage({ elements }) {
   return {
     async evaluate(fn, input) {
@@ -6488,6 +6636,8 @@ function fakeSearchResultBlockPage({ elements }) {
           this.attrs = attrs;
           this.rect = rect;
           this.href = attrs.href || '';
+          this.src = attrs.src || '';
+          this.currentSrc = attrs.src || '';
           this.textContent = text;
           this.innerText = text;
           if (text) this.childNodes.push({ nodeType: 3, textContent: text });
@@ -6513,6 +6663,13 @@ function fakeSearchResultBlockPage({ elements }) {
           if (name === 'href') return this.href || this.attrs.href || '';
           if (name === 'role') return this.attrs.role || '';
           if (name === 'aria-label') return this.attrs.ariaLabel || '';
+          if (name === 'title') return this.attrs.title || '';
+          if (name === 'alt') return this.attrs.alt || '';
+          if (name === 'src') return this.src || this.attrs.src || '';
+          if (name === 'itemtype') return this.attrs.itemtype || '';
+          if (name === 'itemprop') return this.attrs.itemprop || '';
+          if (name === 'itemscope') return this.attrs.itemscope || '';
+          if (name === 'data-seourl') return this.attrs.dataSeourl || '';
           return this.attrs[name] || '';
         }
         getBoundingClientRect() {

@@ -2228,6 +2228,7 @@ async function detectRawCandidates(page: Page, interactive = false): Promise<Raw
   candidates.push(...await detectTables(page));
   candidates.push(...await detectRepeatedCards(page));
   candidates.push(...await detectSearchResultBlocks(page));
+  candidates.push(...await detectSemanticBusinessCards(page));
   candidates.push(...await detectDeptaCandidates(page));
   if (interactive) {
     candidates.push(...await detectInteractiveElementGroups(page));
@@ -9728,6 +9729,398 @@ async function detectSearchResultBlocks(page: Page): Promise<RawCandidate[]> {
   return groups.map((group) => searchResultBlockCandidate(group));
 }
 
+async function detectSemanticBusinessCards(page: Page): Promise<RawCandidate[]> {
+  const groups = await page.evaluate(() => {
+    type BusinessRow = {
+      element: Element;
+      name: string;
+      href: string;
+      category: string;
+      address: string;
+      image: string;
+      namePath: string;
+      categoryPath: string;
+      addressPath: string;
+      imagePath: string;
+      semanticScore: number;
+    };
+    type BusinessGroup = {
+      parentSelector: string;
+      parentXPath: string;
+      itemSelector: string;
+      itemXPath: string;
+      itemCount: number;
+      namePath: string;
+      categoryPath: string;
+      addressPath: string;
+      imagePath: string;
+      rows: Array<{
+        name: string;
+        href: string;
+        category: string;
+        address: string;
+        image: string;
+      }>;
+      reasons: string[];
+    };
+
+    const ignored = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG', 'CANVAS', 'TEMPLATE']);
+
+    function text(element: Element): string {
+      return ((element as HTMLElement).innerText || element.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+    function visible(element: Element): boolean {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element as HTMLElement);
+      return rect.width > 24 && rect.height > 12 && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+    }
+    function xpath(element: Element): string {
+      const parts: string[] = [];
+      let current: Element | null = element;
+      while (current && current.nodeType === Node.ELEMENT_NODE) {
+        const parentElement: Element | null = current.parentElement;
+        const same = parentElement ? Array.from(parentElement.children).filter((item: Element) => item.tagName === current!.tagName) : [];
+        parts.unshift(`${current.tagName.toLowerCase()}[${same.indexOf(current) + 1 || 1}]`);
+        current = parentElement;
+      }
+      return `/${parts.join('/')}`;
+    }
+    function selector(element: Element): string {
+      const parts: string[] = [];
+      let current: Element | null = element;
+      while (current && current !== document.body && parts.length < 5) {
+        const html = current as HTMLElement;
+        if (html.id && !/[^\w-]/.test(html.id)) {
+          parts.unshift(`#${CSS.escape(html.id)}`);
+          break;
+        }
+        const classes = Array.from(html.classList).filter((item) => !/^\d/.test(item)).slice(0, 2).map((item) => `.${CSS.escape(item)}`).join('');
+        const parentElement: Element | null = current.parentElement;
+        const same = parentElement ? Array.from(parentElement.children).filter((item: Element) => item.tagName === current!.tagName) : [];
+        const nth = same.length > 1 ? `:nth-of-type(${same.indexOf(current) + 1})` : '';
+        parts.unshift(`${current.tagName.toLowerCase()}${classes}${nth}`);
+        current = parentElement;
+      }
+      return parts.join(' > ') || element.tagName.toLowerCase();
+    }
+    function attrs(element: Element): string {
+      const html = element as HTMLElement;
+      return [
+        element.localName,
+        html.id,
+        typeof html.className === 'string' ? html.className : '',
+        html.getAttribute('role') || '',
+        html.getAttribute('itemtype') || '',
+        html.getAttribute('itemprop') || '',
+        html.getAttribute('data-seourl') || '',
+        html.getAttribute('title') || ''
+      ].join(' ');
+    }
+    function stableClassTokens(element: Element): string[] {
+      const html = element as HTMLElement;
+      if (typeof html.className !== 'string') return [];
+      return html.className
+        .split(/\s+/)
+        .map((token) => token.trim())
+        .filter(Boolean)
+        .filter((token) => /^[A-Za-z_-][\w-]*$/.test(token))
+        .filter((token) => !/\d{3,}/.test(token))
+        .filter((token) => !/^(?:active|selected|current|first|last|odd|even|hover|focus|show|hide|open|closed|row|col|container)$/i.test(token));
+    }
+    function commonClassTokens(rows: BusinessRow[]): string[] {
+      if (!rows.length) return [];
+      const [first, ...rest] = rows.map((row) => new Set(stableClassTokens(row.element)));
+      return Array.from(first)
+        .filter((token) => rest.every((tokens) => tokens.has(token)))
+        .slice(0, 3);
+    }
+    function classXPathPredicate(token: string): string {
+      return `[contains(concat(" ", normalize-space(@class), " "), " ${token} ")]`;
+    }
+    function classSelectorSuffix(tokens: string[]): string {
+      return tokens.map((token) => `.${CSS.escape(token)}`).join('');
+    }
+    function boilerplateLike(element: Element): boolean {
+      const value = `${attrs(element)} ${text(element).slice(0, 400)}`;
+      return Boolean(element.closest('header,footer,nav,aside,[role="banner"],[role="contentinfo"],[role="navigation"],[role="complementary"]'))
+        || /(footer|contentinfo|copyright|privacy|terms|login|signin|signup|nav|menu|sidebar|aside|advert|banner|sponsor|cookie|newsletter|breadcrumb|toplocalit|seo|附近|城市|orte in der nähe)/i.test(value);
+    }
+    function relativePath(from: Element, to: Element): string {
+      if (from === to) return '.';
+      const parts: string[] = [];
+      let current: Element | null = to;
+      while (current && current !== from) {
+        const parentElement: Element | null = current.parentElement;
+        if (!parentElement) return '.';
+        const same = Array.from(parentElement.children).filter((item: Element) => item.tagName === current!.tagName);
+        parts.unshift(`${current.tagName.toLowerCase()}[${same.indexOf(current) + 1 || 1}]`);
+        current = parentElement;
+      }
+      return current === from ? `./${parts.join('/')}` : '.';
+    }
+    function fieldElement(row: Element, selectors: string[], maxLength: number): Element | null {
+      for (const selectorValue of selectors) {
+        const match = Array.from(row.querySelectorAll(selectorValue))
+          .filter((element) => visible(element))
+          .find((element) => {
+            const value = text(element);
+            return value.length >= 2 && value.length <= maxLength;
+          });
+        if (match) return match;
+      }
+      return null;
+    }
+    function nameLinkFor(row: Element): HTMLAnchorElement | null {
+      const preferred = fieldElement(row, [
+        '[itemprop="name"] a',
+        'h1 a',
+        'h2 a',
+        'h3 a',
+        'h4 a',
+        '[class*="name" i] a',
+        '[class*="title" i] a',
+        '[class*="locname" i] a'
+      ], 220);
+      if (preferred?.tagName === 'A') return preferred as HTMLAnchorElement;
+      const preferredLink: Element | null = preferred ? preferred.querySelector('a') : null;
+      if (preferredLink?.tagName === 'A') return preferredLink as HTMLAnchorElement;
+      const links = Array.from(row.querySelectorAll('a')).filter(visible) as HTMLAnchorElement[];
+      return links
+        .map((link, index) => {
+          const value = text(link);
+          const href = link.href || link.getAttribute('href') || '';
+          if (!href || value.length < 2 || value.length > 220) return null;
+          const identity = `${attrs(link)} ${attrs(link.parentElement ?? link)} ${href}`;
+          let score = 0;
+          if (/name|title|locname|company|business|detail|home|record|result/i.test(identity)) score += 0.42;
+          if (/^(?:H1|H2|H3|H4)$/i.test(link.parentElement?.tagName || '')) score += 0.34;
+          if (/\/(?:home|detail|details|firma|company|business|branchenbuch)\//i.test(href) || /\.html(?:[?#]|$)/i.test(href)) score += 0.22;
+          if (value.length >= 4 && value.length <= 80) score += 0.12;
+          score -= index * 0.03;
+          return { link, score };
+        })
+        .filter((item): item is { link: HTMLAnchorElement; score: number } => Boolean(item))
+        .sort((a, b) => b.score - a.score)[0]?.link ?? null;
+    }
+    function categoryFor(row: Element, name: string): { value: string; path: string } {
+      const element = fieldElement(row, [
+        '[itemprop="category"]',
+        '[class*="categor" i]',
+        '[class*="branche" i]',
+        '[class*="industry" i]',
+        '[class*="tag" i]'
+      ], 140);
+      const value = element ? text(element) : '';
+      return value && value !== name ? { value: value.slice(0, 160), path: relativePath(row, element!) } : { value: '', path: '' };
+    }
+    function addressFor(row: Element, name: string): { value: string; path: string } {
+      const element = fieldElement(row, [
+        '[itemprop="address"]',
+        '[class*="address" i]',
+        '[class*="adresse" i]',
+        '[class*="postal" i]',
+        '[class*="street" i]',
+        '[class*="location" i]'
+      ], 220);
+      const value = element ? text(element) : '';
+      return value && value !== name ? { value: value.slice(0, 240), path: relativePath(row, element!) } : { value: '', path: '' };
+    }
+    function imageFor(row: Element): { value: string; path: string } {
+      const element = Array.from(row.querySelectorAll('img'))
+        .filter(visible)
+        .find((image) => {
+          const src = (image as HTMLImageElement).currentSrc || (image as HTMLImageElement).src || image.getAttribute('src') || '';
+          return Boolean(src);
+        });
+      if (!element) return { value: '', path: '' };
+      const src = (element as HTMLImageElement).currentSrc || (element as HTMLImageElement).src || element.getAttribute('src') || '';
+      return { value: src, path: relativePath(row, element) };
+    }
+    function hasOwnBusinessCardIdentity(element: Element): boolean {
+      const html = element as HTMLElement;
+      const classTokens = typeof html.className === 'string' ? html.className.split(/\s+/).filter(Boolean) : [];
+      const identity = attrs(element);
+      return /LocalBusiness|HomeAndConstructionBusiness|Organization/i.test(identity)
+        || classTokens.some((token) => /^(?:gyresultrecord|business-card|company-card|merchant-card|listing-card|resultrecord)$/i.test(token));
+    }
+    function descendantBusinessCardCount(element: Element): number {
+      const selectorValue = [
+        '[itemscope][itemtype*="LocalBusiness"]',
+        '[itemscope][itemtype*="Organization"]',
+        '[itemscope][itemtype*="HomeAndConstructionBusiness"]',
+        '[class~="gyresultrecord"]',
+        '[class*="business-card" i]',
+        '[class*="company-card" i]',
+        '[class*="merchant-card" i]',
+        '[class*="listing-card" i]'
+      ].join(',');
+      return Array.from(element.querySelectorAll(selectorValue))
+        .filter((child) => !ignored.has(child.tagName) && visible(child))
+        .filter((child) => {
+          const value = text(child);
+          return value.length >= 12 && value.length <= 1800 && Boolean(nameLinkFor(child));
+        })
+        .length;
+    }
+    function candidateElements(): Element[] {
+      const selectorValue = [
+        '[itemscope][itemtype*="LocalBusiness"]',
+        '[itemscope][itemtype*="Organization"]',
+        '[itemscope][itemtype*="HomeAndConstructionBusiness"]',
+        'article',
+        '[class*="result" i]',
+        '[class*="record" i]',
+        '[class*="listing" i]',
+        '[class*="business" i]',
+        '[class*="company" i]',
+        '[class*="merchant" i]'
+      ].join(',');
+      return Array.from(document.querySelectorAll(selectorValue))
+        .filter((element) => !ignored.has(element.tagName) && visible(element));
+    }
+    function rowFrom(element: Element): BusinessRow | null {
+      if (boilerplateLike(element)) return null;
+      const value = text(element);
+      if (value.length < 12 || value.length > 1800) return null;
+      if (!hasOwnBusinessCardIdentity(element) && descendantBusinessCardCount(element) >= 2) return null;
+      const directBusinessChildren = Array.from(element.children)
+        .filter((child) => !ignored.has(child.tagName) && visible(child) && child.querySelector('a') && text(child).length >= 12)
+        .filter((child) => /LocalBusiness|Organization|result|record|listing|business|company|merchant/i.test(attrs(child)))
+        .length;
+      if (directBusinessChildren >= 2) return null;
+      const nameLink = nameLinkFor(element);
+      if (!nameLink) return null;
+      const name = text(nameLink).slice(0, 220);
+      const href = nameLink.href || nameLink.getAttribute('href') || '';
+      if (!name || !href) return null;
+      const category = categoryFor(element, name);
+      const address = addressFor(element, name);
+      const image = imageFor(element);
+      const identity = attrs(element);
+      const semanticScore = [
+        /LocalBusiness|HomeAndConstructionBusiness|Organization/i.test(identity) ? 0.5 : 0,
+        /result|record|listing|business|company|merchant|gyresultrecord/i.test(identity) ? 0.25 : 0,
+        address.value ? 0.2 : 0,
+        category.value ? 0.14 : 0,
+        image.value ? 0.06 : 0
+      ].reduce((sum, item) => sum + item, 0);
+      if (semanticScore < 0.35 && !address.value) return null;
+      return {
+        element,
+        name,
+        href,
+        category: category.value,
+        address: address.value,
+        image: image.value,
+        namePath: relativePath(element, nameLink),
+        categoryPath: category.path,
+        addressPath: address.path,
+        imagePath: image.path,
+        semanticScore
+      };
+    }
+    function commonItemXPath(rows: BusinessRow[]): string {
+      const parent = rows[0]?.element.parentElement;
+      if (!parent || !rows.every((row) => row.element.parentElement === parent)) return xpath(rows[0].element);
+      const tag = rows[0].element.tagName.toLowerCase();
+      if (rows.every((row) => row.element.tagName.toLowerCase() === tag)) {
+        const commonClasses = commonClassTokens(rows);
+        if (commonClasses.length) return `${xpath(parent)}/${tag}${commonClasses.map(classXPathPredicate).join('')}`;
+        const sameTagChildren = Array.from(parent.children).filter((child) => child.tagName.toLowerCase() === tag);
+        if (sameTagChildren.length === rows.length) return `${xpath(parent)}/${tag}`;
+      }
+      return xpath(rows[0].element).replace(/\[\d+\]$/, '');
+    }
+    function commonItemSelector(rows: BusinessRow[]): string {
+      const first = rows[0];
+      const parent = first?.element.parentElement;
+      if (!first || !parent || !rows.every((row) => row.element.parentElement === parent)) return selector(first.element);
+      const tag = first.element.tagName.toLowerCase();
+      if (rows.every((row) => row.element.tagName.toLowerCase() === tag)) {
+        const commonClasses = commonClassTokens(rows);
+        if (commonClasses.length) return `${selector(parent)} > ${tag}${classSelectorSuffix(commonClasses)}`;
+        const sameTagChildren = Array.from(parent.children).filter((child) => child.tagName.toLowerCase() === tag);
+        if (sameTagChildren.length === rows.length) return `${selector(parent)} > ${tag}`;
+      }
+      return selector(first.element);
+    }
+    function similarKey(row: BusinessRow): string {
+      const html = row.element as HTMLElement;
+      const classes = Array.from(html.classList)
+        .filter((item) => !/\d{2,}/.test(item))
+        .slice(0, 3)
+        .sort()
+        .join('.');
+      const itemtype = html.getAttribute('itemtype') || '';
+      return [row.element.tagName.toLowerCase(), classes, itemtype].join('|');
+    }
+    const rowsByElement = new Map<Element, BusinessRow>();
+    for (const element of candidateElements()) {
+      const row = rowFrom(element);
+      if (!row) continue;
+      const existingParent = Array.from(rowsByElement.values()).find((existing) => existing.element.contains(row.element));
+      if (existingParent) continue;
+      for (const [key, existing] of Array.from(rowsByElement.entries())) {
+        if (row.element.contains(existing.element)) rowsByElement.delete(key);
+      }
+      rowsByElement.set(element, row);
+    }
+
+    const byParent = new Map<Element, BusinessRow[]>();
+    for (const row of rowsByElement.values()) {
+      const parent = row.element.parentElement;
+      if (!parent) continue;
+      byParent.set(parent, [...(byParent.get(parent) ?? []), row]);
+    }
+
+    const groups: BusinessGroup[] = [];
+    for (const [parent, rows] of byParent.entries()) {
+      const buckets = new Map<string, BusinessRow[]>();
+      for (const row of rows) {
+        const key = similarKey(row);
+        buckets.set(key, [...(buckets.get(key) ?? []), row]);
+      }
+      for (const bucketRows of buckets.values()) {
+        if (bucketRows.length < 2) continue;
+        const uniqueNames = new Set(bucketRows.map((row) => row.name.toLowerCase()));
+        const uniqueHrefs = new Set(bucketRows.map((row) => row.href.replace(/[?#].*$/g, '').toLowerCase()));
+        if (uniqueNames.size < Math.min(2, bucketRows.length) || uniqueHrefs.size < Math.min(2, bucketRows.length)) continue;
+        const scored = bucketRows.reduce((sum, row) => sum + row.semanticScore, 0) / bucketRows.length;
+        const first = bucketRows[0];
+        groups.push({
+          parentSelector: selector(parent),
+          parentXPath: xpath(parent),
+          itemSelector: commonItemSelector(bucketRows),
+          itemXPath: commonItemXPath(bucketRows),
+          itemCount: bucketRows.length,
+          namePath: first.namePath || './/a[1]',
+          categoryPath: first.categoryPath,
+          addressPath: first.addressPath,
+          imagePath: first.imagePath,
+          rows: bucketRows.slice(0, 5).map((row) => ({
+            name: row.name,
+            href: row.href,
+            category: row.category,
+            address: row.address,
+            image: row.image
+          })),
+          reasons: [
+            'Semantic business/local listing cards',
+            ...(scored >= 0.5 ? ['schema.org LocalBusiness/Organization or business-card semantics'] : []),
+            ...(bucketRows.some((row) => row.address) ? ['business address field detected'] : []),
+            ...(bucketRows.some((row) => row.category) ? ['business category field detected'] : [])
+          ]
+        });
+      }
+    }
+    return groups
+      .sort((a, b) => b.itemCount - a.itemCount)
+      .slice(0, 10);
+  });
+
+  return groups.map((group) => semanticBusinessCandidate(group));
+}
+
 async function detectInteractiveElementGroups(page: Page): Promise<RawCandidate[]> {
   const groups = await page.evaluate(() => {
     const ignored = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG', 'CANVAS', 'PATH']);
@@ -9892,6 +10285,10 @@ export async function detectInteractivePaginationOptionsForTesting(page: Page, c
 
 export async function detectSearchResultBlocksForTesting(page: Page): Promise<RawCandidate[]> {
   return detectSearchResultBlocks(page);
+}
+
+export async function detectSemanticBusinessCardsForTesting(page: Page): Promise<RawCandidate[]> {
+  return detectSemanticBusinessCards(page);
 }
 
 export async function detectPageObstructionsForTesting(page: Page): Promise<Array<{
@@ -11032,6 +11429,104 @@ function searchResultBlockCandidate(group: {
       ...(group.boilerplateLike ? ['Likely weak footer/navigation boilerplate group'] : [])
     ],
     confidence: scoreCandidate({ itemCount: group.itemCount, fieldCount: fields.length, semantic, penalty })
+  };
+}
+
+function semanticBusinessCandidate(group: {
+  parentSelector: string;
+  parentXPath: string;
+  itemSelector: string;
+  itemXPath: string;
+  itemCount: number;
+  namePath: string;
+  categoryPath: string;
+  addressPath: string;
+  imagePath: string;
+  rows: Array<{ name: string; href: string; category: string; address: string; image: string }>;
+  reasons: string[];
+}): RawCandidate {
+  const nameXPath = appendRelativeXPath(group.itemXPath, group.namePath || './/a[1]');
+  const fields: DetectedField[] = [
+    {
+      name: 'business_name',
+      kind: 'text',
+      selector: `${group.itemSelector} a`,
+      xpath: nameXPath,
+      relativeSelector: 'a',
+      relativeXPath: group.namePath || './/a[1]',
+      samples: group.rows.map((row) => row.name).filter(Boolean).slice(0, 3)
+    },
+    {
+      name: 'detail_url',
+      kind: 'href',
+      selector: `${group.itemSelector} a`,
+      xpath: nameXPath,
+      relativeSelector: 'a',
+      relativeXPath: group.namePath || './/a[1]',
+      samples: group.rows.map((row) => row.href).filter(Boolean).slice(0, 3)
+    }
+  ];
+  const categorySamples = group.rows.map((row) => row.category).filter(Boolean);
+  if (group.categoryPath && categorySamples.length >= 2) {
+    fields.push({
+      name: 'category',
+      kind: 'text',
+      selector: group.itemSelector,
+      xpath: appendRelativeXPath(group.itemXPath, group.categoryPath),
+      relativeSelector: '',
+      relativeXPath: group.categoryPath,
+      samples: categorySamples.slice(0, 3)
+    });
+  }
+  const addressSamples = group.rows.map((row) => row.address).filter(Boolean);
+  if (group.addressPath && addressSamples.length >= 2) {
+    fields.push({
+      name: 'address',
+      kind: 'text',
+      selector: group.itemSelector,
+      xpath: appendRelativeXPath(group.itemXPath, group.addressPath),
+      relativeSelector: '',
+      relativeXPath: group.addressPath,
+      samples: addressSamples.slice(0, 3)
+    });
+  }
+  const imageSamples = group.rows.map((row) => row.image).filter(Boolean);
+  if (group.imagePath && imageSamples.length >= 2) {
+    fields.push({
+      name: 'logo_url',
+      kind: 'src',
+      selector: `${group.itemSelector} img`,
+      xpath: appendRelativeXPath(group.itemXPath, group.imagePath),
+      relativeSelector: 'img',
+      relativeXPath: group.imagePath,
+      samples: imageSamples.slice(0, 3)
+    });
+  }
+
+  const semantic = 2.6
+    + (categorySamples.length >= 2 ? 0.35 : 0)
+    + (addressSamples.length >= 2 ? 0.45 : 0)
+    + (imageSamples.length >= 2 ? 0.12 : 0);
+  return {
+    type: 'search_results',
+    selector: group.parentSelector,
+    xpath: group.parentXPath,
+    itemSelector: group.itemSelector,
+    itemXPath: group.itemXPath,
+    itemCount: group.itemCount,
+    fields,
+    sampleRows: group.rows.slice(0, 3).map((row) => ({
+      business_name: row.name,
+      detail_url: row.href,
+      ...(row.category ? { category: row.category } : {}),
+      ...(row.address ? { address: row.address } : {}),
+      ...(row.image ? { logo_url: row.image } : {})
+    })),
+    reasons: [
+      ...group.reasons,
+      `${group.itemCount} semantic business records found`
+    ],
+    confidence: scoreCandidate({ itemCount: group.itemCount, fieldCount: fields.length, semantic, penalty: 0 })
   };
 }
 

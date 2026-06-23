@@ -27,6 +27,10 @@ export function applyGoalScores(candidates: DetectedCandidate[], goal: string): 
         score += 0.16;
         reasons.push('goal asks for search/input');
       }
+      if (goalAsksForBusinessRecords(goal) && candidateLooksLikeBusinessRecords(candidate)) {
+        score += 0.2;
+        reasons.push('goal asks for business/local listing records');
+      }
       if (candidate.type === 'link_collection' && !/链接|url|导航|分类|link/i.test(goal)) {
         score -= 0.12;
       }
@@ -222,6 +226,8 @@ function candidateDataQualityBoost(candidate: DetectedCandidate): number {
   const hasRecordMetadata = candidateHasRecordMetadataSignal(candidate);
   const hasBracketedMetadata = candidateHasBracketedMetadata(candidate);
   const looksLikeLinkGridNavigation = candidateLooksLikeLinkGridNavigation(candidate, titleValues, hrefs);
+  const businessRecordLike = candidateLooksLikeBusinessRecords(candidate);
+  const localSeoLinks = candidateLooksLikeLocalSeoLinks(candidate, titleValues, hrefs);
   const nonEmptyCells = candidate.sampleRows.flatMap((row) => Object.values(row)).filter((value) => normalizeSampleValue(value)).length;
   const totalCells = Math.max(1, candidate.sampleRows.length * Math.max(1, fields.length));
   const fillRate = nonEmptyCells / totalCells;
@@ -246,12 +252,14 @@ function candidateDataQualityBoost(candidate: DetectedCandidate): number {
   if (longTitleRate >= 0.45 && hasHref) boost += 0.08;
   if (recordHrefRate >= 0.5 && longTitleRate >= 0.35) boost += 0.06;
   if (hasRecordMetadata && fields.length >= 4) boost += 0.05;
+  if (businessRecordLike) boost += 0.16;
   if (hasBracketedMetadata && hasDate && hasHref) boost += 0.04;
   if (fields.length >= 3) boost += 0.04;
   if (fillRate >= 0.7) boost += 0.03;
   if (smartFullColRate !== undefined) boost += Math.max(-0.08, Math.min(0.08, (smartFullColRate - 0.55) * 0.2));
   if (fields.some((field) => /reference|citation|referencetext|cs1format|脚注|引用/i.test(field.name))) boost -= 0.14;
   if (taxonomyLike) boost -= 0.55;
+  if (localSeoLinks) boost -= 0.34;
   if (taxonomyHrefRate >= 0.7 && longTitleRate < 0.35) boost -= 0.18;
   if (looksLikeLinkGridNavigation) boost -= 0.5;
   if (shallowLinkList && !hasDate && longTitleRate < 0.25) boost -= 0.28;
@@ -293,8 +301,75 @@ function candidateHasDateSignal(candidate: DetectedCandidate): boolean {
 function candidateHasRecordMetadataSignal(candidate: DetectedCandidate): boolean {
   return candidate.fields
     .filter((field) => field.kind === 'text')
-    .some((field) => /地区|区域|省份|城市|位置|地点|类型|分类|状态|价格|金额|公司|作者|来源|日期|时间|date|time|location|type|category|status|price|author|source/i.test(field.name)
+    .some((field) => /地区|区域|省份|城市|位置|地点|类型|分类|状态|价格|金额|公司|商家|企业|地址|作者|来源|日期|时间|date|time|location|type|category|status|price|author|source|business|company|address/i.test(field.name)
       || field.samples.some((sample) => isBracketedMetadataSample(sample) || looksLikeDateValue(sample)));
+}
+
+function goalAsksForBusinessRecords(goal: string): boolean {
+  return /商家|商户|店铺|门店|企业|公司|机构|黄页|地址|电话|联系|business|businesses|company|companies|merchant|listing|listings|address|phone|contact/i.test(goal);
+}
+
+function candidateLooksLikeBusinessRecords(candidate: DetectedCandidate): boolean {
+  const identity = [
+    candidate.title,
+    candidate.selector,
+    candidate.xpath,
+    candidate.itemSelector ?? '',
+    candidate.itemXPath ?? '',
+    candidate.reasons.join(' '),
+    ...candidate.fields.flatMap((field) => [field.name, field.selector, field.xpath, field.relativeXPath ?? '', ...field.samples.slice(0, 3)])
+  ].join(' ');
+  const fieldNames = candidate.fields.map((field) => field.name).join(' ');
+  const hasName = /business_name|商家|商户|店铺|企业|公司|名称|name|company|business/i.test(fieldNames);
+  const hasUrl = /detail_url|详情链接|标题链接|url|href|link/i.test(fieldNames) && candidate.fields.some((field) => field.kind === 'href' && field.samples.some(Boolean));
+  const hasAddress = /address|地址|location|位置|地点/i.test(fieldNames)
+    || candidate.fields.some((field) => field.samples.some(looksLikeAddressValue));
+  const hasContact = /phone|tel|telephone|电话|联系|fax|传真/i.test(fieldNames)
+    || candidate.fields.some((field) => field.samples.some((sample) => /(?:tel:|\+?\d[\d\s()./-]{5,}\d)/i.test(sample)));
+  const semantic = /LocalBusiness|Organization|business-card|business\/local listing|semantic business|gyresultrecord|listing|merchant|company/i.test(identity);
+  return Boolean(hasName && hasUrl && (hasAddress || hasContact || semantic));
+}
+
+function looksLikeAddressValue(value: string): boolean {
+  const normalized = String(value ?? '').replace(/\s+/g, ' ').trim();
+  if (!normalized) return false;
+  return /\b\d{4,6}\b/.test(normalized) && /(?:str\.?|straße|street|st\.|road|rd\.|avenue|ave\.|gasse|platz|weg|lane|ln\.|地址|路|街|号|栋)/i.test(normalized);
+}
+
+function candidateLooksLikeLocalSeoLinks(candidate: DetectedCandidate, titleValues: string[], hrefs: string[]): boolean {
+  if (candidate.itemCount < 3 || candidate.itemCount > 24) return false;
+  if (candidate.fields.length > 3 || !hrefs.length) return false;
+  if (candidateLooksLikeBusinessRecords(candidate)) return false;
+  const identity = [
+    candidate.title,
+    candidate.selector,
+    candidate.xpath,
+    candidate.itemSelector ?? '',
+    candidate.itemXPath ?? '',
+    candidate.reasons.join(' '),
+    ...candidate.fields.flatMap((field) => [field.name, field.selector, field.xpath, field.relativeXPath ?? ''])
+  ].join(' ');
+  const seoStructure = /(toplocalit|localit|nearby|neighbour|city|cities|stadt|orte|region|breadcrumb|seo|resultlistseo|附近|周边|城市)/i.test(identity);
+  const shortTitleRate = titleValues.length
+    ? titleValues.filter((value) => {
+      const normalized = normalizeSampleValue(value);
+      return normalized.length >= 2 && normalized.length <= 36 && !/[.!?。！？]/.test(normalized);
+    }).length / titleValues.length
+    : 0;
+  const localityHrefRate = hrefs.filter(isLikelyLocalityHrefValue).length / hrefs.length;
+  return shortTitleRate >= 0.75 && (seoStructure || localityHrefRate >= 0.65);
+}
+
+function isLikelyLocalityHrefValue(value: string): boolean {
+  if (!value || /^(?:javascript:|mailto:|tel:|#)/i.test(value)) return false;
+  try {
+    const parsed = new URL(value);
+    const path = parsed.pathname;
+    return /\/(?:deutschland|germany|places?|locations?|localit(?:y|ies)|city|cities|region|nearby)(?:\/|$)/i.test(path)
+      || /\/[a-z-]+\/[a-z-]+\/[a-z-]+\/?$/i.test(path) && !looksLikeRecordPath(path);
+  } catch {
+    return /\/(?:deutschland|germany|places?|locations?|localit(?:y|ies)|city|cities|region|nearby)(?:\/|$)/i.test(value);
+  }
 }
 
 function candidateHasBracketedMetadata(candidate: DetectedCandidate): boolean {
