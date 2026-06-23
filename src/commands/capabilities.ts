@@ -24,7 +24,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
       loginVerifiesKeyBeforeSaving: true,
       loginSupportsOAuthBrowserFlow: true,
       setupCommandsWithoutAuth: ['auth login', 'auth status', 'auth info', 'auth logout', 'env status', 'env prod', 'env online'],
-      diagnosticCommandsWithoutAuth: ['--help', '--version', 'capabilities', 'doctor', 'browser doctor'],
+      diagnosticCommandsWithoutAuth: ['--help', '--version', 'capabilities', 'doctor'],
       env: API_KEY_ENV,
       accessTokenEnv: ACCESS_TOKEN_ENV,
       file: join(homedir(), '.octoparse', 'credentials.json')
@@ -45,7 +45,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
         supported: false,
         reason: localChromePlatformNote(),
         errorCode: LINUX_ARM64_UNSUPPORTED_CODE,
-        affectedCommands: ['doctor without --chrome-path', 'browser doctor without --chrome-path', 'detect', 'run']
+        affectedCommands: ['doctor without --chrome-path', 'detect', 'run']
       }
     },
     machineContract: {

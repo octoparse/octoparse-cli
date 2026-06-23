@@ -1,6 +1,6 @@
 # CLI Copy Export
 
-Generated: 2026-06-16T07:24:10.733Z
+Generated: 2026-06-22T10:32:20.031Z
 
 Files:
 
@@ -17,7 +17,7 @@ Translator/editor workflow:
 
 Current counts:
 
-- Total rows: 1295
-- Reviewable rows: 1246
-- Runtime review rows: 1122
-- Locked rows: 49
+- Total rows: 1291
+- Reviewable rows: 1244
+- Runtime review rows: 1120
+- Locked rows: 47

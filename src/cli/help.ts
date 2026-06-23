@@ -220,10 +220,12 @@ Purpose:
   cleanup removes stale control files whose local control socket is gone.
 `,
     doctor: `Usage:
-  octoparse doctor [--chrome-path <path>] [--json]
-`,
-    browser: `Usage:
-  octoparse browser doctor [--chrome-path <path>] [--json]
+  octoparse doctor [--chrome-path <path>] [--output <runsDir>] [--api-base-url <url>] [--json]
+
+Purpose:
+  Check the full local CLI environment: Node.js, bundled engine files, protected
+  native module, Chrome resolution and launch, Linux display/Xvfb readiness,
+  authentication/API reachability, and local run directory write access.
 `
   };
 
@@ -237,14 +239,13 @@ Standalone Octoparse engine CLI.
 
 Usage:
   octoparse capabilities [--json]
-  octoparse doctor [--chrome-path <path>] [--json]
+  octoparse doctor [--chrome-path <path>] [--output <runsDir>] [--api-base-url <url>] [--json]
   octoparse auth login [--oauth] [--no-open] [--json]
   octoparse auth login --api-key <apiKey> [--api-base-url <url>] [--json]
   octoparse auth login <apiKey> [--api-base-url <url>] [--json]
   octoparse auth login [--stdin] [--no-open] [--api-base-url <url>] [--json]
   octoparse auth status [--json]
   octoparse auth logout [--json]
-  octoparse browser doctor [--chrome-path <path>] [--json]
   octoparse task list [--page <n>] [--page-size <n>] [--limit <n>] [--keyword <text>] [--json]
   octoparse task inspect <taskId> [--task-file <file.json|file.xml|file.otd>] [--json]
   octoparse task validate <taskId> [--task-file <file.json|file.xml|file.otd>] [--json]
@@ -293,7 +294,7 @@ Design:
 
 Authentication:
   OAuth or API key credentials are required for all functional commands, including local --task-file and .otd runs.
-  Only setup/diagnostic commands can run without it: --help, --version, capabilities, doctor, browser doctor, auth, env.
+  Only setup/diagnostic commands can run without it: --help, --version, capabilities, doctor, auth, env.
   API key page:                   ${API_KEYS_URL}
   octoparse auth login --oauth   open browser OAuth login and store tokens
   octoparse auth login <key>     verify and store a copied API key directly

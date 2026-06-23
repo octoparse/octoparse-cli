@@ -90,7 +90,6 @@ Commands available before authentication:
 - `--version`
 - `capabilities`
 - `doctor`
-- `browser doctor`
 - `auth login`
 - `auth status`
 - `auth logout`

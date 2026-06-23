@@ -156,7 +156,6 @@ octoparse data export <taskId> --source cloud --format csv
 # Help and diagnostics
 octoparse --help
 octoparse doctor
-octoparse browser doctor
 
 # Authentication
 octoparse auth login
@@ -210,7 +209,7 @@ octoparse data export <taskId> --source local --output ./runs --format xlsx
 ## Authentication
 
 Most commands require OAuth or API key credentials. Only setup and diagnostic commands such as
-`--help`, `--version`, `doctor`, `browser doctor`, `capabilities`, and `auth`
+`--help`, `--version`, `doctor`, `capabilities`, and `auth`
 can run before login.
 
 For interactive OAuth login:
@@ -306,7 +305,6 @@ Check the local environment:
 
 ```bash
 octoparse doctor
-octoparse browser doctor
 ```
 
 If the browser is not detected automatically, pass its path:

@@ -24,7 +24,7 @@ import { authCommand, ensureAuthenticated } from './commands/auth.js';
 import { capabilitiesCommand } from './commands/capabilities.js';
 import { cloudCommand } from './commands/cloud.js';
 import { dataExport, dataHistory } from './commands/data.js';
-import { browserDoctorCommand, doctorCommand } from './commands/doctor.js';
+import { doctorCommand } from './commands/doctor.js';
 import { hiddenEnvCommand } from './commands/env.js';
 import { localCommand } from './commands/local.js';
 import { detectCommand, detectUrlCommand } from './commands/detect.js';
@@ -103,10 +103,6 @@ async function main(argv: string[]): Promise<number> {
 
   if (command === 'doctor') {
     return doctorCommand(argv.slice(1));
-  }
-
-  if (command === 'browser' && subcommand === 'doctor') {
-    return browserDoctorCommand(rest);
   }
 
   if (command === 'auth') {
