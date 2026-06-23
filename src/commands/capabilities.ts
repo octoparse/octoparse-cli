@@ -182,10 +182,11 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
           agentResponsibilities: [
             'Do not ask the user to explain --prepare-agent, --preview-agent-plan, or --apply-agent-plan.',
             'Do not ask the user to hand-write JSON. The agent writes plan.json after reading context.json.',
-            'For the shortest path, call detect --agent --agent-command <trusted runner> --yes --run-sample <n> --json. This wraps prepare, plan, preview, apply, and sample run into one JSON envelope.',
+            'For the shortest path, call detect --agent --agent-command <trusted runner> --run-sample <n> --json. This wraps prepare, plan, preview, apply, and sample run into one JSON envelope. Passing --yes remains accepted for backward compatibility but is not required.',
             'Pass the user natural-language task description through --goal so context.goal captures the real intent.',
             'Before writing plan.json, open context.visualArtifacts.annotatedScreenshotPath when available, then inspect the selected candidate crop from context.visualArtifacts.candidateScreenshots.',
             'Use the annotated screenshot to map visible candidate labels to candidateId, then use the crop image to verify fields, detail links, and pagination controls.',
+            'Prefer context.visualElements[].id as selection.fields[].elementId for visible field choices; fall back to existing field names/source only when an elementId is unavailable.',
             'When context.screenshot.path is present, include visualReview.reviewed=true, visualReview.screenshotPath, visualReview.selectedCandidateId, visualReview.evidence, and visualReview.checks in the plan. Preview fails without visual evidence.',
             'Use context.decisionSummary, context.visualArtifacts, and context.decisionPolicy as mandatory judging inputs for candidates, layout, sidebars, ads, and pagination.',
             'Use context.resultValidationPolicy after running data: isolated missing fields in ads/topic cards/heterogeneous rows are normal partial data and must not trigger task recreation loops.',
@@ -196,7 +197,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
           ],
           quickWorkflow: {
             whenToUse: 'Use when the user wants the agent to create a task quickly and a trusted local agent runner is available.',
-            command: 'octoparse detect <url> --agent --agent-command <trusted-agent-runner> --goal <user task description> --output <task.json> --yes --run-sample 5 --json',
+            command: 'octoparse detect <url> --agent --agent-command <trusted-agent-runner> --goal <user task description> --output <task.json> --run-sample 5 --json',
             output: 'One JSON envelope containing generatedTask, preview, optional agentFiles, and sampleRun. sampleRun.envelope.data includes the local run summary when the sample run succeeds.',
             notes: [
               '--agent-command executes a local shell command; only pass a trusted runner.',
@@ -215,13 +216,13 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
             },
             {
               step: 'writePlan',
-              action: 'Read context.decisionSummary, open context.visualArtifacts.annotatedScreenshotPath with a vision-capable tool, inspect the selected candidate crop, choose the primary candidate, select/rename fields, record visualReview evidence/checks, and write plan.json using schema octopus.detect.agent-plan.v1.',
+              action: 'Read context.decisionSummary, open context.visualArtifacts.annotatedScreenshotPath with a vision-capable tool, inspect the selected candidate crop, choose the primary candidate, select/rename fields by visualElements[].id when available, record visualReview evidence/checks, and write plan.json using schema octopus.detect.agent-plan.v1.',
               guidance: [
                 'Opening context.visualArtifacts.annotatedScreenshotPath or context.screenshot.path is mandatory when present. Do not write plan.json from JSON samples alone.',
                 'Use context.decisionSummary first: it lists the recommended candidate, top alternatives, visual crop paths, field names, samples, strengths, and risks.',
                 'Follow context.decisionPolicy: use context.goal, visualArtifacts, candidate bounding boxes, sampleRows, fields, pagination, and diagnostics; do not rely on text samples alone.',
                 'Prefer context.recommendedCandidateId unless diagnostics/sampleRows show it is sidebar, navigation, ads, or wrong for the user goal.',
-                'Use existing field names through strings or { "source": "<field>", "as": "<newName>" }; do not invent XPath when an existing field works.',
+                'Use visual field references through { "elementId": "<context.visualElements[].id>", "as": "<newName>" } when available; otherwise use existing field names through strings or { "source": "<field>", "as": "<newName>" }. Do not invent XPath when an existing field or elementId works.',
                 'If using details, set selection.detail.mode=list_with_detail, urlField, and detail.fields.',
                 'Set selection.pagination to the candidate pagination, null/false to disable pagination, or omit to keep the candidate default.',
                 'Set visualReview.reviewed=true and describe screenshot evidence for the selected region and fields before preview/apply.'
@@ -249,7 +250,7 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
                 },
                 selection: {
                   candidateId: '<candidate id>',
-                  fields: ['<field name>', { source: '<field name>', as: '<new name>' }],
+                  fields: [{ elementId: '<visual element id>', as: '<new name>' }, '<field name>'],
                   pagination: null
                 }
               }
@@ -276,8 +277,8 @@ export async function capabilitiesCommand(version: string, json: boolean): Promi
             }
           ],
           oneShotWrapper: {
-            command: 'octoparse detect <url> --agent --agent-command <cmd> --output <task.json> --yes [--run-sample <n>]',
-            note: 'Use this only when a trusted agent runner command is available. --agent-command executes a local shell command. The runner receives OCTOPARSE_AGENT_CONTEXT and must write OCTOPARSE_AGENT_PLAN. --run-sample runs the generated task with --max-rows and embeds the run result in the same JSON envelope.'
+            command: 'octoparse detect <url> --agent --agent-command <cmd> --output <task.json> [--run-sample <n>]',
+            note: 'Use this only when a trusted agent runner command is available. --agent-command executes a local shell command. The runner receives OCTOPARSE_AGENT_CONTEXT and must write OCTOPARSE_AGENT_PLAN. Passing preview automatically writes the task; use --confirm-agent-plan only when an interactive confirmation is desired. --run-sample runs the generated task with --max-rows and embeds the run result in the same JSON envelope.'
           },
           nonGoals: [
             'Do not ask the user to hand-write plan.json.',

@@ -7,6 +7,8 @@ export type DetectedCandidateType =
   | 'form';
 
 export interface DetectedField {
+  fieldId?: string;
+  elementId?: string;
   name: string;
   kind: 'text' | 'href' | 'src' | 'value';
   selector: string;

@@ -5,17 +5,21 @@ import type {
   AgentVisualArtifacts,
   DetectAgentContext
 } from './agent-types.js';
+import { buildAgentVisualElements, ensureAgentElementIds } from './agent-elements.js';
 import { rankCandidates } from './candidate-ranking.js';
 
 export function buildAgentContext(result: PageDetectionResult, goal?: string): DetectAgentContext {
-  const recommended = recommendedCandidate(result.candidates);
+  const candidates = ensureAgentElementIds(result.candidates);
+  const recommended = recommendedCandidate(candidates);
   const visualArtifacts = buildAgentVisualArtifacts(result.agentScreenshot);
-  const decisionSummary = buildAgentDecisionSummary(result.candidates, recommended?.id, visualArtifacts);
+  const visualElements = buildAgentVisualElements(candidates);
+  const decisionSummary = buildAgentDecisionSummary(candidates, recommended?.id, visualArtifacts);
   return {
     schemaVersion: 'octopus.detect.agent-context.v1',
     instruction: [
       'You are choosing a web scraping task plan from deterministic candidates.',
       'Select candidateId for the primary data region. Optionally filter or rename fields.',
+      'Prefer selecting fields by visualElements[].id / elementId when a field appears in the annotated screenshot or candidate crop.',
       'For detail scraping, return detail.mode=list_with_detail or detail_only, urlField, and detail fields.',
       'Start with decisionSummary, then use visualArtifacts.annotatedScreenshotPath and candidate crop images to match candidateId to the visible page.',
       'Always use the user goal, annotated/full-page screenshot, candidate bounding boxes, diagnostics, and sample rows together when judging candidates.',
@@ -33,6 +37,7 @@ export function buildAgentContext(result: PageDetectionResult, goal?: string): D
         'context.decisionSummary',
         'context.visualArtifacts.annotatedScreenshotPath or context.screenshot.path',
         'context.visualArtifacts.candidateScreenshots',
+        'context.visualElements',
         'candidate.boundingBox or candidate.layout.boundingBox',
         'candidate.sampleRows',
         'candidate.fields',
@@ -68,10 +73,11 @@ export function buildAgentContext(result: PageDetectionResult, goal?: string): D
     ...(goal ? { goal } : {}),
     ...(recommended ? { recommendedCandidateId: recommended.id } : {}),
     ...(result.agentScreenshot ? { screenshot: result.agentScreenshot } : {}),
+    ...(visualElements.length ? { visualElements } : {}),
     ...(result.searchPlan ? { searchPlan: result.searchPlan } : {}),
     ...(result.popupDismissals?.length ? { popupDismissals: result.popupDismissals } : {}),
     ...(result.savedSession ? { savedSession: result.savedSession } : {}),
-    candidates: result.candidates
+    candidates
   };
 }
 
@@ -121,6 +127,11 @@ function buildAgentDecisionSummary(
         ...(candidate.layout?.role ? { role: candidate.layout.role } : {}),
         itemCount: candidate.itemCount,
         fieldNames: candidate.fields.map((field) => field.name),
+        fields: candidate.fields.map((field) => ({
+          name: field.name,
+          ...(field.elementId ? { elementId: field.elementId } : {}),
+          kind: field.kind
+        })),
         ...(candidate.sampleRows[0] ? { sampleRow: candidate.sampleRows[0] } : {}),
         visual: {
           ...(candidateBoundingBox(candidate) ? { boundingBox: candidateBoundingBox(candidate) } : {}),

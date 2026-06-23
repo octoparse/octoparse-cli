@@ -78,7 +78,7 @@ export function buildTaskFromAgentPlan(options: {
 
 function previewFields(fields: DetectedField[], sourceFields: DetectedField[]): AgentPreviewField[] {
   return fields.map((field) => {
-    const source = sourceFields.find((item) => item === field || item.name === field.name || item.xpath === field.xpath);
+    const source = findPreviewSourceField(field, sourceFields);
     const diagnostics = field.diagnostics ?? source?.diagnostics;
     const runtimeScope = field.relativeXPath ? 'loop_item' : 'page';
     const warnings = (diagnostics?.warnings ?? []).filter((warning) => !isAcceptableLoopFieldWarning(warning, field));
@@ -97,6 +97,15 @@ function previewFields(fields: DetectedField[], sourceFields: DetectedField[]): 
       ...(notes?.length ? { notes } : {})
     };
   });
+}
+
+function findPreviewSourceField(field: DetectedField, sourceFields: DetectedField[]): DetectedField | undefined {
+  return sourceFields.find((item) => item === field)
+    ?? sourceFields.find((item) => field.elementId && item.elementId === field.elementId)
+    ?? sourceFields.find((item) => field.fieldId && item.fieldId === field.fieldId)
+    ?? sourceFields.find((item) => item.name === field.name)
+    ?? sourceFields.find((item) => item.xpath === field.xpath && item.kind === field.kind)
+    ?? sourceFields.find((item) => item.xpath === field.xpath);
 }
 
 function isAcceptableLoopFieldWarning(warning: string, field: DetectedField): boolean {
@@ -240,13 +249,13 @@ function applyAgentPlanToCandidate(candidate: DetectedCandidate, plan: AgentPlan
 function applyAgentFieldPlan(fields: DetectedField[], plan: AgentFieldPlan[], fallbackPrefix: string): DetectedField[] {
   return plan.map((item, index) => {
     if (typeof item === 'string') {
-      const field = fields.find((candidate) => candidate.name === item);
+      const field = fields.find((candidate) => candidate.name === item || candidate.elementId === item || candidate.fieldId === item);
       if (!field) throw new Error(`Agent plan references an unknown field: ${item}`);
       return field;
     }
-    const source = item.source ?? item.name;
-    const sourceField = source ? fields.find((field) => field.name === source) : undefined;
-    if (!sourceField && !item.xpath) throw new Error(`Agent plan field is missing source or xpath: ${item.as ?? item.name ?? `${fallbackPrefix}_${index + 1}`}`);
+    const source = item.elementId ?? item.fieldId ?? item.source ?? item.name;
+    const sourceField = source ? fields.find((field) => field.elementId === source || field.fieldId === source || field.name === source) : undefined;
+    if (!sourceField && !item.xpath) throw new Error(`Agent plan field is missing elementId, source, or xpath: ${item.as ?? item.name ?? `${fallbackPrefix}_${index + 1}`}`);
     return {
       ...(sourceField ?? {
         kind: item.kind ?? 'text',

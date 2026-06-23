@@ -92,6 +92,7 @@ export function splitRunUrlArgs(args: string[]): { detectArgs: string[]; runArgs
     '--auto',
     '--agent',
     '--yes',
+    '--confirm-agent-plan',
     '--keep-agent-files',
     '--allow-agent-risk',
     '--manual',

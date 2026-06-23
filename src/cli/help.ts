@@ -102,7 +102,7 @@ Agent notes:
   octoparse detect <url> --prepare-agent --json [--goal <text>] [--output context.json]
   octoparse detect --preview-agent-plan plan.json --agent-context context.json [--json]
   octoparse detect --apply-agent-plan plan.json --agent-context context.json --output task.json [--json]
-  octoparse detect <url> --agent --agent-command <cmd> [--goal <text>] [--output task.json] [--yes] [--run-sample <n>]
+  octoparse detect <url> --agent --agent-command <cmd> [--goal <text>] [--output task.json] [--run-sample <n>]
   octoparse detect <url> --auto [--goal <text>] [--output task.json] [--llm-rank] [--no-dismiss-popups] [--json]
   octoparse detect <url> --manual [--goal <text>] [--llm-rank] [--no-dismiss-popups]
 
@@ -150,6 +150,9 @@ Notes:
   context.visualArtifacts.annotatedScreenshotPath or context.screenshot.path
   before writing the plan and include visualReview evidence/checks when a
   screenshot is present.
+  Prefer selection.fields entries such as {"elementId":"<context.visualElements id>","as":"title"}
+  when context.visualElements is available; fall back to existing field names
+  or source/as pairs when no elementId is available.
   Do not treat --auto examples as the default LLM/agent workflow; --auto skips
   agent planning and is only for direct CLI automatic selection.
   Agent workflows generate a full-page screenshot, an annotated screenshot, and
@@ -161,9 +164,11 @@ Notes:
   Linux arm64 is not supported because Chrome for Testing has no Linux arm64 browser package.
   --agent is a one-shot wrapper for external LLM/agent tools. The CLI writes a
   temporary context JSON, runs --agent-command (or OCTOPARSE_AGENT_COMMAND), expects
-  a plan JSON at OCTOPARSE_AGENT_PLAN or stdout, previews risk, asks for confirmation
-  unless --yes is set, then generates the task. --agent-command executes a local
-  shell command; only pass a trusted agent runner. --run-sample <n> runs the
+  a plan JSON at OCTOPARSE_AGENT_PLAN or stdout, previews risk, then generates the
+  task when preview passes. Use --confirm-agent-plan to ask before writing the
+  task. --agent-command executes a local shell command; only pass a trusted
+  agent runner. --yes is accepted for backward compatibility but is no longer
+  required. --run-sample <n> runs the
   generated task with --max-rows <n> and embeds the run envelope in the detect
   JSON response without printing a second top-level JSON document. Use
   --keep-agent-files to retain the context/plan for audit. Low-level --prepare-agent/--preview-agent-plan/
@@ -252,7 +257,7 @@ Usage:
   octoparse detect URL --prepare-agent --json --goal <text> --output context.json
   octoparse detect --preview-agent-plan plan.json --agent-context context.json [--json]
   octoparse detect --apply-agent-plan plan.json --agent-context context.json --output task.json
-  octoparse detect URL --agent --agent-command <cmd> [--output task.json] [--yes] [--run-sample <n>]
+  octoparse detect URL --agent --agent-command <cmd> [--output task.json] [--run-sample <n>]
   octoparse detect URL --auto [--goal <text>] [--output task.json] [--llm-rank] [--no-dismiss-popups] [--json]
   octoparse detect URL --manual [--goal <text>] [--llm-rank] [--no-dismiss-popups]
   octoparse run <taskId> [--task-file <file.json|file.xml|file.otd>] [--output <dir>] [--chrome-path <path>] [--headless] [--max-rows <n>] [--detach] [--json|--jsonl]

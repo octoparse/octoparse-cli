@@ -61,7 +61,7 @@ export async function runInlineAgentDetect(options: {
       return EXIT_OPERATION_FAILED;
     }
 
-    if (!hasFlag(options.args, '--yes') && !await confirmAgentPreview(preview, context.screenshot, options.quiet)) {
+    if (hasFlag(options.args, '--confirm-agent-plan') && !await confirmAgentPreview(preview, context.screenshot, options.quiet)) {
       if (options.json) printEnvelope(false, undefined, 'AGENT_PLAN_NOT_CONFIRMED', 'Agent plan was not confirmed; task generation was canceled.');
       else if (!options.quiet) console.log('Task generation canceled.');
       return EXIT_OPERATION_FAILED;

@@ -4204,13 +4204,23 @@ test('buildAgentContextForTesting exposes deterministic candidates for external 
   assert.equal(context.screenshot.annotatedPath, '/tmp/example.full.annotated.png');
   assert.equal(context.visualArtifacts.annotatedScreenshotPath, '/tmp/example.full.annotated.png');
   assert.equal(context.visualArtifacts.candidateScreenshots[0].path, '/tmp/example.search_results_1.crop.png');
+  assert.ok(context.visualElements.length >= 2);
+  assert.equal(context.visualElements[0].candidateId, 'search_results_1');
+  assert.equal(context.visualElements[0].fieldName, 'title');
+  assert.equal(context.visualElements[0].id, context.candidates[0].fields[0].elementId);
+  assert.equal(context.visualElements[0].fieldId, context.candidates[0].fields[0].fieldId);
+  assert.equal(context.visualElements[0].scope, 'field');
+  assert.equal(context.visualElements[0].role, 'text');
+  assert.equal(context.visualElements[1].role, 'link');
   assert.equal(context.decisionSummary.recommendedCandidateId, 'search_results_1');
   assert.equal(context.decisionSummary.candidates[0].candidateId, 'search_results_1');
+  assert.equal(context.decisionSummary.candidates[0].fields[0].elementId, context.visualElements[0].id);
   assert.equal(context.decisionSummary.candidates[0].visual.candidateScreenshotPath, '/tmp/example.search_results_1.crop.png');
   assert.ok(context.decisionSummary.useTheseVisualInputs.some((item) => item.includes('annotatedScreenshotPath')));
   assert.ok(context.decisionPolicy.requiredInputs.includes('context.goal'));
   assert.ok(context.decisionPolicy.requiredInputs.includes('context.decisionSummary'));
   assert.ok(context.decisionPolicy.requiredInputs.includes('context.visualArtifacts.candidateScreenshots'));
+  assert.ok(context.decisionPolicy.requiredInputs.includes('context.visualElements'));
   assert.match(context.decisionPolicy.rankingRule, /full-page screenshot/);
   assert.match(context.decisionPolicy.recommendedCandidateRule, /not a final answer/);
   assert.match(context.decisionPolicy.paginationRule, /explicit pagination evidence/);
@@ -4550,6 +4560,138 @@ test('buildTaskFromAgentPlan applies external agent field choices and detail pla
   assert.doesNotMatch(task.xml, /Name&gt;summary/);
 });
 
+test('buildTaskFromAgentPlan accepts visual element ids for field choices', () => {
+  const context = buildAgentContextForTesting({
+    url: 'https://example.com/list',
+    finalUrl: 'https://example.com/list',
+    title: 'Example',
+    capturedAt: '2026-05-28T00:00:00.000Z',
+    candidates: [
+      {
+        id: 'search_results_1',
+        type: 'search_results',
+        title: 'Search/list results',
+        confidence: 0.8,
+        selector: 'main',
+        xpath: '/html[1]/body[1]/main[1]',
+        itemSelector: 'main > div.card:nth-of-type(1)',
+        itemXPath: '/html[1]/body[1]/main[1]/div',
+        itemCount: 3,
+        fields: [
+          {
+            name: 'title',
+            kind: 'text',
+            selector: 'a',
+            xpath: '/html[1]/body[1]/main[1]/div//a[1]',
+            relativeXPath: './a[1]',
+            samples: ['Alpha'],
+            diagnostics: {
+              matchCount: 3,
+              textLength: 20,
+              paragraphCount: 0,
+              hasStyleNoise: false,
+              boundingBox: { x: 20, y: 40, width: 240, height: 24 },
+              sampleText: 'Alpha',
+              warnings: []
+            }
+          },
+          {
+            name: 'url',
+            kind: 'href',
+            selector: 'a',
+            xpath: '/html[1]/body[1]/main[1]/div//a[1]',
+            relativeXPath: './a[1]',
+            samples: ['https://example.com/a']
+          },
+          {
+            name: 'summary',
+            kind: 'text',
+            selector: 'p',
+            xpath: '/html[1]/body[1]/main[1]/div//p[1]',
+            relativeXPath: './p[1]',
+            samples: ['Summary']
+          }
+        ],
+        sampleRows: [{ title: 'Alpha', url: 'https://example.com/a', summary: 'Summary' }],
+        detailPlan: {
+          mode: 'list_with_detail',
+          urlField: 'url',
+          sampleUrls: ['https://example.com/a'],
+          fields: [
+            {
+              name: 'detail_content',
+              kind: 'text',
+              selector: 'article',
+              xpath: '/html[1]/body[1]/article[1]',
+              samples: ['Body']
+            }
+          ],
+          sampleRows: [{ detail_content: 'Body' }],
+          templateCount: 1,
+          status: 'planned',
+          reasons: ['test detail plan']
+        },
+        reasons: ['test']
+      }
+    ]
+  });
+  const titleElementId = context.visualElements.find((item) => item.fieldName === 'title')?.id;
+  const urlElementId = context.visualElements.find((item) => item.fieldName === 'url')?.id;
+  const detailElementId = context.visualElements.find((item) => item.fieldName === 'detail_content')?.id;
+
+  const preview = previewAgentPlanForTesting({
+    context,
+    plan: {
+      selection: {
+        candidateId: 'search_results_1',
+        fields: [
+          { elementId: titleElementId, as: 'headline' },
+          { elementId: urlElementId, as: 'url' }
+        ],
+        detail: {
+          mode: 'list_with_detail',
+          urlField: 'url',
+          fields: [
+            { elementId: detailElementId, as: 'body' }
+          ]
+        }
+      }
+    }
+  });
+  assert.equal(preview.fields[0].name, 'headline');
+  assert.equal(preview.fields[0].sourceName, 'title');
+  assert.equal(preview.fields[1].name, 'url');
+  assert.equal(preview.fields[1].sourceName, undefined);
+  assert.equal(preview.detail.fields[0].name, 'body');
+
+  const task = buildTaskFromAgentPlan({
+    context,
+    plan: {
+      selection: {
+        candidateId: 'search_results_1',
+        fields: [
+          { elementId: titleElementId, as: 'headline' },
+          { elementId: urlElementId, as: 'url' }
+        ],
+        detail: {
+          mode: 'list_with_detail',
+          urlField: 'url',
+          fields: [
+            { elementId: detailElementId, as: 'body' }
+          ]
+        }
+      }
+    },
+    taskId: 'detected_agent_element_ids',
+    taskName: 'Detected Agent Element IDs'
+  });
+
+  assert.deepEqual(task.fieldNames, ['headline', 'url', 'body']);
+  assert.match(task.xml, /Name&gt;headline/);
+  assert.match(task.xml, /Name&gt;body/);
+  assert.doesNotMatch(task.xml, /Name&gt;summary/);
+});
+
 test('runInlineAgentDetectForTesting lets an external command generate and apply a plan', async () => {
   const previousCwd = cwd();
   const dir = await mkdtemp(join(tmpdir(), 'detector-inline-agent-'));
@@ -4602,7 +4744,7 @@ await writeFile(process.env.OCTOPARSE_AGENT_PLAN, JSON.stringify(plan, null, 2))
     process.env.OCTO_ENGINE_API_BASE_URL = 'https://example.invalid';
     globalThis.fetch = mockDetectedTaskCloudSave(saveRequests);
     const code = await runInlineAgentDetectForTesting({
-      args: ['--agent-command', `${process.execPath} ${agentScript}`, '--yes', '--output', taskFile],
+      args: ['--agent-command', `${process.execPath} ${agentScript}`, '--output', taskFile],
       quiet: true,
       result: {
         url: 'https://example.com/list',

@@ -11,6 +11,8 @@ import type {
 } from './types.js';
 
 export type AgentFieldPlan = string | {
+  elementId?: string;
+  fieldId?: string;
   source?: string;
   name?: string;
   as?: string;
@@ -48,6 +50,7 @@ export interface DetectAgentContext {
   goal?: string;
   recommendedCandidateId?: string;
   screenshot?: DetectedAgentScreenshot;
+  visualElements?: AgentVisualElement[];
   candidates: DetectedCandidate[];
   searchPlan?: DetectedSearchPlan;
   popupDismissals?: PageDetectionResult['popupDismissals'];
@@ -126,6 +129,24 @@ export interface AgentVisualArtifacts {
   }>;
 }
 
+export interface AgentVisualElement {
+  id: string;
+  fieldId?: string;
+  candidateId: string;
+  scope: 'field' | 'detail';
+  fieldName: string;
+  kind: DetectedField['kind'];
+  role: 'text' | 'link' | 'image' | 'input';
+  selector: string;
+  xpath: string;
+  relativeXPath?: string;
+  boundingBox?: DetectedBox;
+  visible: boolean;
+  clickable: boolean;
+  sample: string;
+  samples: string[];
+}
+
 export interface AgentDecisionSummary {
   recommendedCandidateId?: string;
   useTheseVisualInputs: string[];
@@ -143,6 +164,11 @@ export interface AgentCandidateDecisionSummary {
   role?: string;
   itemCount: number;
   fieldNames: string[];
+  fields?: Array<{
+    name: string;
+    elementId?: string;
+    kind: DetectedField['kind'];
+  }>;
   sampleRow?: Record<string, string>;
   visual: {
     boundingBox?: DetectedBox;

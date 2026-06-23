@@ -94,6 +94,8 @@
         {
           "type": "object",
           "properties": {
+            "elementId": { "type": "string" },
+            "fieldId": { "type": "string" },
             "source": { "type": "string" },
             "name": { "type": "string" },
             "as": { "type": "string" },
