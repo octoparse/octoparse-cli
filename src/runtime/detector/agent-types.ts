@@ -2,9 +2,11 @@ import type {
   DetectedAgentScreenshot,
   DetectedBox,
   DetectedCandidate,
+  DetectedCandidateType,
   DetectedDetailPlan,
   DetectedField,
   DetectedFieldDiagnostics,
+  DetectedPageVisualElement,
   DetectedVisualElement,
   DetectedPagination,
   DetectedSearchPlan,
@@ -32,6 +34,7 @@ export interface DetectAgentContext {
   decisionSummary: AgentDecisionSummary;
   decisionPolicy: {
     requiredInputs: string[];
+    taskTargetRule: string;
     rankingRule: string;
     recommendedCandidateRule: string;
     paginationRule: string;
@@ -52,6 +55,7 @@ export interface DetectAgentContext {
   recommendedCandidateId?: string;
   screenshot?: DetectedAgentScreenshot;
   visualElements?: AgentVisualElement[];
+  pageVisualElements?: DetectedPageVisualElement[];
   candidates: DetectedCandidate[];
   searchPlan?: DetectedSearchPlan;
   popupDismissals?: PageDetectionResult['popupDismissals'];
@@ -66,6 +70,7 @@ export interface AgentPlan {
   candidateId?: string;
   selection?: {
     candidateId?: string;
+    customCandidate?: AgentCustomCandidatePlan;
     fields?: AgentFieldPlan[];
     pagination?: DetectedPagination | null | false;
     detail?: AgentDetailPlan | null | false;
@@ -75,6 +80,23 @@ export interface AgentPlan {
   detail?: AgentDetailPlan | null | false;
   taskId?: string;
   taskName?: string;
+}
+
+export interface AgentCustomCandidatePlan {
+  id?: string;
+  type?: DetectedCandidateType;
+  title?: string;
+  confidence?: number;
+  selector?: string;
+  xpath: string;
+  itemXPath?: string;
+  itemSelector?: string;
+  itemCount?: number;
+  fieldElementIds?: string[];
+  fields?: AgentFieldPlan[];
+  sampleRows?: Record<string, string>[];
+  reasons?: string[];
+  evidence?: string[];
 }
 
 export interface AgentVisualReview {

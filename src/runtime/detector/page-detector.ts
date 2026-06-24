@@ -14,7 +14,7 @@ import { captureAgentScreenshot } from './agent-visual-artifacts.js';
 import { isFooterLikeSelector, isLegalBoilerplateText, isStrongLegalBoilerplateText, isWeakBoilerplateText } from './candidate-boilerplate.js';
 import { attachAgentDiagnostics } from './candidate-diagnostics.js';
 import { applyLayoutScores } from './candidate-layout.js';
-import { attachCandidateVisualElements } from './candidate-visual-elements.js';
+import { attachCandidateVisualElements, detectPageVisualElements } from './candidate-visual-elements.js';
 import { applyGoalScores, dedupeEquivalentCandidates, filterDetectedBoilerplateCandidates, rankCandidates } from './candidate-ranking.js';
 import { detectProtectedSmartCandidates } from './protected-smart.js';
 import type { PageDetectionResult, DetectedCandidate, DetectedDetailMode, DetectedDetailPlan, DetectedField, DetectedFieldDiagnostics, DetectedLlmRankInput, DetectedPagination, DetectedPopupDismissal, DetectedSearchPlan, DetectOptions } from './types.js';
@@ -297,6 +297,9 @@ export async function detectPage(options: DetectOptions): Promise<PageDetectionR
     const agentScreenshot = options.agentScreenshotPath
       ? await captureAgentScreenshot(page, options.agentScreenshotPath, candidates).catch(() => undefined)
       : undefined;
+    const pageVisualElements = options.agentScreenshotPath
+      ? await detectPageVisualElements(page).catch(() => [])
+      : [];
     const canOfferSessionSave = loginIntervention.handled && loginIntervention.allowSessionSave;
     const shouldSaveSession = options.saveSession || (canOfferSessionSave && await chooseSaveSessionInBrowser(page, runtimeConsole)
         .catch(() => chooseSaveSessionInteractively(runtimeConsole)));
@@ -315,6 +318,7 @@ export async function detectPage(options: DetectOptions): Promise<PageDetectionR
       selectedCandidateIds,
       ...(llmRankInput ? { llmRankInput } : {}),
       ...(agentScreenshot ? { agentScreenshot } : {}),
+      ...(pageVisualElements.length ? { pageVisualElements } : {}),
       ...(popupDismissals.length ? { popupDismissals: dedupePopupDismissals(popupDismissals) } : {})
     };
   } finally {

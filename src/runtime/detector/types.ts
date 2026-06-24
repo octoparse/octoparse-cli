@@ -57,6 +57,13 @@ export interface DetectedVisualElement {
   confidence?: number;
 }
 
+export interface DetectedPageVisualElement extends Omit<DetectedVisualElement, 'candidateId' | 'scope' | 'source' | 'relativeXPath' | 'rowCoverage'> {
+  candidateId?: string;
+  scope: 'page';
+  source: 'page_visible_dom';
+  regionRole?: DetectedRegionRole;
+}
+
 export interface DetectedBox {
   x: number;
   y: number;
@@ -172,6 +179,7 @@ export interface PageDetectionResult {
   llmRankInput?: DetectedLlmRankInput;
   popupDismissals?: DetectedPopupDismissal[];
   agentScreenshot?: DetectedAgentScreenshot;
+  pageVisualElements?: DetectedPageVisualElement[];
 }
 
 export interface DetectedAgentScreenshot {

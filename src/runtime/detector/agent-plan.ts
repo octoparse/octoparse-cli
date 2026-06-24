@@ -1,6 +1,7 @@
 import type { DetectedCandidate, DetectedDetailPlan, DetectedField, DetectedFieldDiagnostics, DetectedPagination, DetectedVisualElement } from './types.js';
 import { buildTaskFromCandidate } from './xml.js';
 import type {
+  AgentCustomCandidatePlan,
   AgentDetailPlan,
   AgentFieldPlan,
   AgentPlan,
@@ -10,10 +11,7 @@ import type {
 } from './agent-types.js';
 
 export function previewAgentPlan(options: { context: DetectAgentContext; plan: AgentPlan }): AgentPlanPreview {
-  const candidateId = options.plan.selection?.candidateId ?? options.plan.candidateId;
-  if (!candidateId) throw new Error('Agent plan is missing selection.candidateId.');
-  const base = options.context.candidates.find((candidate) => candidate.id === candidateId);
-  if (!base) throw new Error(`Agent plan references an unknown candidate: ${candidateId}`);
+  const base = resolveAgentPlanBaseCandidate(options.context, options.plan);
   if (base.type === 'form') throw new Error('Form candidates cannot directly generate extraction tasks.');
   const candidate = applyAgentPlanToCandidate(base, options.plan);
   const warnings: string[] = [];
@@ -21,6 +19,7 @@ export function previewAgentPlan(options: { context: DetectAgentContext; plan: A
   const fields = previewFields(candidate.fields, base.fields);
   const detailFields = candidate.detailPlan ? previewFields(candidate.detailPlan.fields, base.detailPlan?.fields ?? []) : [];
   collectAgentVisualReviewWarnings(warnings, recommendedFixes, options.context, options.plan, candidate.id);
+  collectAgentGoalRegionWarnings(warnings, recommendedFixes, options.context, candidate);
   collectAgentPreviewWarnings(warnings, recommendedFixes, candidate, fields, detailFields);
   const dedupedWarnings = Array.from(new Set(warnings));
   const dedupedFixes = Array.from(new Set(recommendedFixes));
@@ -49,7 +48,9 @@ export function previewAgentPlan(options: { context: DetectAgentContext; plan: A
     warnings: dedupedWarnings,
     recommendedFixes: dedupedFixes,
     ...(dedupedWarnings.length || dedupedFixes.length ? { repairInstruction: buildAgentRepairInstruction(dedupedWarnings, dedupedFixes) } : {}),
-    pass: !hasBlockingAgentPreviewRisk(fields, detailFields) && !hasBlockingVisualReviewRisk(options.context, options.plan, candidate.id)
+    pass: !hasBlockingAgentPreviewRisk(fields, detailFields)
+      && !hasBlockingVisualReviewRisk(options.context, options.plan, candidate.id)
+      && !hasBlockingGoalRegionRisk(options.context, candidate)
   };
 }
 
@@ -59,10 +60,7 @@ export function buildTaskFromAgentPlan(options: {
   taskId: string;
   taskName: string;
 }) {
-  const candidateId = options.plan.selection?.candidateId ?? options.plan.candidateId;
-  if (!candidateId) throw new Error('Agent plan is missing selection.candidateId.');
-  const base = options.context.candidates.find((candidate) => candidate.id === candidateId);
-  if (!base) throw new Error(`Agent plan references an unknown candidate: ${candidateId}`);
+  const base = resolveAgentPlanBaseCandidate(options.context, options.plan);
   if (base.type === 'form') throw new Error('Form candidates cannot directly generate extraction tasks.');
   const candidate = applyAgentPlanToCandidate(base, options.plan);
   return buildTaskFromCandidate({
@@ -74,6 +72,81 @@ export function buildTaskFromAgentPlan(options: {
     session: options.context.savedSession,
     searchPlan: options.context.searchPlan
   });
+}
+
+function resolveAgentPlanBaseCandidate(context: DetectAgentContext, plan: AgentPlan): DetectedCandidate {
+  const custom = plan.selection?.customCandidate;
+  if (custom) return buildCustomCandidate(context, custom, plan.selection?.candidateId ?? plan.candidateId);
+  const candidateId = plan.selection?.candidateId ?? plan.candidateId;
+  if (!candidateId) throw new Error('Agent plan is missing selection.candidateId.');
+  const base = context.candidates.find((candidate) => candidate.id === candidateId);
+  if (!base) throw new Error(`Agent plan references an unknown candidate: ${candidateId}`);
+  return base;
+}
+
+function buildCustomCandidate(
+  context: DetectAgentContext,
+  custom: AgentCustomCandidatePlan,
+  fallbackId: string | undefined
+): DetectedCandidate {
+  if (!custom.xpath) throw new Error('Agent customCandidate is missing xpath.');
+  const id = custom.id ?? fallbackId ?? 'agent_custom_candidate';
+  const pageVisualElements = context.pageVisualElements ?? [];
+  const elementIds = collectCustomCandidateElementIds(custom);
+  const visualElements = elementIds.length
+    ? elementIds.map((elementId) => {
+        const element = pageVisualElements.find((item) => item.id === elementId || item.annotationLabel === elementId);
+        if (!element) throw new Error(`Agent customCandidate references an unknown pageVisualElement: ${elementId}`);
+        return {
+          ...element,
+          candidateId: custom.id ?? fallbackId ?? 'agent_custom_candidate',
+          scope: 'visible_dom' as const,
+          source: 'visible_dom' as const,
+          relativeXPath: relativeXPathFromBase(custom.itemXPath ?? custom.xpath, element.xpath)
+        };
+      })
+    : [];
+  const fieldPlan = custom.fields ?? custom.fieldElementIds ?? [];
+  const fields = fieldPlan.length
+    ? applyAgentFieldPlan([], fieldPlan, 'custom_field', visualElements, custom.itemXPath ?? custom.xpath)
+    : visualElements.map((element, index) => {
+        const field = visualElementToField(element, element.fieldName || element.label || `custom_field_${index + 1}`);
+        if (!field) throw new Error(`Agent customCandidate cannot derive a field from pageVisualElement: ${element.id}`);
+        return field;
+      });
+  if (!fields.length) throw new Error('Agent customCandidate requires fields or fieldElementIds.');
+  const sampleRows = custom.sampleRows?.length
+    ? custom.sampleRows
+    : [Object.fromEntries(fields.map((field) => [field.name, field.samples[0] ?? '']))];
+  return {
+    id,
+    type: custom.type ?? 'repeated_card',
+    title: custom.title ?? 'Agent custom candidate',
+    confidence: custom.confidence ?? 0.72,
+    selector: custom.selector ?? '',
+    xpath: custom.xpath,
+    itemSelector: custom.itemSelector,
+    itemXPath: custom.itemXPath ?? custom.xpath,
+    itemCount: custom.itemCount ?? Math.max(1, sampleRows.length),
+    fields,
+    ...(visualElements.length ? { visualElements } : {}),
+    sampleRows,
+    reasons: [
+      ...(custom.reasons ?? []),
+      ...(custom.evidence ?? []).map((item) => `Agent visual evidence: ${item}`),
+      'Synthetic candidate supplied by external agent plan'
+    ]
+  };
+}
+
+function collectCustomCandidateElementIds(custom: AgentCustomCandidatePlan): string[] {
+  const ids = [
+    ...(custom.fieldElementIds ?? []),
+    ...(custom.fields ?? []).flatMap((field) => typeof field === 'string'
+      ? [field]
+      : [field.elementId, field.fieldId, field.source].filter((value): value is string => Boolean(value)))
+  ];
+  return Array.from(new Set(ids));
 }
 
 function previewFields(fields: DetectedField[], sourceFields: DetectedField[]): AgentPreviewField[] {
@@ -203,6 +276,18 @@ function collectAgentPreviewWarnings(
   }
 }
 
+function collectAgentGoalRegionWarnings(
+  warnings: string[],
+  recommendedFixes: string[],
+  context: DetectAgentContext,
+  candidate: DetectedCandidate
+): void {
+  const role = candidate.layout?.role;
+  if (!role || !isNonPrimaryRegion(role) || !goalRequiresPrimaryContent(context.goal)) return;
+  warnings.push(`goal/layout mismatch: selected candidate ${candidate.id} is ${role}, but the goal requires the primary/detail content region`);
+  recommendedFixes.push('Do not select sidebar/navigation/footer/ad candidates; if the main content has no candidate, create a detail or main-content customCandidate from pageVisualElements.');
+}
+
 function hasBlockingVisualReviewRisk(context: DetectAgentContext, plan: AgentPlan, selectedCandidateId: string): boolean {
   if (!context.screenshot?.path) return false;
   const review = plan.visualReview;
@@ -224,6 +309,23 @@ function hasBlockingAgentPreviewRisk(fields: AgentPreviewField[], detailFields: 
   });
 }
 
+function hasBlockingGoalRegionRisk(context: DetectAgentContext, candidate: DetectedCandidate): boolean {
+  const role = candidate.layout?.role;
+  return Boolean(role && isNonPrimaryRegion(role) && goalRequiresPrimaryContent(context.goal));
+}
+
+function isNonPrimaryRegion(role: string): boolean {
+  return /^(sidebar|nav|footer|header|ad)$/i.test(role);
+}
+
+function goalRequiresPrimaryContent(goal: string | undefined): boolean {
+  const normalized = String(goal ?? '').replace(/\s+/g, ' ').toLowerCase();
+  if (!normalized) return false;
+  if (/忽略.{0,12}(侧栏|导航|页脚|广告)|排除.{0,12}(侧栏|导航|页脚|广告)|ignore.{0,24}(sidebar|nav|navigation|footer|ad)/i.test(normalized)) return true;
+  if (/主内容|主体|当前页|当前页面|详情|详情页|正文|介绍|商户介绍|primary|main content|detail page|detail|article|body/i.test(normalized)) return true;
+  return false;
+}
+
 function isContentPreviewField(field: AgentPreviewField): boolean {
   return /(^|_)(content|body|article|正文)(_|$)/i.test(field.name)
     || /(^|_)(content|body|article|正文)(_|$)/i.test(field.sourceName ?? '');
@@ -240,7 +342,7 @@ function applyAgentPlanToCandidate(candidate: DetectedCandidate, plan: AgentPlan
   const paginationPlan = selection.pagination !== undefined ? selection.pagination : plan.pagination;
   return {
     ...candidate,
-    fields: fieldsPlan ? applyAgentFieldPlan(candidate.fields, fieldsPlan, 'field', candidate.visualElements ?? []) : candidate.fields,
+    fields: fieldsPlan ? applyAgentFieldPlan(candidate.fields, fieldsPlan, 'field', candidate.visualElements ?? [], candidate.itemXPath ?? candidate.xpath) : candidate.fields,
     ...(paginationPlan !== undefined ? { pagination: normalizeAgentPagination(paginationPlan) } : {}),
     ...(detailPlan !== undefined ? { detailPlan: normalizeAgentDetailPlan(candidate, detailPlan) } : {})
   };
@@ -250,19 +352,20 @@ function applyAgentFieldPlan(
   fields: DetectedField[],
   plan: AgentFieldPlan[],
   fallbackPrefix: string,
-  visualElements: DetectedVisualElement[] = []
+  visualElements: DetectedVisualElement[] = [],
+  itemXPath = ''
 ): DetectedField[] {
   return plan.map((item, index) => {
     if (typeof item === 'string') {
       const field = fields.find((candidate) => candidate.name === item || candidate.elementId === item || candidate.fieldId === item)
-        ?? visualElementToField(visualElements.find((element) => element.id === item || element.fieldId === item), item);
+        ?? visualElementToField(findVisualElement(visualElements, item), item);
       if (!field) throw new Error(`Agent plan references an unknown field or element: ${item}`);
       return field;
     }
     const source = item.elementId ?? item.fieldId ?? item.source ?? item.name;
     const sourceField = source ? fields.find((field) => field.elementId === source || field.fieldId === source || field.name === source) : undefined;
     const sourceElementField = sourceField ? undefined : visualElementToField(
-      source ? visualElements.find((element) => element.id === source || element.fieldId === source || element.fieldName === source || element.label === source) : undefined,
+      source ? findVisualElement(visualElements, source) : undefined,
       item.as ?? item.name ?? source ?? `${fallbackPrefix}_${index + 1}`,
       item.kind
     );
@@ -272,17 +375,26 @@ function applyAgentFieldPlan(
         kind: item.kind ?? 'text',
         selector: item.selector ?? '',
         xpath: item.xpath ?? '',
-        samples: item.samples ?? []
+        samples: item.samples ?? [],
+        ...(item.xpath && itemXPath ? { relativeXPath: relativeXPathFromBase(itemXPath, item.xpath) } : {})
       }),
       name: item.as ?? item.name ?? sourceField?.name ?? sourceElementField?.name ?? `${fallbackPrefix}_${index + 1}`,
       ...(item.kind ? { kind: item.kind } : {}),
       ...(item.selector ? { selector: item.selector } : {}),
       ...(item.xpath ? { xpath: item.xpath } : {}),
-      ...(item.relativeXPath ? { relativeXPath: item.relativeXPath } : {}),
+      ...(item.relativeXPath ? { relativeXPath: item.relativeXPath } : item.xpath && itemXPath ? { relativeXPath: relativeXPathFromBase(itemXPath, item.xpath) } : {}),
       ...(item.samples ? { samples: item.samples } : {}),
       ...(item.operations ? { operations: item.operations } : {})
     };
   });
+}
+
+function findVisualElement(visualElements: DetectedVisualElement[], source: string): DetectedVisualElement | undefined {
+  return visualElements.find((element) => element.id === source
+    || element.fieldId === source
+    || element.annotationLabel === source
+    || element.fieldName === source
+    || element.label === source);
 }
 
 function visualElementToField(
@@ -381,4 +493,31 @@ function sampleUrlsForCandidate(candidate: DetectedCandidate): string[] {
     ...candidate.sampleRows.map((row) => typeof row.url === 'string' ? row.url : ''),
     ...(urlField?.samples ?? [])
   ].filter((value) => /^https?:\/\//i.test(value)))).slice(0, 3);
+}
+
+function relativeXPathFromBase(baseXPath: string, fieldXPath: string): string {
+  const fieldPath = normalizeIndexedFieldXPath(baseXPath, fieldXPath);
+  if (!baseXPath || !fieldPath || !fieldPath.startsWith(baseXPath)) return relativeXPathFromItem(fieldPath);
+  const suffix = fieldPath.slice(baseXPath.length);
+  if (!suffix) return '.';
+  return suffix.startsWith('//') ? `.${suffix}` : `.${suffix}`;
+}
+
+function relativeXPathFromItem(xpath: string): string {
+  const trimmed = xpath.trim();
+  if (!trimmed) return '';
+  const lastSlash = trimmed.lastIndexOf('/');
+  if (lastSlash === -1) return '';
+  const tail = trimmed.slice(lastSlash + 1);
+  return tail ? `/${tail}` : '';
+}
+
+function normalizeIndexedFieldXPath(baseXPath: string, fieldXPath: string): string {
+  if (!baseXPath || !fieldXPath) return fieldXPath;
+  const normalizedBase = baseXPath.replace(/\/+$/, '');
+  const indexedPrefix = fieldXPath.slice(normalizedBase.length).match(/^\[\d+\](?=\/|\/\/|$)/)?.[0];
+  if (fieldXPath.startsWith(normalizedBase) && indexedPrefix) {
+    return normalizedBase + fieldXPath.slice(normalizedBase.length + indexedPrefix.length);
+  }
+  return fieldXPath;
 }

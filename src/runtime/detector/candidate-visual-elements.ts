@@ -1,7 +1,8 @@
 import type { Page } from 'puppeteer-core';
-import type { DetectedCandidate, DetectedField, DetectedVisualElement } from './types.js';
+import type { DetectedCandidate, DetectedField, DetectedPageVisualElement, DetectedVisualElement } from './types.js';
 
 const MAX_VISUAL_ELEMENTS_PER_CANDIDATE = 24;
+const MAX_PAGE_VISUAL_ELEMENTS = 160;
 
 export async function attachCandidateVisualElements(page: Page, candidates: DetectedCandidate[]): Promise<DetectedCandidate[]> {
   const input = candidates
@@ -444,3 +445,327 @@ export async function attachCandidateVisualElements(page: Page, candidates: Dete
 }
 
 export const attachCandidateVisualElementsForTesting = attachCandidateVisualElements;
+
+export async function detectPageVisualElements(page: Page): Promise<DetectedPageVisualElement[]> {
+  return await page.evaluate((limit) => {
+    type FieldKind = 'text' | 'href' | 'src' | 'value';
+    type ElementRole = 'text' | 'link' | 'image' | 'input' | 'button';
+    type RegionRole = 'main' | 'sidebar' | 'header' | 'footer' | 'nav' | 'ad' | 'unknown';
+    type Box = { x: number; y: number; width: number; height: number };
+    type PageVisualElementOutput = {
+      id: string;
+      scope: 'page';
+      source: 'page_visible_dom';
+      annotationLabel: string;
+      label: string;
+      tagName: string;
+      kind: FieldKind;
+      role: ElementRole;
+      selector: string;
+      xpath: string;
+      boundingBox: Box;
+      visible: boolean;
+      clickable: boolean;
+      sample: string;
+      samples: string[];
+      samplesByKind: Partial<Record<FieldKind, string[]>>;
+      attributes: Record<string, string>;
+      confidence: number;
+      regionRole: RegionRole;
+    };
+
+    function text(element: Element | null): string {
+      if (!element) return '';
+      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement) {
+        return (element.value || element.placeholder || element.getAttribute('aria-label') || element.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
+      }
+      if (element instanceof HTMLImageElement) {
+        return (element.alt || element.getAttribute('aria-label') || element.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
+      }
+      return ((element as HTMLElement).innerText || element.textContent || element.getAttribute('aria-label') || element.getAttribute('title') || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function ownText(element: Element): string {
+      return Array.from(element.childNodes)
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent || '')
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    function visible(element: Element): boolean {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element as HTMLElement);
+      return rect.width >= 6
+        && rect.height >= 6
+        && style.display !== 'none'
+        && style.visibility !== 'hidden'
+        && style.opacity !== '0';
+    }
+
+    function box(element: Element): Box {
+      const rect = element.getBoundingClientRect();
+      return {
+        x: Math.round(rect.left + window.scrollX),
+        y: Math.round(rect.top + window.scrollY),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height)
+      };
+    }
+
+    function xpath(element: Element): string {
+      const parts: string[] = [];
+      let current: Element | null = element;
+      while (current && current.nodeType === Node.ELEMENT_NODE) {
+        const tag = current.localName;
+        let index = 1;
+        let sibling = current.previousElementSibling;
+        while (sibling) {
+          if (sibling.localName === tag) index += 1;
+          sibling = sibling.previousElementSibling;
+        }
+        parts.unshift(`${tag}[${index}]`);
+        current = current.parentElement;
+      }
+      return `/${parts.join('/')}`;
+    }
+
+    function cssSelector(element: Element): string {
+      const tag = element.localName;
+      const html = element as HTMLElement;
+      if (html.id) return `${tag}#${cssEscape(html.id)}`;
+      const stableClass = Array.from(html.classList || []).find((token) => token.length >= 3 && !/^\d|^(active|selected|current|hover|focus|show|hide)$/i.test(token));
+      return stableClass ? `${tag}.${cssEscape(stableClass)}` : tag;
+    }
+
+    function cssEscape(value: string): string {
+      return value.replace(/[^a-z0-9_-]/gi, '\\$&');
+    }
+
+    function roleFor(element: Element): ElementRole {
+      const tag = element.localName;
+      const role = element.getAttribute('role') || '';
+      if (tag === 'img' || element instanceof HTMLImageElement) return 'image';
+      if (tag === 'a') return 'link';
+      if (tag === 'button' || role === 'button') return 'button';
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return 'input';
+      return 'text';
+    }
+
+    function defaultKindFor(element: Element): FieldKind {
+      const role = roleFor(element);
+      if (role === 'image') return 'src';
+      if (role === 'input') return 'value';
+      return 'text';
+    }
+
+    function valuesByKind(element: Element): Partial<Record<FieldKind, string>> {
+      const values: Partial<Record<FieldKind, string>> = {};
+      const value = text(element);
+      if (value) values.text = value;
+      if (element instanceof HTMLAnchorElement && element.href) values.href = element.href;
+      const anchor = element.closest('a') as HTMLAnchorElement | null;
+      if (!values.href && anchor?.href) values.href = anchor.href;
+      if (element instanceof HTMLImageElement && (element.currentSrc || element.src)) values.src = element.currentSrc || element.src;
+      const image = element.querySelector('img') as HTMLImageElement | null;
+      if (!values.src && image && (image.currentSrc || image.src)) values.src = image.currentSrc || image.src;
+      if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) {
+        values.value = element.value || element.getAttribute('value') || text(element);
+      }
+      return values;
+    }
+
+    function attributesFor(element: Element): Record<string, string> {
+      const attrs: Record<string, string> = {};
+      for (const name of ['href', 'src', 'alt', 'title', 'aria-label', 'value', 'placeholder', 'datetime']) {
+        const value = name === 'href' && element instanceof HTMLAnchorElement
+          ? element.href
+          : name === 'src' && element instanceof HTMLImageElement
+            ? (element.currentSrc || element.src)
+            : element.getAttribute(name) || '';
+        if (value) attrs[name] = value.slice(0, 500);
+      }
+      return attrs;
+    }
+
+    function regionRoleFor(element: Element): RegionRole {
+      const closest = element.closest('main, article, aside, header, footer, nav, [role="main"], [role="navigation"], [role="banner"], [role="contentinfo"], [class*="side"], [class*="sidebar"], [class*="ad"], [id*="side"], [id*="ad"]') as HTMLElement | null;
+      const value = `${closest?.localName ?? ''} ${closest?.getAttribute('role') ?? ''} ${closest?.className ?? ''} ${closest?.id ?? ''}`;
+      if (/header|banner/i.test(value)) return 'header';
+      if (/footer|contentinfo/i.test(value)) return 'footer';
+      if (/nav|navigation/i.test(value)) return 'nav';
+      if (/aside|side|sidebar/i.test(value)) return 'sidebar';
+      if (/(^|\W)ad(s|vert|vertisement)?($|\W)|banner-ad|sponsor/i.test(value)) return 'ad';
+      if (/main|article/i.test(value)) return 'main';
+      return 'unknown';
+    }
+
+    function safeIdPart(value: string): string {
+      return String(value)
+        .trim()
+        .replace(/[^a-z0-9_\u4e00-\u9fff-]+/gi, '_')
+        .replace(/^_+|_+$/g, '')
+        .slice(0, 42) || 'element';
+    }
+
+    function labelFor(element: Element, role: ElementRole, sample: string, attrs: Record<string, string>): string {
+      const name = attrs['aria-label'] || attrs.title || attrs.alt || sample || role;
+      return `${role}:${name}`.replace(/\s+/g, ' ').trim().slice(0, 90);
+    }
+
+    function scoreElement(element: Element, role: ElementRole, sample: string, regionRole: RegionRole): number {
+      const rect = element.getBoundingClientRect();
+      const area = rect.width * rect.height;
+      const identity = `${element.localName} ${(element as HTMLElement).className} ${(element as HTMLElement).id} ${sample}`;
+      let score = 0.18;
+      if (regionRole === 'main') score += 0.2;
+      if (regionRole === 'sidebar' || regionRole === 'nav' || regionRole === 'footer' || regionRole === 'header' || regionRole === 'ad') score -= 0.18;
+      if (role === 'link') score += 0.18;
+      if (role === 'image') score += 0.12;
+      if (/^(h1|h2|h3|h4)$/i.test(element.localName)) score += 0.2;
+      if (/^(time|p|strong|em|small)$/i.test(element.localName)) score += 0.08;
+      if (/price|amount|money|cost|date|time|author|user|name|title|store|shop|merchant|address|tag|score|rating|评论|赞|价格|金额|时间|日期|作者|标题|店铺|商户|门店|公司|名称|地址|分类|标签|评分/i.test(identity)) score += 0.14;
+      if (/list|card|item|result|store|shop|merchant|poi|product|goods|content|main|列表|卡片|店铺|商户|门店|商品/i.test(identity)) score += 0.1;
+      if (area > 500 && area < 160000) score += 0.08;
+      if (sample.length > 220 && !/^(p|article|section|main)$/i.test(element.localName)) score -= 0.14;
+      if (regionRole === 'footer') score -= 0.16;
+      return Number(Math.max(0.01, Math.min(0.99, score)).toFixed(2));
+    }
+
+    function candidateElements(): Element[] {
+      const selectors = [
+        '#content a',
+        '#content img',
+        '#content time',
+        '#content h1',
+        '#content h2',
+        '#content h3',
+        '#content h4',
+        '#content p',
+        '#content span',
+        '#content strong',
+        '#content small',
+        '#content li',
+        '#content div',
+        'main a',
+        'main img',
+        'main time',
+        'main h1',
+        'main h2',
+        'main h3',
+        'main h4',
+        'main p',
+        'main span',
+        'main strong',
+        'main small',
+        'main li',
+        'main div',
+        'article a',
+        'article img',
+        'article time',
+        'article h1',
+        'article h2',
+        'article h3',
+        'article p',
+        'article span',
+        'article div',
+        'section a',
+        'section img',
+        'section time',
+        'section h2',
+        'section h3',
+        'section p',
+        'section span',
+        'section li',
+        'section div',
+        '[class*="list"] a',
+        '[class*="list"] img',
+        '[class*="list"] span',
+        '[class*="list"] p',
+        '[class*="card"] a',
+        '[class*="card"] img',
+        '[class*="card"] span',
+        '[class*="card"] p',
+        '[class*="Store"] a',
+        '[class*="Store"] img',
+        '[class*="Store"] span',
+        '[class*="Store"] p',
+        '[class*="shop"] a',
+        '[class*="shop"] img',
+        '[class*="shop"] span',
+        '[class*="shop"] p',
+        'a',
+        'img',
+        'button',
+        '[role="button"]',
+        'input',
+        'textarea',
+        '[aria-label]',
+        '[title]'
+      ];
+      return Array.from(document.querySelectorAll(selectors.join(','))).filter((element) => {
+        if (!visible(element)) return false;
+        if (/^(script|style|noscript|svg|path)$/i.test(element.localName)) return false;
+        const role = roleFor(element);
+        const value = text(element);
+        const own = ownText(element);
+        const rect = element.getBoundingClientRect();
+        const viewportArea = Math.max(1, window.innerWidth * window.innerHeight);
+        const areaRatio = (rect.width * rect.height) / viewportArea;
+        if (role === 'image') return Boolean((element as HTMLImageElement).currentSrc || (element as HTMLImageElement).src) && rect.width >= 24 && rect.height >= 24;
+        if (role === 'link' || role === 'button' || role === 'input') return Boolean(value || valuesByKind(element).href || valuesByKind(element).value);
+        if (!value || value.length < 2) return false;
+        if (value.length > 800) return false;
+        if (areaRatio > 0.5 && !/^(p|h1|h2|h3|h4|article|section|span)$/i.test(element.localName)) return false;
+        if (/^(div|span|li)$/i.test(element.localName) && !own && element.children.length > 4) return false;
+        return true;
+      });
+    }
+
+    const seen = new Set<string>();
+    const elements: PageVisualElementOutput[] = [];
+    for (const element of candidateElements()) {
+      const role = roleFor(element);
+      const kind = defaultKindFor(element);
+      const values = valuesByKind(element);
+      const sample = values[kind] || values.text || values.href || values.src || values.value || '';
+      if (!sample) continue;
+      const attrs = attributesFor(element);
+      const elementXPath = xpath(element);
+      const uniqueKey = `${kind}:${elementXPath}:${sample.slice(0, 80).toLowerCase()}`;
+      if (seen.has(uniqueKey)) continue;
+      seen.add(uniqueKey);
+      const regionRole = regionRoleFor(element);
+      const label = labelFor(element, role, sample, attrs);
+      const samplesByKind = Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value ? [value] : []]).filter(([, value]) => (value as string[]).length)) as Partial<Record<FieldKind, string[]>>;
+      elements.push({
+        id: `pv_${String(elements.length + 1)}_${safeIdPart(label)}`,
+        scope: 'page',
+        source: 'page_visible_dom',
+        annotationLabel: `P${elements.length + 1}`,
+        label,
+        tagName: element.localName,
+        kind,
+        role,
+        selector: cssSelector(element),
+        xpath: elementXPath,
+        boundingBox: box(element),
+        visible: true,
+        clickable: role === 'link' || role === 'button' || Boolean((element as HTMLElement).onclick),
+        sample,
+        samples: [sample],
+        samplesByKind,
+        attributes: attrs,
+        confidence: scoreElement(element, role, sample, regionRole),
+        regionRole
+      });
+    }
+
+    return elements
+      .sort((a, b) => b.confidence - a.confidence || a.boundingBox.y - b.boundingBox.y || a.boundingBox.x - b.boundingBox.x)
+      .slice(0, limit);
+  }, MAX_PAGE_VISUAL_ELEMENTS);
+}
+
+export const detectPageVisualElementsForTesting = detectPageVisualElements;

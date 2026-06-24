@@ -150,6 +150,9 @@ Notes:
   context.visualArtifacts.annotatedScreenshotPath or context.screenshot.path
   before writing the plan and include visualReview evidence/checks when a
   screenshot is present.
+  Before choosing a candidate, infer the primary task target from the user goal
+  and live visible page structure. Honor explicit goals; when the goal is vague
+  or absent, use page structure. Do not default to details or the largest list.
   Prefer selection.fields entries such as {"elementId":"<context.visualElements id>","as":"title"}
   when context.visualElements is available; fall back to existing field names
   or source/as pairs when no elementId is available.
@@ -158,6 +161,9 @@ Notes:
   visualElements[].annotationLabel. Use visible_dom ids when detector fields miss
   visible titles/prices/images/links/metrics; set kind="href" or kind="src" when
   the selected element should extract a URL or image source.
+  If the correct visible region is not present in context.candidates, use
+  context.pageVisualElements to write selection.customCandidate with xpath/itemXPath
+  and fieldElementIds; the CLI previews that synthetic candidate before applying it.
   Do not treat --auto examples as the default LLM/agent workflow; --auto skips
   agent planning and is only for direct CLI automatic selection.
   Agent workflows generate a full-page screenshot, an annotated screenshot, and
@@ -328,6 +334,11 @@ Agent contract:
   preview, apply, and validate as the lower-level auditable workflow. Agents
   must open context.screenshot.path and record visualReview evidence before
   writing plan.json.
+  Before choosing a candidate, first judge the live page primary target from the
+  user goal, title, first viewport, active tab/navigation, semantic purpose, and
+  main content prominence; do not default to details or the largest list.
+  If candidates miss the visible target, use context.pageVisualElements with
+  selection.customCandidate instead of forcing the wrong candidate.
   Do not treat --auto examples as the default LLM/agent workflow; --auto is only
   for direct CLI automatic selection.
   --json   return one stable JSON envelope: {"ok":true,"data":...} or {"ok":false,"error":...}

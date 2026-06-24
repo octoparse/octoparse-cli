@@ -4255,6 +4255,32 @@ test('buildAgentContextForTesting exposes deterministic candidates for external 
         }
       ]
     },
+    pageVisualElements: [
+      {
+        id: 'pv_1_main_missing_title',
+        scope: 'page',
+        source: 'page_visible_dom',
+        annotationLabel: 'P1',
+        label: 'link:Missing candidate title',
+        tagName: 'a',
+        kind: 'text',
+        role: 'link',
+        selector: 'a.result-title',
+        xpath: '/html[1]/body[1]/main[1]/section[1]/article[1]/a[1]',
+        boundingBox: { x: 60, y: 360, width: 280, height: 28 },
+        visible: true,
+        clickable: true,
+        sample: 'Missing candidate title',
+        samples: ['Missing candidate title'],
+        samplesByKind: {
+          text: ['Missing candidate title'],
+          href: ['https://example.com/missing']
+        },
+        attributes: { href: 'https://example.com/missing' },
+        confidence: 0.91,
+        regionRole: 'main'
+      }
+    ],
     candidates: [
       {
         id: 'search_results_1',
@@ -4321,6 +4347,8 @@ test('buildAgentContextForTesting exposes deterministic candidates for external 
   assert.equal(context.screenshot.annotatedPath, '/tmp/example.full.annotated.png');
   assert.equal(context.visualArtifacts.annotatedScreenshotPath, '/tmp/example.full.annotated.png');
   assert.equal(context.visualArtifacts.candidateScreenshots[0].path, '/tmp/example.search_results_1.crop.png');
+  assert.equal(context.pageVisualElements[0].id, 'pv_1_main_missing_title');
+  assert.equal(context.pageVisualElements[0].annotationLabel, 'P1');
   assert.ok(context.visualElements.length >= 2);
   assert.equal(context.visualElements[0].candidateId, 'search_results_1');
   assert.equal(context.visualElements[0].fieldName, 'title');
@@ -4344,7 +4372,15 @@ test('buildAgentContextForTesting exposes deterministic candidates for external 
   assert.ok(context.decisionPolicy.requiredInputs.includes('context.decisionSummary'));
   assert.ok(context.decisionPolicy.requiredInputs.includes('context.visualArtifacts.candidateScreenshots'));
   assert.ok(context.decisionPolicy.requiredInputs.includes('context.visualElements'));
+  assert.ok(context.decisionPolicy.requiredInputs.includes('context.pageVisualElements when candidates miss the correct visible region'));
+  assert.match(context.decisionPolicy.taskTargetRule, /infer the primary task target/);
+  assert.match(context.decisionPolicy.taskTargetRule, /Do not hard-code detail extraction/);
+  assert.match(context.decisionPolicy.taskTargetRule, /largest list/);
+  assert.match(context.decisionPolicy.taskTargetRule, /explicit/);
+  assert.match(context.decisionPolicy.taskTargetRule, /vague or absent/);
   assert.match(context.decisionPolicy.rankingRule, /full-page screenshot/);
+  assert.match(context.instruction, /Before selecting any candidate/);
+  assert.match(context.instruction, /live visible structure/);
   assert.match(context.decisionPolicy.recommendedCandidateRule, /not a final answer/);
   assert.match(context.decisionPolicy.paginationRule, /explicit pagination evidence/);
   assert.match(context.resultValidationPolicy.normalPartialDataRule, /heterogeneous records/);
@@ -4583,6 +4619,86 @@ test('previewAgentPlanForTesting requires visual review when screenshot is avail
   });
   assert.equal(withReview.pass, true);
   assert.equal(withReview.visualReview.reviewed, true);
+});
+
+test('previewAgentPlanForTesting blocks sidebar candidates for primary content goals', () => {
+  const context = buildAgentContextForTesting({
+    url: 'https://example.com/detail',
+    finalUrl: 'https://example.com/detail',
+    title: 'Example detail',
+    capturedAt: '2026-05-28T00:00:00.000Z',
+    agentScreenshot: {
+      path: '/tmp/context.fullpage.png',
+      fullPage: true,
+      annotatedPath: '/tmp/context.fullpage.annotated.png',
+      candidateScreenshots: [
+        {
+          candidateId: 'sidebar_recommendations_1',
+          path: '/tmp/context.sidebar_recommendations_1.crop.png',
+          rank: 1,
+          boundingBox: { x: 900, y: 300, width: 260, height: 500 }
+        }
+      ]
+    },
+    candidates: [
+      {
+        id: 'sidebar_recommendations_1',
+        type: 'repeated_card',
+        title: 'Nearby recommendations',
+        confidence: 0.82,
+        selector: 'aside',
+        xpath: '/html/body/aside',
+        itemSelector: 'aside .card',
+        itemXPath: '/html/body/aside/div',
+        itemCount: 5,
+        fields: [
+          { name: 'name', kind: 'text', selector: '.name', xpath: '/html/body/aside/div/span[1]', relativeXPath: './span[1]', samples: ['Nearby shop'] },
+          { name: 'rating', kind: 'text', selector: '.rating', xpath: '/html/body/aside/div/span[2]', relativeXPath: './span[2]', samples: ['5.0'] }
+        ],
+        sampleRows: [{ name: 'Nearby shop', rating: '5.0' }],
+        reasons: ['test'],
+        layout: {
+          role: 'sidebar',
+          score: 0.1,
+          mainScore: 0.2,
+          sidebarPenalty: 0.8,
+          boilerplatePenalty: 0,
+          visualCoverage: 0.1,
+          textDensity: 0.2,
+          linkDensity: 0.5,
+          centerDistance: 0.8,
+          reasons: ['side-column layout']
+        }
+      }
+    ]
+  }, 'extract current page primary detail content including title, rating, address, and body, ignore sidebar recommendations');
+
+  const preview = previewAgentPlanForTesting({
+    context,
+    plan: {
+      visualReview: {
+        reviewed: true,
+        screenshotPath: '/tmp/context.fullpage.png',
+        annotatedScreenshotPath: '/tmp/context.fullpage.annotated.png',
+        candidateScreenshotPath: '/tmp/context.sidebar_recommendations_1.crop.png',
+        selectedCandidateId: 'sidebar_recommendations_1',
+        evidence: ['The agent incorrectly claims this is the main region.'],
+        checks: {
+          mainRegionVerified: true,
+          fieldsVerified: true,
+          excludedRegions: ['navigation']
+        }
+      },
+      selection: {
+        candidateId: 'sidebar_recommendations_1',
+        fields: ['name', 'rating']
+      }
+    }
+  });
+
+  assert.equal(preview.pass, false);
+  assert.match(preview.warnings.join('\n'), /goal\/layout mismatch/);
+  assert.match(preview.recommendedFixes.join('\n'), /pageVisualElements/);
 });
 
 test('buildTaskFromAgentPlan applies external agent field choices and detail plan', () => {
@@ -4939,6 +5055,174 @@ test('buildTaskFromAgentPlan can promote visible DOM visual elements into fields
   assert.match(task.xml, /Name&gt;price/);
   assert.match(task.xml, /Name&gt;url/);
   assert.match(task.xml, /ExtractHref/);
+});
+
+test('buildTaskFromAgentPlan can create a synthetic candidate from page visual elements', () => {
+  const context = buildAgentContextForTesting({
+    url: 'https://example.com/list',
+    finalUrl: 'https://example.com/list',
+    title: 'Example',
+    capturedAt: '2026-05-28T00:00:00.000Z',
+    pageVisualElements: [
+      {
+        id: 'pv_1_missing_title',
+        scope: 'page',
+        source: 'page_visible_dom',
+        annotationLabel: 'P1',
+        label: 'link:Missing candidate title',
+        tagName: 'a',
+        kind: 'text',
+        role: 'link',
+        selector: 'a.result-title',
+        xpath: '/html[1]/body[1]/main[1]/section[1]/article[1]/a[1]',
+        boundingBox: { x: 80, y: 320, width: 360, height: 28 },
+        visible: true,
+        clickable: true,
+        sample: 'Missing candidate title',
+        samples: ['Missing candidate title'],
+        samplesByKind: {
+          text: ['Missing candidate title'],
+          href: ['https://example.com/missing']
+        },
+        attributes: { href: 'https://example.com/missing' },
+        confidence: 0.92,
+        regionRole: 'main'
+      },
+      {
+        id: 'pv_2_missing_summary',
+        scope: 'page',
+        source: 'page_visible_dom',
+        annotationLabel: 'P2',
+        label: 'text:Missing summary',
+        tagName: 'p',
+        kind: 'text',
+        role: 'text',
+        selector: 'p.summary',
+        xpath: '/html[1]/body[1]/main[1]/section[1]/article[1]/p[1]',
+        boundingBox: { x: 80, y: 360, width: 480, height: 44 },
+        visible: true,
+        clickable: false,
+        sample: 'Missing summary',
+        samples: ['Missing summary'],
+        samplesByKind: { text: ['Missing summary'] },
+        attributes: {},
+        confidence: 0.84,
+        regionRole: 'main'
+      }
+    ],
+    candidates: [
+      {
+        id: 'sidebar_links_1',
+        type: 'link_collection',
+        title: 'Sidebar links',
+        confidence: 0.6,
+        selector: 'aside',
+        xpath: '/html[1]/body[1]/aside[1]',
+        itemXPath: '/html[1]/body[1]/aside[1]/a',
+        itemCount: 5,
+        fields: [
+          { name: 'sidebar_title', kind: 'text', selector: 'a', xpath: '/html[1]/body[1]/aside[1]/a', relativeXPath: '.', samples: ['Sidebar'] }
+        ],
+        sampleRows: [{ sidebar_title: 'Sidebar' }],
+        reasons: ['wrong region']
+      }
+    ]
+  });
+
+  const plan = {
+    selection: {
+      customCandidate: {
+        id: 'agent_main_results',
+        type: 'search_results',
+        title: 'Agent selected main results',
+        xpath: '/html[1]/body[1]/main[1]/section[1]',
+        itemXPath: '/html[1]/body[1]/main[1]/section[1]/article',
+        fieldElementIds: ['pv_1_missing_title', 'pv_2_missing_summary'],
+        evidence: ['The screenshot shows the requested list in main content, but detector only returned sidebar links.']
+      },
+      fields: [
+        { elementId: 'P1', as: 'title' },
+        { elementId: 'P1', as: 'url', kind: 'href' },
+        { elementId: 'P2', as: 'summary' }
+      ],
+      pagination: null
+    }
+  };
+
+  const preview = previewAgentPlanForTesting({ context, plan });
+  assert.equal(preview.pass, true);
+  assert.equal(preview.candidateId, 'agent_main_results');
+  assert.deepEqual(preview.fields.map((field) => field.name), ['title', 'url', 'summary']);
+
+  const task = buildTaskFromAgentPlan({
+    context,
+    plan,
+    taskId: 'detected_agent_custom',
+    taskName: 'Detected Agent Custom'
+  });
+
+  assert.equal(task.detection.candidateId, 'agent_main_results');
+  assert.deepEqual(task.fieldNames, ['title', 'url', 'summary']);
+  assert.match(task.xml, /Loop detected items/);
+  assert.match(task.xml, /Name&gt;url/);
+  assert.match(task.xml, /ExtractHref/);
+  assert.doesNotMatch(task.xml, /sidebar_title/);
+});
+
+test('buildTaskFromAgentPlan derives relative XPath for direct custom candidate fields', () => {
+  const context = buildAgentContextForTesting({
+    url: 'https://example.com/list',
+    finalUrl: 'https://example.com/list',
+    title: 'Example',
+    capturedAt: '2026-05-28T00:00:00.000Z',
+    candidates: []
+  });
+
+  const plan = {
+    selection: {
+      customCandidate: {
+        id: 'agent_direct_xpath_results',
+        type: 'repeated_card',
+        title: 'Agent direct XPath results',
+        xpath: '/html[1]/body[1]/main[1]/section[1]/article',
+        itemXPath: '/html[1]/body[1]/main[1]/section[1]/article',
+        itemCount: 3,
+        fields: [
+          {
+            name: 'title',
+            kind: 'text',
+            xpath: '/html[1]/body[1]/main[1]/section[1]/article[1]/h2[1]',
+            samples: ['Alpha']
+          },
+          {
+            name: 'summary',
+            kind: 'text',
+            xpath: '/html[1]/body[1]/main[1]/section[1]/article[1]/p[1]',
+            samples: ['First summary']
+          }
+        ],
+        evidence: ['Agent selected the main list from the screenshot and supplied exact field XPath.']
+      },
+      pagination: null
+    }
+  };
+
+  const preview = previewAgentPlanForTesting({ context, plan });
+  assert.equal(preview.pass, true);
+  assert.equal(preview.fields[0].runtimeScope, 'loop_item');
+  assert.equal(preview.fields[0].xpath, '/html[1]/body[1]/main[1]/section[1]/article[1]/h2[1]');
+  assert.deepEqual(preview.fields.map((field) => field.name), ['title', 'summary']);
+
+  const task = buildTaskFromAgentPlan({
+    context,
+    plan,
+    taskId: 'detected_agent_direct_xpath',
+    taskName: 'Detected Agent Direct XPath'
+  });
+
+  assert.deepEqual(task.fieldNames, ['title', 'summary']);
+  assert.match(task.xml, /RelativeXpath&gt;\/h2\[1\]/);
+  assert.match(task.xml, /RelativeXpath&gt;\/p\[1\]/);
 });
 
 test('runInlineAgentDetectForTesting lets an external command generate and apply a plan', async () => {
