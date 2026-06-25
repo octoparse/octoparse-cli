@@ -976,7 +976,7 @@ function extractItemXml(field: DetectedField, id: number, options: {
     tag('AlertWhenNotFound', 'true'),
     tag('IsIFrame', 'false'),
     tag('IFrameAbsXPath', ''),
-    tag('AbsXpath', field.xpath),
+    tag('AbsXpath', normalizeEngineXPath(field.xpath)),
     tag('UseBackupPath', 'false'),
     tag('BackUpAbsXPath', ''),
     tag('UseBackupIframePath', 'false'),
@@ -1028,7 +1028,7 @@ function operationXml(operation: NonNullable<DetectedField['operations']>[number
 }
 
 function actionItemXml(xpath: string): string {
-  return `<ActionItem><AbsXpath>${escapeXml(xpath)}</AbsXpath><IsIFrame>false</IsIFrame><IFrameAbsXPath></IFrameAbsXPath><ListXpath></ListXpath><SampleText></SampleText></ActionItem>`;
+  return `<ActionItem><AbsXpath>${escapeXml(normalizeEngineXPath(xpath))}</AbsXpath><IsIFrame>false</IsIFrame><IFrameAbsXPath></IFrameAbsXPath><ListXpath></ListXpath><SampleText></SampleText></ActionItem>`;
 }
 
 function relativeXPathFromItem(xpath: string): string {
@@ -1056,6 +1056,15 @@ function normalizeEngineRelativeXPath(xpath: string): string {
   if (trimmed.startsWith('//')) return trimmed;
   if (trimmed.startsWith('/')) return trimmed;
   return `/${trimmed}`;
+}
+
+function normalizeEngineXPath(xpath: string): string {
+  const trimmed = xpath.trim();
+  if (!trimmed) return '';
+  return trimmed.replace(/\/([A-Za-z][A-Za-z0-9_-]*(?:=[^/\[]+))(\[\d+\])?/g, (_match, tag: string, index: string | undefined) => {
+    const quote = tag.includes('"') && !tag.includes("'") ? "'" : '"';
+    return `/*[name()=${quote}${tag}${quote}]${index ?? ''}`;
+  });
 }
 
 function attrs(values: Record<string, string>): string {

@@ -3922,6 +3922,48 @@ test('buildTaskFromCandidate creates a local task JSON payload accepted by task 
   assert.doesNotMatch(task.xml, /&lt;RelativeXpath&gt;\.\/a\[1\]&lt;\/RelativeXpath&gt;/);
 });
 
+test('buildTaskFromCandidate normalizes invalid element names in runtime XPath', () => {
+  const task = buildTaskFromCandidate({
+    url: 'https://example.com/list',
+    taskId: 'detected_invalid_tag_xpath',
+    taskName: 'Detected Invalid Tag XPath',
+    candidate: {
+      id: 'search_results_invalid_xpath',
+      type: 'search_results',
+      title: 'Search/list results',
+      confidence: 0.8,
+      selector: '',
+      xpath: '/html[1]/body[1]/htmllang="ja"[1]/div[1]',
+      itemXPath: '/html[1]/body[1]/htmllang="ja"[1]/div[1]/a',
+      itemCount: 3,
+      fields: [
+        {
+          name: 'area',
+          kind: 'text',
+          selector: 'a',
+          xpath: '/html[1]/body[1]/htmllang="ja"[1]/div[1]/a',
+          relativeXPath: '.',
+          samples: ['Akapira']
+        },
+        {
+          name: 'url',
+          kind: 'href',
+          selector: 'a',
+          xpath: '/html[1]/body[1]/htmllang="ja"[1]/div[1]/a',
+          relativeXPath: '.',
+          samples: ['https://example.com/area']
+        }
+      ],
+      sampleRows: [{ area: 'Akapira', url: 'https://example.com/area' }],
+      reasons: ['test']
+    }
+  });
+
+  assert.doesNotMatch(task.xml, /\/htmllang=&amp;quot;ja&amp;quot;/);
+  assert.match(task.xml, /\/\*\[name\(\)=&amp;apos;htmllang=&amp;quot;ja&amp;quot;&amp;apos;\]/);
+  assert.match(task.xml, /ExtractHref/);
+});
+
 test('buildTaskFromCandidate preserves sibling-axis relative extraction fields', () => {
   const task = buildTaskFromCandidate({
     url: 'https://example.com/news',
