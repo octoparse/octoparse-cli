@@ -1,5 +1,6 @@
-import type { DetectedCandidate, DetectedDetailPlan, DetectedField, DetectedFieldDiagnostics, DetectedPagination, DetectedVisualElement } from './types.js';
+import type { DetectedApiListCandidate, DetectedCandidate, DetectedDetailPlan, DetectedField, DetectedFieldDiagnostics, DetectedPagination, DetectedVisualElement } from './types.js';
 import { buildTaskFromCandidate } from './xml.js';
+import { buildTaskFromApiListCandidate } from './api-list-detector.js';
 import type {
   AgentCustomCandidatePlan,
   AgentDetailPlan,
@@ -11,6 +12,8 @@ import type {
 } from './agent-types.js';
 
 export function previewAgentPlan(options: { context: DetectAgentContext; plan: AgentPlan }): AgentPlanPreview {
+  const apiCandidate = resolveAgentPlanApiCandidate(options.context, options.plan);
+  if (apiCandidate) return previewApiAgentPlan(options.context, options.plan, apiCandidate);
   const base = resolveAgentPlanBaseCandidate(options.context, options.plan);
   if (base.type === 'form') throw new Error('Form candidates cannot directly generate extraction tasks.');
   const candidate = applyAgentPlanToCandidate(base, options.plan);
@@ -60,6 +63,15 @@ export function buildTaskFromAgentPlan(options: {
   taskId: string;
   taskName: string;
 }) {
+  const apiCandidate = resolveAgentPlanApiCandidate(options.context, options.plan);
+  if (apiCandidate) {
+    return buildTaskFromApiListCandidate({
+      url: options.context.finalUrl,
+      taskId: options.taskId,
+      taskName: options.taskName,
+      candidate: apiCandidate
+    });
+  }
   const base = resolveAgentPlanBaseCandidate(options.context, options.plan);
   if (base.type === 'form') throw new Error('Form candidates cannot directly generate extraction tasks.');
   const candidate = applyAgentPlanToCandidate(base, options.plan);
@@ -72,6 +84,60 @@ export function buildTaskFromAgentPlan(options: {
     session: options.context.savedSession,
     searchPlan: options.context.searchPlan
   });
+}
+
+function resolveAgentPlanApiCandidate(context: DetectAgentContext, plan: AgentPlan): DetectedApiListCandidate | undefined {
+  const apiCandidateId = plan.selection?.apiCandidateId;
+  if (!apiCandidateId) return undefined;
+  const candidate = context.apiCandidates?.find((item) => item.id === apiCandidateId);
+  if (!candidate) throw new Error(`Agent plan references an unknown API candidate: ${apiCandidateId}`);
+  return candidate;
+}
+
+function previewApiAgentPlan(context: DetectAgentContext, plan: AgentPlan, candidate: DetectedApiListCandidate): AgentPlanPreview {
+  const warnings: string[] = [];
+  const recommendedFixes: string[] = [];
+  if (context.screenshot?.path && !plan.visualReview?.reviewed) {
+    warnings.push('visualReview: plan does not confirm that context.screenshot.path was opened before choosing API candidate');
+    recommendedFixes.push('Confirm the API candidate matches the primary visible list, not recommendations, ads, or an unrelated endpoint.');
+  }
+  const fields: AgentPreviewField[] = candidate.fields.map((field) => ({
+    name: field.name,
+    kind: field.type === 'url' ? 'href' : 'text',
+    xpath: field.path,
+    samples: field.samples.slice(0, 3),
+    warnings: [],
+    runtimeScope: 'loop_item',
+    notes: ['API JSONPath field']
+  }));
+  return {
+    schemaVersion: 'octopus.detect.agent-preview.v1',
+    candidateId: candidate.id,
+    candidate: {
+      id: candidate.id,
+      type: 'api_list',
+      title: candidate.title,
+      confidence: candidate.confidence,
+      itemCount: candidate.itemCount
+    },
+    ...(plan.visualReview ? { visualReview: plan.visualReview } : {}),
+    fields,
+    ...(candidate.pagination ? {
+      pagination: {
+        type: 'scroll',
+        xpath: '',
+        text: `${candidate.pagination.param}${candidate.pagination.pageSizeParam ? `/${candidate.pagination.pageSizeParam}` : ''}`,
+        confidence: candidate.confidence,
+        isAjax: true,
+        scope: 'global',
+        reasons: candidate.reasons
+      }
+    } : {}),
+    warnings,
+    recommendedFixes,
+    ...(warnings.length || recommendedFixes.length ? { repairInstruction: buildAgentRepairInstruction(warnings, recommendedFixes) } : {}),
+    pass: warnings.length === 0
+  };
 }
 
 function resolveAgentPlanBaseCandidate(context: DetectAgentContext, plan: AgentPlan): DetectedCandidate {

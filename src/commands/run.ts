@@ -14,6 +14,7 @@ import {
 import { EngineHost, type RuntimeDownloadEvent } from '../runtime/engine-host.js';
 import { defaultRunsDir } from '../runtime/local-runs.js';
 import { safeFileName } from '../runtime/naming.js';
+import { runApiListTask } from '../runtime/api-list-runner.js';
 import { LINUX_ARM64_UNSUPPORTED_CODE, LINUX_ARM64_UNSUPPORTED_MESSAGE, isLocalChromeRuntimeSupported } from '../runtime/platform-support.js';
 import { BillingRuntimeError } from '../runtime/run-services.js';
 import { cookieHeaderFromSession, loadBrowserSession } from '../runtime/browser-session.js';
@@ -491,6 +492,19 @@ async function executeTask(
 
   try {
     const task = await loadTask();
+    if (task.apiList) {
+      const summary = await runApiListTask(task, options);
+      if (options.json) {
+        printRunEnvelope(runtimeConsole, true, { ...summary, warnings: resourceWarning ? [resourceWarning] : [] });
+      } else if (!options.jsonl) {
+        runtimeConsole.stdout(`Run completed: ${summary.runId}`);
+        runtimeConsole.stdout(`Task: ${summary.taskId}`);
+        runtimeConsole.stdout(`Rows: ${summary.total}`);
+        if (summary.stopReason === 'max_rows') runtimeConsole.stdout(`Stop reason: max_rows (${summary.maxRows})`);
+        runtimeConsole.stdout(`View data: ${localDataExportCommand(summary)}`);
+      }
+      return EXIT_OK;
+    }
     await applyTaskBrowserSession(task, options, runtimeConsole);
     loadedTask = task;
     markTrackingTaskLoaded(trackingRun, task);

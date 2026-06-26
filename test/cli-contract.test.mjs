@@ -117,6 +117,220 @@ function assertDetectHelpPrefersAgentWorkflow(stdout) {
   assert.match(stdout, /Do not treat --auto examples as the default\s+LLM\/agent workflow/);
 }
 
+test('run supports apiList task files with page pagination', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'octoparse-api-list-run-'));
+  const taskFile = join(dir, 'api-task.json');
+  const output = join(dir, 'runs');
+  const lines = [];
+  const originalFetch = globalThis.fetch;
+  const originalStdoutWrite = process.stdout.write;
+  const originalStderrWrite = process.stderr.write;
+  await writeFile(taskFile, JSON.stringify({
+    taskId: 'api-list-test',
+    taskName: 'API list test',
+    xml: '',
+    xoml: '',
+    fieldNames: ['id', 'title', 'url', 'price'],
+    apiList: {
+      kind: 'api_list',
+      request: {
+        url: 'https://example.invalid/search',
+        query: { pageSize: 2 }
+      },
+      pagination: {
+        type: 'page',
+        param: 'page',
+        start: 0,
+        step: 1,
+        pageSizeParam: 'pageSize',
+        pageSize: 2
+      },
+      itemsPath: '$.items',
+      fields: [
+        { name: 'id', path: '$.id', type: 'number' },
+        { name: 'title', path: '$.title' },
+        { name: 'url', path: '$.link', type: 'url', valuePrefix: 'https://example.com' },
+        { name: 'price', path: '$.price', type: 'number' }
+      ]
+    }
+  }, null, 2));
+
+  try {
+    globalThis.fetch = mock.fn(async (url) => {
+      const parsed = new URL(String(url));
+      const page = Number(parsed.searchParams.get('page') || 0);
+      const pageSize = Number(parsed.searchParams.get('pageSize') || 2);
+      const start = page * pageSize;
+      const items = Array.from({ length: pageSize }, (_value, index) => {
+        const id = start + index + 1;
+        return { id, title: `Item ${id}`, link: `/items/${id}`, price: id * 10 };
+      });
+      return new Response(JSON.stringify({ items }), {
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' }
+      });
+    });
+    process.stdout.write = ((chunk) => {
+      lines.push(String(chunk).trimEnd());
+      return true;
+    });
+    process.stderr.write = ((chunk) => {
+      lines.push(String(chunk).trimEnd());
+      return true;
+    });
+    const code = await runTask('api-list-test', [
+      '--task-file',
+      taskFile,
+      '--output',
+      output,
+      '--max-rows',
+      '5',
+      '--json'
+    ]);
+    assert.equal(code, 0);
+    const payload = JSON.parse(lines.find((line) => line.startsWith('{')) ?? '{}');
+    assert.equal(payload.ok, true);
+    assert.equal(payload.data.total, 5);
+    assert.equal(payload.data.stopReason, 'max_rows');
+    const rows = (await readFile(join(payload.data.outputDir, 'rows.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
+    assert.deepEqual(rows.map((row) => row.id), [1, 2, 3, 4, 5]);
+    assert.equal(rows[0].url, 'https://example.com/items/1');
+    const jsonRows = JSON.parse(await readFile(join(payload.data.outputDir, 'rows.json'), 'utf8'));
+    assert.equal(jsonRows.length, 5);
+    const csv = await readFile(join(payload.data.outputDir, 'rows.csv'), 'utf8');
+    assert.match(csv, /^id,title,url,price\n/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
+  }
+});
+
+test('run sends JSON body and content type for POST apiList task files', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'octoparse-api-list-post-run-'));
+  const taskFile = join(dir, 'api-task.json');
+  const output = join(dir, 'runs');
+  const calls = [];
+  const lines = [];
+  const originalFetch = globalThis.fetch;
+  const originalStdoutWrite = process.stdout.write;
+  const originalStderrWrite = process.stderr.write;
+  await writeFile(taskFile, JSON.stringify({
+    taskId: 'api-list-post-test',
+    taskName: 'API list POST test',
+    xml: '',
+    xoml: '',
+    fieldNames: ['name'],
+    apiList: {
+      kind: 'api_list',
+      request: {
+        url: 'https://example.invalid/search',
+        method: 'POST',
+        body: { q: 'makeup' }
+      },
+      itemsPath: '$.items',
+      fields: [{ name: 'name', path: '$.name' }]
+    }
+  }, null, 2));
+
+  try {
+    globalThis.fetch = mock.fn(async (url, init) => {
+      calls.push({ url: String(url), init });
+      return new Response(JSON.stringify({ items: [{ name: 'Lipstick' }] }), {
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' }
+      });
+    });
+    process.stdout.write = ((chunk) => {
+      lines.push(String(chunk).trimEnd());
+      return true;
+    });
+    process.stderr.write = ((chunk) => {
+      lines.push(String(chunk).trimEnd());
+      return true;
+    });
+    const code = await runTask('api-list-post-test', [
+      '--task-file',
+      taskFile,
+      '--output',
+      output,
+      '--max-rows',
+      '1',
+      '--json'
+    ]);
+    assert.equal(code, 0);
+    const apiCall = calls.find((call) => call.url.startsWith('https://example.invalid/search'));
+    assert.ok(apiCall);
+    assert.equal(apiCall.init.method, 'POST');
+    assert.equal(apiCall.init.headers['Content-Type'], 'application/json');
+    assert.equal(apiCall.init.body, JSON.stringify({ q: 'makeup' }));
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
+  }
+});
+
+test('run fetches non-paginated apiList task files only once', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'octoparse-api-list-single-run-'));
+  const taskFile = join(dir, 'api-task.json');
+  const output = join(dir, 'runs');
+  const calls = [];
+  const lines = [];
+  const originalFetch = globalThis.fetch;
+  const originalStdoutWrite = process.stdout.write;
+  const originalStderrWrite = process.stderr.write;
+  await writeFile(taskFile, JSON.stringify({
+    taskId: 'api-list-single-test',
+    taskName: 'API list single test',
+    xml: '',
+    xoml: '',
+    fieldNames: ['name'],
+    apiList: {
+      kind: 'api_list',
+      request: { url: 'https://example.invalid/items' },
+      itemsPath: '$.items',
+      fields: [{ name: 'name', path: '$.name' }]
+    }
+  }, null, 2));
+
+  try {
+    globalThis.fetch = mock.fn(async (url) => {
+      if (String(url).startsWith('https://example.invalid/items')) calls.push(String(url));
+      return new Response(JSON.stringify({ items: [{ name: 'A' }, { name: 'B' }] }), {
+        status: 200,
+        statusText: 'OK',
+        headers: { 'content-type': 'application/json' }
+      });
+    });
+    process.stdout.write = ((chunk) => {
+      lines.push(String(chunk).trimEnd());
+      return true;
+    });
+    process.stderr.write = ((chunk) => {
+      lines.push(String(chunk).trimEnd());
+      return true;
+    });
+    const code = await runTask('api-list-single-test', [
+      '--task-file',
+      taskFile,
+      '--output',
+      output,
+      '--json'
+    ]);
+    assert.equal(code, 0);
+    assert.equal(calls.length, 1);
+    const payload = JSON.parse(lines.find((line) => line.startsWith('{')) ?? '{}');
+    assert.equal(payload.data.total, 2);
+  } finally {
+    globalThis.fetch = originalFetch;
+    process.stdout.write = originalStdoutWrite;
+    process.stderr.write = originalStderrWrite;
+  }
+});
+
 test('functional commands require API key even for local task files', async () => {
   const result = await runCli([
     'task',

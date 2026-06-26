@@ -6,13 +6,13 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { mock, test } from 'node:test';
 import { gunzipSync } from 'node:zlib';
-import { buildAgentContextForTesting, buildTaskFromAgentPlan, previewAgentPlanForTesting, defaultDetectedTaskNameForTesting, detectCommand, detectUrlCommand, resolveAgentScreenshotPathForTesting, resolveAvailableDetectedTaskFile, runInlineAgentDetectForTesting, splitRunUrlArgs } from '../dist/commands/detect.js';
+import { buildAgentContextForTesting, buildTaskFromAgentPlan, previewAgentPlanForTesting, defaultDetectedTaskNameForTesting, detectCommand, detectUrlCommand, recommendedApiCandidateForTesting, resolveAgentScreenshotPathForTesting, resolveAvailableDetectedTaskFile, runInlineAgentDetectForTesting, splitRunUrlArgs } from '../dist/commands/detect.js';
 import { EngineHost } from '../dist/runtime/engine-host.js';
 import { setEngineHostFactoryForTesting } from '../dist/commands/run.js';
 import { browserSessionPath, loadBrowserSession, saveBrowserSession } from '../dist/runtime/browser-session.js';
 import { detectedTaskToCloudTaskInfo, encodeTaskXml } from '../dist/runtime/task-cloud-save.js';
 import { hasLinuxDisplayEnvironment, requiresVirtualDisplay } from '../dist/runtime/virtual-display.js';
-import { applyGoalScoresForTesting, augmentAdjacentMetadataFieldsForTesting, dedupeEquivalentCandidates, detectInteractivePaginationOptionsForTesting, detectPageObstructionsForTesting, detectPaginationForCandidatesForTesting, detectSearchResultBlocksForTesting, detectSemanticBusinessCardsForTesting, dismissPageObstructionsForTesting, filterDetectedBoilerplateCandidates, findSearchInputCandidatesForTesting, isPlausiblePaginationOptionForTesting, pageLooksLikeSearchResultForTesting, preferredPaginationForTesting, rankCandidatesForTesting, refineCandidateFieldsForTesting, resetManualOverlayHintKeysForTesting, resolveSearchSubmitButtonByGeometryForTesting, resolveSearchSubmitButtonForTesting, sanitizeCandidatePaginationByLayoutForTesting, scoreSearchResultPageForTesting, selectDetailUrlFieldForTesting, shouldPromptForLoginInterventionForTesting, writeManualOverlayHintOnceForTesting } from '../dist/runtime/detector/page-detector.js';
+import { applyGoalScoresForTesting, augmentAdjacentMetadataFieldsForTesting, dedupeEquivalentCandidates, detectApiListCandidatesForTesting, detectInteractivePaginationOptionsForTesting, detectKnownApiListCandidatesForTesting, detectPageObstructionsForTesting, detectPaginationForCandidatesForTesting, detectSearchResultBlocksForTesting, detectSemanticBusinessCardsForTesting, dismissPageObstructionsForTesting, filterDetectedBoilerplateCandidates, findSearchInputCandidatesForTesting, isPlausiblePaginationOptionForTesting, pageLooksLikeSearchResultForTesting, preferredPaginationForTesting, rankCandidatesForTesting, refineCandidateFieldsForTesting, resetManualOverlayHintKeysForTesting, resolveSearchSubmitButtonByGeometryForTesting, resolveSearchSubmitButtonForTesting, sanitizeCandidatePaginationByLayoutForTesting, scoreSearchResultPageForTesting, selectDetailUrlFieldForTesting, shouldPromptForLoginInterventionForTesting, writeManualOverlayHintOnceForTesting } from '../dist/runtime/detector/page-detector.js';
 import { candidateIdsForAnnotatedScreenshotForTesting, candidateIdsForCandidateScreenshotsForTesting } from '../dist/runtime/detector/agent-visual-artifacts.js';
 import { protectedSmartResultToCandidatesForTesting } from '../dist/runtime/detector/protected-smart.js';
 import { buildTaskFromCandidate } from '../dist/runtime/detector/xml.js';
@@ -28,6 +28,274 @@ test('resolveAvailableDetectedTaskFile creates a default file without overwritin
   } finally {
     chdir(previousCwd);
   }
+});
+
+test('auto detect prefers DOM candidate and only falls back to apiList when DOM is weak', () => {
+  const apiCandidate = {
+    id: 'api_list_1',
+    type: 'api_list',
+    title: 'API list',
+    confidence: 0.93,
+    request: { url: 'https://api.example.com/search', method: 'GET' },
+    itemsPath: '$.items',
+    fields: [
+      { name: 'name', path: '$.name', samples: ['Lipstick'] },
+      { name: 'price', path: '$.price', samples: ['10'] }
+    ],
+    sampleRows: [{ name: 'Lipstick', price: 10 }],
+    itemCount: 20,
+    reasons: ['JSON response contains object array at $.items']
+  };
+  const strongDom = {
+    id: 'dom_1',
+    type: 'repeated_card',
+    title: 'DOM list',
+    confidence: 0.76,
+    selector: '.card',
+    xpath: '//*[@class="card"]',
+    itemCount: 12,
+    fields: [
+      { name: 'name', kind: 'text', selector: '.name', xpath: './/span', samples: ['Lipstick'] },
+      { name: 'price', kind: 'text', selector: '.price', xpath: './/b', samples: ['10'] }
+    ],
+    sampleRows: [{ name: 'Lipstick', price: '10' }, { name: 'Mascara', price: '12' }],
+    reasons: ['test'],
+    diagnostics: {
+      matchCount: 12,
+      sampleBoxes: [],
+      textLength: 100,
+      visualCoverage: 0.24,
+      warnings: []
+    }
+  };
+  const weakDom = {
+    ...strongDom,
+    id: 'dom_weak',
+    confidence: 0.39,
+    fields: [
+      { name: 'name', kind: 'text', selector: '.name', xpath: './/span', samples: [''] }
+    ],
+    sampleRows: [{ name: '' }],
+    diagnostics: {
+      matchCount: 1,
+      sampleBoxes: [],
+      textLength: 3,
+      visualCoverage: 0.03,
+      warnings: ['too small', 'short text', 'low coverage']
+    }
+  };
+
+  assert.equal(recommendedApiCandidateForTesting({
+    url: 'https://example.com/search',
+    finalUrl: 'https://example.com/search',
+    title: 'Example',
+    capturedAt: '2026-06-25T00:00:00.000Z',
+    candidates: [strongDom],
+    apiCandidates: [apiCandidate]
+  }), undefined);
+  assert.equal(recommendedApiCandidateForTesting({
+    url: 'https://example.com/search',
+    finalUrl: 'https://example.com/search',
+    title: 'Example',
+    capturedAt: '2026-06-25T00:00:00.000Z',
+    candidates: [weakDom],
+    apiCandidates: [apiCandidate]
+  })?.id, 'api_list_1');
+});
+
+test('known Tata CLiQ apiList adapter is exposed as fallback API candidate', () => {
+  const candidates = detectKnownApiListCandidatesForTesting(
+    'https://www.tatacliq.com/search?text=Makeup:relevance:list:listId_abc&icid2=test'
+  );
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].id, 'known_api_tatacliq_search');
+  assert.equal(candidates[0].request.url, 'https://searchbff.tatacliq.com/products/mpl/search');
+  assert.equal(candidates[0].pagination.param, 'page');
+  assert.equal(candidates[0].pagination.pageSize, 40);
+  assert.equal(candidates[0].itemsPath, '$.searchresult');
+  assert.ok(candidates[0].fields.some((field) => field.name === 'product_url'));
+});
+
+test('detectApiListCandidatesForTesting infers JSON list path, fields, and page params', () => {
+  const candidates = detectApiListCandidatesForTesting([
+    {
+      url: 'https://api.example.test/products/search?searchText=Makeup&page=0&pageSize=40',
+      payload: {
+        searchresult: [
+          {
+            productId: 'p1',
+            productname: 'Lipstick A',
+            brandname: 'Brand A',
+            price: { sellingPrice: { doubleValue: 100, formattedValue: '$100' } },
+            webURL: '/lipstick-a/p-p1',
+            imageURL: '//img.example.test/p1.jpg',
+            ratingCount: 12
+          },
+          {
+            productId: 'p2',
+            productname: 'Lipstick B',
+            brandname: 'Brand B',
+            price: { sellingPrice: { doubleValue: 120, formattedValue: '$120' } },
+            webURL: '/lipstick-b/p-p2',
+            imageURL: '//img.example.test/p2.jpg',
+            ratingCount: 8
+          },
+          {
+            productId: 'p3',
+            productname: 'Lipstick C',
+            brandname: 'Brand C',
+            price: { sellingPrice: { doubleValue: 130, formattedValue: '$130' } },
+            webURL: '/lipstick-c/p-p3',
+            imageURL: '//img.example.test/p3.jpg',
+            ratingCount: 4
+          }
+        ],
+        pagination: { currentPage: 0, pageSize: 40, totalPages: 3 }
+      }
+    }
+  ]);
+  assert.equal(candidates[0].itemsPath, '$.searchresult');
+  assert.equal(candidates[0].pagination.param, 'page');
+  assert.equal(candidates[0].pagination.pageSizeParam, 'pageSize');
+  assert.equal(candidates[0].pagination.pageSize, 40);
+  assert.ok(candidates[0].fields.some((field) => field.name === 'name' && field.path === '$.productname'));
+  assert.ok(candidates[0].fields.some((field) => field.name === 'brand'));
+  assert.ok(candidates[0].fields.some((field) => field.name === 'image_url'));
+});
+
+test('detectApiListCandidatesForTesting preserves POST body and bracket JSON paths', () => {
+  const candidates = detectApiListCandidatesForTesting([
+    {
+      url: 'https://api.example.test/search?page=1',
+      method: 'POST',
+      requestBody: { query: 'makeup', filters: { category: 'beauty' } },
+      payload: {
+        'search-results': [
+          { 'product-name': 'Lipstick A', 'image-url': 'https://img.example.test/a.jpg', price: 100 },
+          { 'product-name': 'Lipstick B', 'image-url': 'https://img.example.test/b.jpg', price: 120 },
+          { 'product-name': 'Lipstick C', 'image-url': 'https://img.example.test/c.jpg', price: 130 }
+        ]
+      }
+    }
+  ]);
+  assert.equal(candidates[0].request.method, 'POST');
+  assert.deepEqual(candidates[0].request.body, { query: 'makeup', filters: { category: 'beauty' } });
+  assert.equal(candidates[0].itemsPath, "$['search-results']");
+  assert.ok(candidates[0].fields.some((field) => field.path === "$['product-name']"));
+});
+
+test('buildTaskFromApiListCandidate creates runnable apiList task from generic network candidate', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'detector-generic-api-list-'));
+  const taskFile = join(dir, 'api-task.json');
+  const result = {
+    url: 'https://example.com/search',
+    finalUrl: 'https://example.com/search',
+    title: 'Example',
+    capturedAt: '2026-06-25T00:00:00.000Z',
+    candidates: [],
+    apiCandidates: [
+      {
+        id: 'api_list_1',
+        type: 'api_list',
+        title: 'API list',
+        confidence: 0.9,
+        request: {
+          url: 'https://api.example.com/search',
+          method: 'GET',
+          query: { q: 'makeup', page: '0', pageSize: '20' }
+        },
+        pagination: {
+          type: 'page',
+          param: 'page',
+          start: 0,
+          step: 1,
+          pageSizeParam: 'pageSize',
+          pageSize: 20
+        },
+        itemsPath: '$.items',
+        fields: [
+          { name: 'name', path: '$.name', samples: ['A'] },
+          { name: 'price', path: '$.price', type: 'number', samples: ['10'] }
+        ],
+        sampleRows: [{ name: 'A', price: 10 }],
+        itemCount: 20,
+        reasons: ['test']
+      }
+    ]
+  };
+  const { buildTaskFromApiListCandidate } = await import('../dist/runtime/detector/api-list-detector.js');
+  const task = buildTaskFromApiListCandidate({
+    url: result.finalUrl,
+    taskId: 'generic-api',
+    taskName: 'Generic API',
+    candidate: result.apiCandidates[0]
+  });
+  await writeFile(taskFile, JSON.stringify(task, null, 2));
+  const saved = JSON.parse(await readFile(taskFile, 'utf8'));
+  assert.equal(saved.apiList.request.url, 'https://api.example.com/search');
+  assert.equal(saved.apiList.itemsPath, '$.items');
+  assert.equal(saved.apiList.pagination.param, 'page');
+  assert.deepEqual(saved.fieldNames, ['name', 'price']);
+});
+
+test('agent plan can select apiCandidateId and build apiList task', () => {
+  const context = buildAgentContextForTesting({
+    url: 'https://example.com/search',
+    finalUrl: 'https://example.com/search',
+    title: 'Example',
+    capturedAt: '2026-06-25T00:00:00.000Z',
+    candidates: [],
+    apiCandidates: [
+      {
+        id: 'api_list_1',
+        type: 'api_list',
+        title: 'API list',
+        confidence: 0.91,
+        request: {
+          url: 'https://api.example.com/search',
+          method: 'GET',
+          query: { q: 'makeup', page: '0', pageSize: '20' }
+        },
+        pagination: {
+          type: 'page',
+          param: 'page',
+          start: 0,
+          step: 1,
+          pageSizeParam: 'pageSize',
+          pageSize: 20
+        },
+        itemsPath: '$.items',
+        fields: [
+          { name: 'name', path: '$.name', samples: ['Lipstick'] },
+          { name: 'price', path: '$.price', type: 'number', samples: ['10'] }
+        ],
+        sampleRows: [{ name: 'Lipstick', price: 10 }],
+        itemCount: 20,
+        reasons: ['JSON response contains object array at $.items']
+      }
+    ]
+  });
+  assert.equal(context.apiCandidates[0].id, 'api_list_1');
+  const plan = {
+    schemaVersion: 'octopus.detect.agent-plan.v1',
+    selection: {
+      apiCandidateId: 'api_list_1'
+    }
+  };
+  const preview = previewAgentPlanForTesting({ context, plan });
+  assert.equal(preview.candidateId, 'api_list_1');
+  assert.equal(preview.candidate.type, 'api_list');
+  assert.deepEqual(preview.fields.map((field) => field.name), ['name', 'price']);
+  const task = buildTaskFromAgentPlan({
+    context,
+    plan,
+    taskId: 'api-agent-task',
+    taskName: 'API Agent Task'
+  });
+  assert.equal(task.apiList.kind, 'api_list');
+  assert.equal(task.apiList.itemsPath, '$.items');
+  assert.deepEqual(task.fieldNames, ['name', 'price']);
+  assert.equal(task.detection.candidateId, 'api_list_1');
 });
 
 test('defaultDetectedTaskNameForTesting derives a Windows-safe name from URL without protocol', () => {

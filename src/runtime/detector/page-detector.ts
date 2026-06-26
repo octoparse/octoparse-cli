@@ -11,13 +11,15 @@ import { defaultSessionNameForUrl, saveBrowserSession, sessionOriginForUrl } fro
 import type { ChromeResolveStatus } from '../chrome-progress.js';
 import { hasLinuxDisplayEnvironment, startVirtualDisplayIfNeeded, type VirtualDisplayHandle } from '../virtual-display.js';
 import { captureAgentScreenshot } from './agent-visual-artifacts.js';
+import { detectKnownApiListCandidates } from './api-list-detector.js';
+import { detectApiListCandidatesFromResourceTimings, startApiResponseCapture, type ApiResponseCapture } from './api-list-response-detector.js';
 import { isFooterLikeSelector, isLegalBoilerplateText, isStrongLegalBoilerplateText, isWeakBoilerplateText } from './candidate-boilerplate.js';
 import { attachAgentDiagnostics } from './candidate-diagnostics.js';
 import { applyLayoutScores } from './candidate-layout.js';
 import { attachCandidateVisualElements, detectPageVisualElements } from './candidate-visual-elements.js';
 import { applyGoalScores, dedupeEquivalentCandidates, filterDetectedBoilerplateCandidates, rankCandidates } from './candidate-ranking.js';
 import { detectProtectedSmartCandidates } from './protected-smart.js';
-import type { PageDetectionResult, DetectedCandidate, DetectedDetailMode, DetectedDetailPlan, DetectedField, DetectedFieldDiagnostics, DetectedLlmRankInput, DetectedPagination, DetectedPopupDismissal, DetectedSearchPlan, DetectOptions } from './types.js';
+import type { PageDetectionResult, DetectedApiListCandidate, DetectedCandidate, DetectedDetailMode, DetectedDetailPlan, DetectedField, DetectedFieldDiagnostics, DetectedLlmRankInput, DetectedPagination, DetectedPopupDismissal, DetectedSearchPlan, DetectOptions } from './types.js';
 
 export { dedupeEquivalentCandidates, filterDetectedBoilerplateCandidates } from './candidate-ranking.js';
 
@@ -28,6 +30,9 @@ export function applyGoalScoresForTesting(candidates: DetectedCandidate[], goal:
 export function rankCandidatesForTesting(candidates: DetectedCandidate[]): DetectedCandidate[] {
   return rankCandidates(candidates);
 }
+
+export { detectApiListCandidatesForTesting } from './api-list-response-detector.js';
+export { detectKnownApiListCandidates as detectKnownApiListCandidatesForTesting } from './api-list-detector.js';
 
 const require = createRequire(import.meta.url);
 const puppeteer = require('rebrowser-puppeteer-core') as typeof import('puppeteer-core');
@@ -171,7 +176,20 @@ export async function detectPage(options: DetectOptions): Promise<PageDetectionR
   const runtimeConsole = suppressDetectorRuntimeConsole();
   let host: ExtensionDetectorHost | null = null;
   try {
-    host = await ExtensionDetectorHost.start(options);
+    let apiCapture: ApiResponseCapture | null = null;
+    host = await ExtensionDetectorHost.start(options, {
+      onTargetPageReady(page) {
+        apiCapture = startApiResponseCapture(page);
+      }
+    });
+    const capturedApiCandidates: DetectedApiListCandidate[] = [];
+    const restartApiCapture = (page: Page): void => {
+      if (apiCapture) {
+        capturedApiCandidates.push(...apiCapture.candidates());
+        apiCapture.stop();
+      }
+      apiCapture = startApiResponseCapture(page);
+    };
     let ignoreLoginInterventionPrompts = false;
     const handleLoginIntervention = async (reason: string): Promise<LoginInterventionResult> => {
       if (ignoreLoginInterventionPrompts) return { handled: false, allowSessionSave: false, ignoreFuturePrompts: true };
@@ -180,6 +198,7 @@ export async function detectPage(options: DetectOptions): Promise<PageDetectionR
       return result;
     };
     let page = host.page;
+    if (!apiCapture) apiCapture = startApiResponseCapture(page);
     page.setDefaultTimeout(options.timeoutMs);
     await waitForPageSettled(page, options.waitMs);
     const popupDismissals: DetectedPopupDismissal[] = [];
@@ -187,6 +206,7 @@ export async function detectPage(options: DetectOptions): Promise<PageDetectionR
     let loginIntervention = await handleLoginIntervention('login requirement detected after opening the page');
     popupDismissals.push(...loginIntervention.popupDismissals ?? []);
     page = host.page;
+    restartApiCapture(page);
     if (options.dismissPopups && !options.manual) {
       popupDismissals.push(...await dismissPageObstructions(page));
       if (popupDismissals.length) await waitForPageSettled(page, Math.min(options.waitMs, 800));
@@ -199,13 +219,16 @@ export async function detectPage(options: DetectOptions): Promise<PageDetectionR
     if (options.input && Object.keys(options.input).length) {
       await adoptBestPageForSearchInput(host, options).catch(() => undefined);
       page = host.page;
+      restartApiCapture(page);
       const searchInputOverrides = options.manual ? await confirmSearchInputsInteractively(host, options, runtimeConsole) : undefined;
       if (options.manual) {
         searchPlan = await submitInputsManually(host, options, runtimeConsole, searchInputOverrides);
         page = host.page;
+        restartApiCapture(page);
       } else {
         searchPlan = await submitInputs(host, options, searchInputOverrides);
         page = host.page;
+        restartApiCapture(page);
         await waitForPageSettled(page, options.waitMs);
         let afterSearchLogin = await handleLoginIntervention('login requirement detected after search');
         popupDismissals.push(...afterSearchLogin.popupDismissals ?? []);
@@ -229,6 +252,7 @@ export async function detectPage(options: DetectOptions): Promise<PageDetectionR
             await waitForPageSettled(host.page, options.waitMs);
             searchPlan = await submitInputs(host, options, searchInputOverrides);
             page = host.page;
+            restartApiCapture(page);
             await waitForPageSettled(host.page, options.waitMs);
             const replayLogin = await handleLoginIntervention('login requirement still detected after replaying search post-login');
             popupDismissals.push(...replayLogin.popupDismissals ?? []);
@@ -301,6 +325,12 @@ export async function detectPage(options: DetectOptions): Promise<PageDetectionR
       ? await detectPageVisualElements(page).catch(() => [])
       : [];
     const canOfferSessionSave = loginIntervention.handled && loginIntervention.allowSessionSave;
+    const apiCandidates = dedupeApiListCandidates([
+      ...detectKnownApiListCandidates(page.url()),
+      ...capturedApiCandidates,
+      ...apiCapture.candidates(),
+      ...await detectApiListCandidatesFromResourceTimings(page).catch(() => [])
+    ]);
     const shouldSaveSession = options.saveSession || (canOfferSessionSave && await chooseSaveSessionInBrowser(page, runtimeConsole)
         .catch(() => chooseSaveSessionInteractively(runtimeConsole)));
     const savedSession = shouldSaveSession
@@ -312,6 +342,7 @@ export async function detectPage(options: DetectOptions): Promise<PageDetectionR
       title: await page.title(),
       capturedAt: new Date().toISOString(),
       candidates,
+      ...(apiCandidates.length ? { apiCandidates } : {}),
       ...(searchPlan ? { searchPlan: { ...searchPlan, finalUrl: page.url() } } : {}),
       ...(savedSession ? { savedSession } : {}),
       selectedCandidateId: selectedCandidateIds[0],
@@ -325,6 +356,18 @@ export async function detectPage(options: DetectOptions): Promise<PageDetectionR
     await host?.close();
     runtimeConsole.restoreOriginal();
   }
+}
+
+function dedupeApiListCandidates<T extends { request: { method: string; url: string }; itemsPath: string; confidence: number }>(candidates: T[]): T[] {
+  const seen = new Set<string>();
+  return candidates
+    .sort((a, b) => b.confidence - a.confidence)
+    .filter((candidate) => {
+      const key = `${candidate.request.method}:${candidate.request.url}:${candidate.itemsPath}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
 }
 
 async function chooseSaveSessionInteractively(runtimeConsole: SuppressedRuntimeConsole): Promise<boolean> {
@@ -678,7 +721,7 @@ class ExtensionDetectorHost {
     private readonly virtualDisplay: VirtualDisplayHandle
   ) {}
 
-  static async start(options: DetectOptions): Promise<ExtensionDetectorHost> {
+  static async start(options: DetectOptions, hooks: ExtensionDetectorHostStartHooks = {}): Promise<ExtensionDetectorHost> {
     assertDetectDisplayAvailable(options);
     const virtualDisplay = await startVirtualDisplayForDetection(options);
     const runId = `detect_${Date.now()}_${Math.random().toString(16).slice(2)}`;
@@ -692,7 +735,7 @@ class ExtensionDetectorHost {
       runtimeExtensionPath = await prepareDetectorRuntimeExtension(runId, extensionBridge);
       browser = await launchDetectorBrowser(chromePath, runtimeExtensionPath);
       await bridgeHub.waitForSessionConnected(runId, Math.min(options.timeoutMs, 30_000));
-      const page = await openDetectorTargetPage(browser, options.url, options.timeoutMs);
+      const page = await openDetectorTargetPage(browser, options.url, options.timeoutMs, hooks.onTargetPageReady);
       const tabId = await waitForTabId(extensionBridge, page, options.timeoutMs);
       await readyCheck(extensionBridge, tabId, Math.min(options.timeoutMs, 15_000)).catch(() => undefined);
       return new ExtensionDetectorHost(browser, runtimeExtensionPath, bridgeHub, extensionBridge, page, tabId, virtualDisplay);
@@ -743,6 +786,10 @@ class ExtensionDetectorHost {
     if (this.runtimeExtensionPath) await rm(this.runtimeExtensionPath, { recursive: true, force: true }).catch(() => undefined);
     await this.virtualDisplay.close();
   }
+}
+
+interface ExtensionDetectorHostStartHooks {
+  onTargetPageReady?: (page: Page) => void;
 }
 
 function assertDetectDisplayAvailable(options: DetectOptions): void {
@@ -839,8 +886,9 @@ async function waitForDetectorPage(browser: Browser, url: string, timeoutMs: num
   return pages[0] ?? await browser.newPage();
 }
 
-async function openDetectorTargetPage(browser: Browser, url: string, timeoutMs: number): Promise<Page> {
+async function openDetectorTargetPage(browser: Browser, url: string, timeoutMs: number, onPageReady?: (page: Page) => void): Promise<Page> {
   const page = await waitForDetectorPage(browser, DETECTOR_PARKING_URL, Math.min(timeoutMs, 5000));
+  onPageReady?.(page);
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: timeoutMs });
   return page;
 }

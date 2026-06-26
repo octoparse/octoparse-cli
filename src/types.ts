@@ -12,6 +12,7 @@ export interface TaskDefinition {
   xml: string;
   xoml: string;
   fieldNames: string[];
+  apiList?: ApiListTask;
   detection?: {
     session?: {
       name: string;
@@ -33,6 +34,36 @@ export interface TaskDefinition {
   userAgent?: string;
   disableAD?: boolean;
   disableImage?: boolean;
+}
+
+export interface ApiListTask {
+  kind: 'api_list';
+  request: {
+    url: string;
+    method?: 'GET' | 'POST';
+    headers?: Record<string, string>;
+    query?: Record<string, string | number | boolean>;
+    body?: unknown;
+  };
+  pagination?: {
+    type: 'page';
+    param: string;
+    start?: number;
+    step?: number;
+    pageSizeParam?: string;
+    pageSize?: number;
+    maxPages?: number;
+  };
+  itemsPath: string;
+  fields: ApiListField[];
+  rawFieldName?: string;
+}
+
+export interface ApiListField {
+  name: string;
+  path: string;
+  type?: 'string' | 'number' | 'boolean' | 'url' | 'array';
+  valuePrefix?: string;
 }
 
 export interface RunOptions {

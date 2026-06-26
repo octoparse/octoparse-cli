@@ -10,6 +10,7 @@ import {
 } from './detect/args.js';
 
 export { detectCommand } from './detect/command.js';
+export { recommendedApiCandidateForTesting } from './detect/command.js';
 export { detectUrlCommand } from './detect/run-url.js';
 export { runInlineAgentDetectForTesting } from './detect/agent-runner.js';
 export { buildTaskFromAgentPlan } from '../runtime/detector/agent-plan.js';

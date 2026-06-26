@@ -6,6 +6,7 @@ import { firstPositionalArg, hasFlag, parsePositiveInt, valueAfter } from '../..
 import { printEnvelope, printUsageError } from '../../cli/output.js';
 import { createChromeProgressReporter } from '../../runtime/chrome-progress.js';
 import { buildAgentContext, recommendedCandidate } from '../../runtime/detector/agent-context.js';
+import { buildTaskFromApiListCandidate } from '../../runtime/detector/api-list-detector.js';
 import { DetectionLoginRequiredError, detectPage } from '../../runtime/detector/page-detector.js';
 import type { PageDetectionResult } from '../../runtime/detector/types.js';
 import { buildTaskFromCandidate } from '../../runtime/detector/xml.js';
@@ -177,7 +178,8 @@ async function handleDirectDetectResult(options: {
   const manualTaskChoice = hasFlag(args, '--manual') && !json && !quiet
     ? await chooseManualTaskOutput(result, valueAfter(args, '--output'))
     : undefined;
-  const selectedId = valueAfter(args, '--select') ?? interactiveSelectedIds[0] ?? (hasFlag(args, '--auto') ? recommendedCandidate(result.candidates)?.id : undefined);
+  const recommendedApi = hasFlag(args, '--auto') ? recommendedApiCandidate(result) : undefined;
+  const selectedId = valueAfter(args, '--select') ?? interactiveSelectedIds[0] ?? recommendedApi?.id ?? (hasFlag(args, '--auto') ? recommendedCandidate(result.candidates)?.id : undefined);
   const outputFile = manualTaskChoice?.outputFile ?? valueAfter(args, '--output');
   const shouldGenerateTask = manualTaskChoice ? manualTaskChoice.generate : Boolean(selectedId || outputFile);
   if (shouldGenerateTask) {
@@ -203,6 +205,25 @@ async function generateDirectTask(options: {
       ? 'No extraction target was selected: click a highlighted data group in the browser and continue.'
       : 'Generating a task file requires --select candidateId or --auto.';
     return printUsageError(json, message, 'Example: octoparse detect https://example.com --manual', 'DETECT_SELECT_REQUIRED');
+  }
+  const apiCandidate = result.apiCandidates?.find((item) => item.id === selectedId);
+  if (apiCandidate) {
+    const taskId = valueAfter(args, '--task-id') ?? randomUUID();
+    const taskName = valueAfter(args, '--task-name') ?? defaultDetectedTaskName(result.finalUrl);
+    const task = buildTaskFromApiListCandidate({ url: result.finalUrl, taskId, taskName, candidate: apiCandidate });
+    const file = outputFile ? resolve(outputFile) : resolveAvailableDetectedTaskFile(taskId);
+    await persistGeneratedTask({ task, file, args, saveToCloud: false });
+    const data = { ...result, generatedTask: { file, taskId, taskName, candidateId: apiCandidate.id, fieldNames: task.fieldNames, mode: 'api_list', localOnly: true } };
+    if (json && !quiet) printEnvelope(true, data);
+    else if (!quiet) {
+      printDetectHuman(result);
+      console.log('');
+      console.log(`Generated API task: ${file}`);
+      console.log('Mode: api_list (local run only)');
+      console.log(`Validate: octoparse task validate ${taskId} --task-file ${file}`);
+      console.log(`Run: octoparse run ${taskId} --task-file ${file}`);
+    }
+    return EXIT_OK;
   }
   const candidate = result.candidates.find((item) => item.id === selectedId);
   if (!candidate) {
@@ -240,6 +261,26 @@ async function generateDirectTask(options: {
   return EXIT_OK;
 }
 
+function recommendedApiCandidate(result: PageDetectionResult) {
+  const api = [...(result.apiCandidates ?? [])].sort((a, b) => b.confidence - a.confidence)[0];
+  const dom = recommendedCandidate(result.candidates);
+  if (!api) return undefined;
+  if (!dom) return api;
+  return isWeakDomCandidate(dom) && api.confidence >= 0.72 ? api : undefined;
+}
+
+function isWeakDomCandidate(candidate: NonNullable<ReturnType<typeof recommendedCandidate>>): boolean {
+  const fieldCount = candidate.fields.filter((field) => field.samples.some((sample) => sample.trim())).length;
+  const sampleRowCount = candidate.sampleRows.length;
+  const warningCount = candidate.diagnostics?.warnings.length ?? 0;
+  const visualCoverage = candidate.diagnostics?.visualCoverage ?? candidate.layout?.visualCoverage ?? 1;
+  return candidate.confidence < 0.45
+    || fieldCount < 2
+    || sampleRowCount < 2
+    || visualCoverage < 0.08
+    || warningCount >= 3;
+}
+
 async function chooseManualTaskOutput(
   result: PageDetectionResult,
   providedOutputFile: string | undefined
@@ -269,3 +310,5 @@ async function chooseManualTaskOutput(
   }
   return { generate: true, outputFile: providedOutputFile };
 }
+
+export const recommendedApiCandidateForTesting = recommendedApiCandidate;

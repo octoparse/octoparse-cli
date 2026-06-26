@@ -6,6 +6,7 @@ import type {
   DetectedDetailPlan,
   DetectedField,
   DetectedFieldDiagnostics,
+  DetectedApiListCandidate,
   DetectedPageVisualElement,
   DetectedVisualElement,
   DetectedPagination,
@@ -57,6 +58,7 @@ export interface DetectAgentContext {
   visualElements?: AgentVisualElement[];
   pageVisualElements?: DetectedPageVisualElement[];
   candidates: DetectedCandidate[];
+  apiCandidates?: DetectedApiListCandidate[];
   searchPlan?: DetectedSearchPlan;
   popupDismissals?: PageDetectionResult['popupDismissals'];
   savedSession?: PageDetectionResult['savedSession'];
@@ -70,6 +72,7 @@ export interface AgentPlan {
   candidateId?: string;
   selection?: {
     candidateId?: string;
+    apiCandidateId?: string;
     customCandidate?: AgentCustomCandidatePlan;
     fields?: AgentFieldPlan[];
     pagination?: DetectedPagination | null | false;
@@ -121,7 +124,7 @@ export interface AgentPlanPreview {
   candidateId: string;
   candidate: {
     id: string;
-    type: DetectedCandidate['type'];
+    type: DetectedCandidate['type'] | 'api_list';
     title: string;
     confidence: number;
     itemCount: number;

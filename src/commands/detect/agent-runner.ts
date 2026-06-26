@@ -70,9 +70,10 @@ export async function runInlineAgentDetect(options: {
     const taskId = valueAfter(options.args, '--task-id') ?? plan.taskId ?? randomUUID();
     const taskName = valueAfter(options.args, '--task-name') ?? plan.taskName ?? defaultDetectedTaskName(context.finalUrl);
     const task = buildTaskFromAgentPlan({ context, plan, taskId, taskName });
+    const apiListTask = hasApiListTask(task);
     const outputFile = valueAfter(options.args, '--output');
     const file = outputFile ? resolve(outputFile) : resolveAvailableDetectedTaskFile(taskId);
-    await persistGeneratedTask({ task, file, args: options.args });
+    await persistGeneratedTask({ task, file, args: options.args, saveToCloud: apiListTask ? false : undefined });
 
     const sampleRows = parseOptionalPositiveInt(valueAfter(options.args, '--run-sample'));
     const sampleRun = sampleRows
@@ -91,8 +92,9 @@ export async function runInlineAgentDetect(options: {
         file,
         taskId,
         taskName,
-        candidateId: task.detection.candidateId,
+        candidateId: task.detection?.candidateId,
         fieldNames: task.fieldNames,
+        ...(apiListTask ? { mode: 'api_list', localOnly: true } : {}),
         selectionSource: 'inline_agent'
       },
       preview,
@@ -301,6 +303,10 @@ function hasMeaningfulValue(value: unknown): boolean {
   if (typeof value === 'string') return value.trim().length > 0;
   if (Array.isArray(value)) return value.length > 0;
   return true;
+}
+
+function hasApiListTask(task: unknown): boolean {
+  return Boolean(task && typeof task === 'object' && 'apiList' in task && (task as { apiList?: unknown }).apiList);
 }
 
 async function captureProcessOutput(run: () => Promise<number>): Promise<{ code: number; stdout: string; stderr: string }> {

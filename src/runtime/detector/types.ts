@@ -172,6 +172,7 @@ export interface PageDetectionResult {
   title: string;
   capturedAt: string;
   candidates: DetectedCandidate[];
+  apiCandidates?: DetectedApiListCandidate[];
   searchPlan?: DetectedSearchPlan;
   savedSession?: DetectedSessionReference;
   selectedCandidateId?: string;
@@ -180,6 +181,39 @@ export interface PageDetectionResult {
   popupDismissals?: DetectedPopupDismissal[];
   agentScreenshot?: DetectedAgentScreenshot;
   pageVisualElements?: DetectedPageVisualElement[];
+}
+
+export interface DetectedApiListCandidate {
+  id: string;
+  type: 'api_list';
+  title: string;
+  confidence: number;
+  request: {
+    url: string;
+    method: 'GET' | 'POST';
+    headers?: Record<string, string>;
+    query?: Record<string, string>;
+    body?: unknown;
+  };
+  pagination?: {
+    type: 'page';
+    param: string;
+    start: number;
+    step: number;
+    pageSizeParam?: string;
+    pageSize?: number;
+  };
+  itemsPath: string;
+  fields: Array<{
+    name: string;
+    path: string;
+    type?: 'string' | 'number' | 'boolean' | 'url' | 'array';
+    valuePrefix?: string;
+    samples: string[];
+  }>;
+  sampleRows: Record<string, unknown>[];
+  itemCount: number;
+  reasons: string[];
 }
 
 export interface DetectedAgentScreenshot {

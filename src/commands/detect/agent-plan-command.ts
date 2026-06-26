@@ -20,16 +20,18 @@ export async function applyAgentPlanCommand(args: string[], json: boolean, quiet
     const taskId = valueAfter(args, '--task-id') ?? plan.taskId ?? randomUUID();
     const taskName = valueAfter(args, '--task-name') ?? plan.taskName ?? defaultDetectedTaskName(context.finalUrl);
     const task = buildTaskFromAgentPlan({ context, plan, taskId, taskName });
+    const apiListTask = hasApiListTask(task);
     const outputFile = valueAfter(args, '--output');
     const file = outputFile ? resolve(outputFile) : resolveAvailableDetectedTaskFile(taskId);
-    await persistGeneratedTask({ task, file, args });
+    await persistGeneratedTask({ task, file, args, saveToCloud: apiListTask ? false : undefined });
     const data = {
       generatedTask: {
         file,
         taskId,
         taskName,
-        candidateId: task.detection.candidateId,
+        candidateId: task.detection?.candidateId,
         fieldNames: task.fieldNames,
+        ...(apiListTask ? { mode: 'api_list', localOnly: true } : {}),
         selectionSource: 'external_ai'
       }
     };
@@ -47,6 +49,10 @@ export async function applyAgentPlanCommand(args: string[], json: boolean, quiet
     else console.error(`Failed to apply Agent plan: ${message}`);
     return EXIT_OPERATION_FAILED;
   }
+}
+
+function hasApiListTask(task: unknown): boolean {
+  return Boolean(task && typeof task === 'object' && 'apiList' in task && (task as { apiList?: unknown }).apiList);
 }
 
 export async function previewAgentPlanCommand(args: string[], json: boolean, quiet: boolean): Promise<number> {

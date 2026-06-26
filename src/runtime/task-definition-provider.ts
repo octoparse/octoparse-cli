@@ -41,6 +41,7 @@ export class TaskDefinitionProvider {
       xml: parsed.xml ?? '',
       xoml: parsed.xoml ?? '',
       fieldNames: Array.isArray(parsed.fieldNames) ? parsed.fieldNames : [],
+      apiList: parsed.apiList,
       detection: parsed.detection,
       workflowSetting: parsed.workflowSetting,
       brokerSettings: parsed.brokerSettings,
@@ -168,6 +169,7 @@ function remoteTaskInfoToDefinition(info: RemoteTaskInfo, fallbackTaskId: string
 export interface TaskInspection {
   taskId: string;
   taskName: string;
+  mode: 'browser' | 'api_list';
   fields: string[];
   hasXml: boolean;
   hasXoml: boolean;
@@ -179,10 +181,26 @@ export interface TaskInspection {
 }
 
 export function inspectTask(task: TaskDefinition): TaskInspection {
+  if (task.apiList) {
+    return {
+      taskId: task.taskId,
+      taskName: task.taskName,
+      mode: 'api_list',
+      fields: task.fieldNames,
+      hasXml: false,
+      hasXoml: false,
+      actionCount: 0,
+      actionTypes: ['ApiList'],
+      usesKernelBrowser: false,
+      disableAD: false,
+      disableImage: false
+    };
+  }
   const actionTypes = extractActionTypes(task.xoml);
   return {
     taskId: task.taskId,
     taskName: task.taskName,
+    mode: 'browser',
     fields: task.fieldNames,
     hasXml: Boolean(task.xml),
     hasXoml: Boolean(task.xoml),
@@ -335,6 +353,10 @@ export async function transformXml(xml: string): Promise<string> {
 
 function validateTask(task: TaskDefinition): void {
   if (!task.taskId) throw new Error('taskFile is missing taskId');
+  if (task.apiList) {
+    validateApiListTask(task);
+    return;
+  }
   if (!task.xml) throw new Error('taskFile is missing xml');
   if (!task.xoml) throw new Error('taskFile is missing xoml');
   if (!Array.isArray(task.fieldNames)) throw new Error('taskFile fieldNames must be an array');
@@ -347,6 +369,21 @@ function validateTask(task: TaskDefinition): void {
   }
   if (/useKernelBrowser="true"/i.test(task.xml)) {
     throw new Error('taskFile uses kernel browser; standalone CLI v1 only supports independent Chrome');
+  }
+}
+
+function validateApiListTask(task: TaskDefinition): void {
+  const apiList = task.apiList;
+  if (!apiList || apiList.kind !== 'api_list') throw new Error('taskFile apiList.kind must be api_list');
+  if (!apiList.request?.url) throw new Error('taskFile apiList.request.url is required');
+  if (!/^https?:\/\//i.test(apiList.request.url)) throw new Error('taskFile apiList.request.url must be an http/https URL');
+  if (apiList.request.method && apiList.request.method !== 'GET' && apiList.request.method !== 'POST') {
+    throw new Error('taskFile apiList.request.method only supports GET or POST');
+  }
+  if (!apiList.itemsPath) throw new Error('taskFile apiList.itemsPath is required');
+  if (!Array.isArray(apiList.fields) || !apiList.fields.length) throw new Error('taskFile apiList.fields must be a non-empty array');
+  for (const field of apiList.fields) {
+    if (!field?.name || !field.path) throw new Error('taskFile apiList.fields entries must include name and path');
   }
 }
 

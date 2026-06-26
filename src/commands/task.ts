@@ -90,6 +90,7 @@ export async function taskInspect(command: string, args: string[]): Promise<numb
     } else {
       console.log(`Task: ${inspection.taskId}`);
       console.log(`Name: ${inspection.taskName}`);
+      console.log(`Mode: ${inspection.mode}`);
       console.log(`Actions: ${inspection.actionCount} (${inspection.actionTypes.join(', ') || 'none'})`);
       console.log(`Fields: ${inspection.fields.join(', ') || 'none'}`);
       console.log(`Kernel browser: ${inspection.usesKernelBrowser ? 'yes' : 'no'}`);
